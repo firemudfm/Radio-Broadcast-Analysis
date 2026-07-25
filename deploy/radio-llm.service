@@ -1,0 +1,45 @@
+[Unit]
+Description=FireMud local multilingual small LLM (Qwen3 0.6B via llama.cpp)
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=radio
+Group=radio
+EnvironmentFile=/etc/firemud/radio-llm.env
+ExecStart=/opt/firemud/llm-runtime/bin/llama-server \
+  --model ${RADIO_LLM_MODEL_PATH} \
+  --alias ${RADIO_LLM_ALIAS} \
+  --host ${RADIO_LLM_HOST} \
+  --port ${RADIO_LLM_PORT} \
+  --threads ${RADIO_LLM_THREADS} \
+  --threads-batch ${RADIO_LLM_THREADS_BATCH} \
+  --ctx-size ${RADIO_LLM_CONTEXT_SIZE} \
+  --parallel ${RADIO_LLM_PARALLEL} \
+  --sleep-idle-seconds ${RADIO_LLM_SLEEP_IDLE_SECONDS} \
+  --n-predict ${RADIO_LLM_MAX_PREDICT} \
+  --batch-size 512 \
+  --ubatch-size 256 \
+  --cache-type-k q8_0 \
+  --cache-type-v q8_0 \
+  --jinja \
+  --metrics
+Restart=always
+RestartSec=5
+TimeoutStartSec=120
+TimeoutStopSec=30
+Nice=10
+CPUQuota=400%
+MemoryMax=3G
+
+NoNewPrivileges=true
+PrivateTmp=true
+ProtectHome=true
+ProtectSystem=full
+ProtectKernelTunables=true
+ProtectControlGroups=true
+RestrictSUIDSGID=true
+
+[Install]
+WantedBy=multi-user.target

@@ -1,0 +1,21 @@
+[project]
+name = "firemud-radio-intelligence-api-open"
+version = "0.3.0"
+description = "EC2-only FireMud radio backend with full transcripts and local multilingual LLM analysis"
+requires-python = ">=3.11"
+dependencies = [
+  "fastapi==0.139.0",
+  "uvicorn==0.51.0",
+  "boto3==1.43.46",
+  "pydantic-settings==2.14.1",
+]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+
+[tool.ruff]
+target-version = "py311"
+line-length = 100
+
+[tool.ruff.lint]
+select = ["E", "F", "I", "B", "UP"]

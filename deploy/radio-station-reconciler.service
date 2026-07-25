@@ -1,0 +1,26 @@
+[Unit]
+Description=FireMud radio station reconciler (probe, activate, stop managed stations)
+Wants=network-online.target
+After=network-online.target radio-intelligence-api.service
+ConditionPathExists=/etc/firemud/radio-intelligence.env
+
+[Service]
+Type=simple
+# Root on purpose, and narrowly: this is the only component allowed to touch
+# systemd units and /etc/radio-pipeline. The API itself runs unprivileged and
+# only queues jobs in SQLite.
+User=root
+Group=root
+EnvironmentFile=/etc/firemud/radio-intelligence.env
+Environment=PYTHONUNBUFFERED=1
+WorkingDirectory=/opt/firemud/radio-intelligence-api
+ExecStart=/opt/firemud/radio-intelligence-api/venv/bin/python -m app.station_reconciler
+Restart=always
+RestartSec=10
+TimeoutStopSec=60
+NoNewPrivileges=no
+ProtectHome=true
+PrivateTmp=true
+
+[Install]
+WantedBy=multi-user.target

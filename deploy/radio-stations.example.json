@@ -1,0 +1,10 @@
+{
+  "stations": [
+    {
+      "id": "hertz879",
+      "name": "Hertz 87.9",
+      "country_code": "DE",
+      "language_codes": ["de", "en"]
+    }
+  ]
+}
