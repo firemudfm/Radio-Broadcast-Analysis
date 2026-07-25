@@ -59,9 +59,9 @@ def test_full_chunk_transcript_and_timestamp_highlight(settings, fake_s3) -> Non
                     "broadcast_start_utc": "2026-07-13T01:36:20Z",
                     "broadcast_end_utc": "2026-07-13T01:36:28Z",
                     "words": [
-                        {"word": " The", "broadcast_start_utc": "2026-07-13T01:36:20Z", "broadcast_end_utc": "2026-07-13T01:36:20.2Z"},
-                        {"word": " Super", "broadcast_start_utc": "2026-07-13T01:36:22Z", "broadcast_end_utc": "2026-07-13T01:36:22.4Z"},
-                        {"word": " Suckers", "broadcast_start_utc": "2026-07-13T01:36:22.4Z", "broadcast_end_utc": "2026-07-13T01:36:23Z"},
+                        {"word": " The", "broadcast_start_utc": "2026-07-13T01:36:20Z", "broadcast_end_utc": "2026-07-13T01:36:20.2Z"},  # noqa: E501
+                        {"word": " Super", "broadcast_start_utc": "2026-07-13T01:36:22Z", "broadcast_end_utc": "2026-07-13T01:36:22.4Z"},  # noqa: E501
+                        {"word": " Suckers", "broadcast_start_utc": "2026-07-13T01:36:22.4Z", "broadcast_end_utc": "2026-07-13T01:36:23Z"},  # noqa: E501
                         {"word": " are"},
                         {"word": " the"},
                         {"word": " greatest"},

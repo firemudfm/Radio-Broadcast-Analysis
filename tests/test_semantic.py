@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from datetime import datetime, timedelta, timezone
+from datetime import UTC, datetime, timedelta
 
 from app.models import CampaignCreate
 from app.services.conversation import ConversationService
@@ -8,7 +8,7 @@ from app.services.semantic import SemanticDiscoveryService
 
 # Broadcast fixtures sit one day in the past so they always fall inside the
 # semantic scan lookback window regardless of when the suite runs.
-_FIXTURE_DT = datetime.now(timezone.utc) - timedelta(days=1)
+_FIXTURE_DT = datetime.now(UTC) - timedelta(days=1)
 FIXTURE_DAY = _FIXTURE_DT.strftime("%Y-%m-%d")
 FIXTURE_DAY_PATH = _FIXTURE_DT.strftime("%Y/%m/%d")
 FIXTURE_DAY_COMPACT = _FIXTURE_DT.strftime("%Y%m%d")
@@ -65,7 +65,7 @@ def test_concept_keyword_semantic_match_creates_auditable_mention(settings, data
             "station_ids": ["hertz879"],
         }
     )
-    database.create_campaign(payload, datetime.now(timezone.utc) - timedelta(days=10))
+    database.create_campaign(payload, datetime.now(UTC) - timedelta(days=10))
     transcript_key = (
         f"transcripts/hertz879/{FIXTURE_DAY_PATH}/hertz879_{FIXTURE_DAY_COMPACT}T100000Z/"
         "segment_0001.transcript.json"
@@ -102,7 +102,7 @@ def test_concept_keyword_semantic_match_creates_auditable_mention(settings, data
             ],
         },
     )
-    fake_s3.objects[transcript_key]["LastModified"] = datetime.now(timezone.utc) - timedelta(minutes=5)
+    fake_s3.objects[transcript_key]["LastModified"] = datetime.now(UTC) - timedelta(minutes=5)
     service = SemanticDiscoveryService(
         settings,
         database,
@@ -161,7 +161,7 @@ def test_exact_alias_backfill_does_not_call_llm(settings, database, fake_s3):
             "backfill_days": 7,
         }
     )
-    database.create_campaign(payload, datetime.now(timezone.utc) - timedelta(days=10))
+    database.create_campaign(payload, datetime.now(UTC) - timedelta(days=10))
     transcript_key = (
         f"transcripts/hertz879/{FIXTURE_DAY_PATH}/hertz879_{FIXTURE_DAY_COMPACT}T110000Z/"
         "segment_0001.transcript.json"
@@ -201,7 +201,7 @@ def test_exact_alias_backfill_does_not_call_llm(settings, database, fake_s3):
             ],
         },
     )
-    fake_s3.objects[transcript_key]["LastModified"] = datetime.now(timezone.utc) - timedelta(minutes=5)
+    fake_s3.objects[transcript_key]["LastModified"] = datetime.now(UTC) - timedelta(minutes=5)
     service = SemanticDiscoveryService(
         settings,
         database,
@@ -265,7 +265,7 @@ def test_semantic_match_supports_production_nested_source_audio(settings, databa
             "station_ids": ["hertz879"],
         }
     )
-    database.create_campaign(payload, datetime.now(timezone.utc) - timedelta(days=10))
+    database.create_campaign(payload, datetime.now(UTC) - timedelta(days=10))
     transcript_key = (
         f"transcripts/hertz879/{FIXTURE_DAY_PATH}/hertz879_{FIXTURE_DAY_COMPACT}T120000Z/"
         "segment_0001.transcript.json"
@@ -305,7 +305,7 @@ def test_semantic_match_supports_production_nested_source_audio(settings, databa
             ],
         },
     )
-    fake_s3.objects[transcript_key]["LastModified"] = datetime.now(timezone.utc) - timedelta(minutes=5)
+    fake_s3.objects[transcript_key]["LastModified"] = datetime.now(UTC) - timedelta(minutes=5)
     service = SemanticDiscoveryService(
         settings,
         database,

@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 import json
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 
 from app.models import CampaignCreate
 from app.services.keywords import KeywordConfigService
@@ -30,7 +30,7 @@ def test_publish_preserves_manual_entities(settings, database, fake_s3) -> None:
             "station_ids": ["hertz879"],
         }
     )
-    database.create_campaign(payload, datetime.now(timezone.utc))
+    database.create_campaign(payload, datetime.now(UTC))
     result = KeywordConfigService(settings, database, fake_s3).publish()
     body = json.loads(fake_s3.objects[settings.RADIO_KEYWORDS_KEY]["Body"])
     assert result["manual_entities"] == 1

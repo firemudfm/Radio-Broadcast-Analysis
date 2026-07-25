@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import json
 import subprocess
-from pathlib import Path
+from datetime import UTC
 from typing import Any
 
 import pytest
@@ -182,7 +182,7 @@ def test_stop_never_touches_legacy_pinned(reconciler, store, runner) -> None:
 
 
 def test_stop_cancelled_when_references_return(reconciler, store, database, runner) -> None:
-    from datetime import datetime, timedelta, timezone
+    from datetime import datetime, timedelta
 
     from app.models import CampaignCreate
 
@@ -191,7 +191,7 @@ def test_stop_cancelled_when_references_return(reconciler, store, database, runn
     payload = CampaignCreate.model_validate(
         {"name": "Back again", "keywords": [{"value": "Kw"}], "station_ids": ["seed"]}
     )
-    campaign_id = database.create_campaign(payload, datetime.now(timezone.utc) - timedelta(days=1))
+    campaign_id = database.create_campaign(payload, datetime.now(UTC) - timedelta(days=1))
     store.set_campaign_members(campaign_id, [managed_id])
     store.recompute_reference_counts(stop_grace_seconds=300)
     store.enqueue_job(managed_id, "stop")
@@ -204,7 +204,7 @@ def test_stop_cancelled_when_references_return(reconciler, store, database, runn
 
 
 def test_pending_capacity_promoted_when_slot_frees(reconciler, store, database, settings) -> None:
-    from datetime import datetime, timezone
+    from datetime import datetime
 
     from app.models import CampaignCreate
 
@@ -212,7 +212,7 @@ def test_pending_capacity_promoted_when_slot_frees(reconciler, store, database, 
     payload = CampaignCreate.model_validate(
         {"name": "Needs station", "keywords": [{"value": "Kw"}], "station_ids": ["seed"]}
     )
-    campaign_id = database.create_campaign(payload, datetime.now(timezone.utc))
+    campaign_id = database.create_campaign(payload, datetime.now(UTC))
     store.set_campaign_members(campaign_id, [managed_id])
     store.recompute_reference_counts(stop_grace_seconds=300)
     store.set_station_state(
@@ -254,7 +254,7 @@ def test_recompute_rearms_stop_for_running_unreferenced_station(store) -> None:
 def test_due_pending_capacity_station_stops_without_job(reconciler, store) -> None:
     from datetime import timedelta
 
-    from app.db import iso, utc_now
+    from app.db import utc_now
 
     managed_id = store.upsert_managed_station({"station_uuid": PLAIN_UUID, "name": "Plain FM"})
     store.set_station_state(
@@ -311,7 +311,7 @@ def test_stale_activate_job_refused_after_wind_down(reconciler, store, runner) -
 
 
 def test_resumed_campaign_revives_stopped_member(reconciler, store, database) -> None:
-    from datetime import datetime, timezone
+    from datetime import datetime
 
     from app.models import CampaignCreate
 
@@ -319,7 +319,7 @@ def test_resumed_campaign_revives_stopped_member(reconciler, store, database) ->
     payload = CampaignCreate.model_validate(
         {"name": "Paused too long", "keywords": [{"value": "Kw"}], "station_ids": ["seed"]}
     )
-    campaign_id = database.create_campaign(payload, datetime.now(timezone.utc))
+    campaign_id = database.create_campaign(payload, datetime.now(UTC))
     store.set_campaign_members(campaign_id, [managed_id])
     # The pause outlasted the grace period and the member was wound down.
     store.set_station_state(managed_id, desired_state="stopped", actual_state="stopped")
@@ -353,7 +353,7 @@ def test_due_pending_probe_station_stops_without_job(reconciler, store) -> None:
 
 
 def test_stop_cancel_restores_pending_when_nothing_ran(reconciler, store, database, runner) -> None:
-    from datetime import datetime, timezone
+    from datetime import datetime
 
     from app.models import CampaignCreate
 
@@ -361,7 +361,7 @@ def test_stop_cancel_restores_pending_when_nothing_ran(reconciler, store, databa
     payload = CampaignCreate.model_validate(
         {"name": "Back before stop", "keywords": [{"value": "Kw"}], "station_ids": ["seed"]}
     )
-    campaign_id = database.create_campaign(payload, datetime.now(timezone.utc))
+    campaign_id = database.create_campaign(payload, datetime.now(UTC))
     store.set_campaign_members(campaign_id, [managed_id])
     store.recompute_reference_counts(stop_grace_seconds=300)
     # A stale stop job targets a station whose units never started.

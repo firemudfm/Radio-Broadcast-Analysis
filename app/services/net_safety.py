@@ -7,7 +7,6 @@ from __future__ import annotations
 # and call it again for EVERY redirect hop (capped at MAX_REDIRECTS).
 # Validation fails closed: anything that cannot be proven to point at a
 # global (public) unicast address raises NetSafetyError.
-
 import ipaddress
 import socket
 from collections.abc import Callable, Iterable, Sequence

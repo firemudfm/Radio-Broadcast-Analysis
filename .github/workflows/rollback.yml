@@ -1,0 +1,26 @@
+name: Rollback production
+
+# One-click operator tool: restores the newest pre-deploy backup on the
+# instance and restarts the backend services.
+on:
+  workflow_dispatch:
+
+concurrency:
+  group: production-deploy
+  cancel-in-progress: false
+
+jobs:
+  rollback:
+    runs-on: ubuntu-latest
+    environment: production
+    steps:
+      - name: Load SSH key
+        run: |
+          mkdir -p ~/.ssh
+          printf '%s\n' "${{ secrets.EC2_SSH_KEY }}" > ~/.ssh/deploy_key
+          chmod 600 ~/.ssh/deploy_key
+          ssh-keyscan -H "${{ secrets.EC2_HOST }}" >> ~/.ssh/known_hosts 2>/dev/null
+      - name: Restore previous release
+        run: |
+          ssh -i ~/.ssh/deploy_key ec2-user@${{ secrets.EC2_HOST }} \
+            'bash /tmp/radio-ci-deploy/deploy/ci-rollback.sh || bash /opt/firemud/radio-intelligence-api/deploy/ci-rollback.sh'

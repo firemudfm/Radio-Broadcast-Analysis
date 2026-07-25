@@ -14,7 +14,8 @@ SRC=/tmp/radio-ci-deploy
 APP=/opt/firemud/radio-intelligence-api
 SERVICES=(radio-intelligence-api radio-station-reconciler radio-analysis-worker)
 STAMP=$(date -u +%Y%m%dT%H%M%SZ)
-BACKUP=/tmp/radio-app-backup-$STAMP
+BACKUP_ROOT=/var/backups
+BACKUP=$BACKUP_ROOT/radio-app-backup-$STAMP
 
 [ -d "$SRC/app" ] || { echo "No synced code at $SRC/app"; exit 1; }
 sudo test -d "$APP/app" || { echo "Live app not found at $APP/app"; exit 1; }
@@ -31,9 +32,14 @@ sudo "$APP/venv/bin/python" -m compileall -q "$SRC/app" || {
 # Dependencies (no-op unless requirements.txt changed).
 sudo "$APP/venv/bin/pip" install --quiet -r "$SRC/requirements.txt"
 
-# Swap the code in, keeping a rollback copy of what was live.
+# Swap the code in, keeping a reboot-safe rollback copy of what was live.
+sudo mkdir -p "$BACKUP_ROOT"
 sudo cp -a "$APP/app" "$BACKUP"
 sudo rsync -a --delete "$SRC/app/" "$APP/app/"
+# Keep the operational scripts on the instance so the manual Rollback
+# workflow works even after /tmp was cleared by a reboot.
+sudo mkdir -p "$APP/deploy"
+sudo cp "$SRC/deploy/ci-rollback.sh" "$APP/deploy/ci-rollback.sh"
 
 sudo systemctl restart "${SERVICES[@]}"
 sleep 5
@@ -50,7 +56,7 @@ if [ "$restart_ok" = true ] && [ "$health_ok" = true ]; then
   curl -s http://127.0.0.1:8788/healthz
   echo
   # Keep only the five newest rollback copies.
-  ls -dt /tmp/radio-app-backup-* 2>/dev/null | tail -n +6 | xargs -r sudo rm -rf
+  sudo sh -c "ls -dt $BACKUP_ROOT/radio-app-backup-* 2>/dev/null | tail -n +6 | xargs -r rm -rf"
   exit 0
 fi
 

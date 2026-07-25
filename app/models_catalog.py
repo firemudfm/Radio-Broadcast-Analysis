@@ -142,7 +142,7 @@ class StationSelection(ApiModel):
         return output
 
     @model_validator(mode="after")
-    def check_mode_inputs(self) -> "StationSelection":
+    def check_mode_inputs(self) -> StationSelection:
         if self.mode == "explicit" and not self.station_uuids:
             raise ValueError("explicit selection requires station_uuids")
         if self.mode in {"country_top", "country_all"} and not self.country_codes:

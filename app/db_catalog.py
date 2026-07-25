@@ -328,7 +328,7 @@ class CatalogStore:
         args.append(managed_station_id)
         with self._db.transaction() as connection:
             connection.execute(
-                f"UPDATE managed_stations SET {', '.join(sets)} WHERE id = ?", args
+                f"UPDATE managed_stations SET {', '.join(sets)} WHERE id = ?", args  # nosec B608 (hardcoded column names; values parameterized)
             )
 
     def stream_url_for(self, managed_station_id: int) -> str | None:

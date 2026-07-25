@@ -7,8 +7,9 @@ import json
 import mimetypes
 import re
 import time
-from datetime import datetime, timezone
-from typing import Any, Iterator
+from collections.abc import Iterator
+from datetime import UTC, datetime
+from typing import Any
 
 from fastapi import HTTPException, Request, status
 from fastapi.responses import StreamingResponse
@@ -50,7 +51,7 @@ class AudioService:
         token = f"{body}.{signature}"
         return {
             "url": str(request.url_for("stream_audio", token=token)),
-            "expires_at_utc": datetime.fromtimestamp(expires, tz=timezone.utc),
+            "expires_at_utc": datetime.fromtimestamp(expires, tz=UTC),
         }
 
     def stream(self, token: str, range_header: str | None) -> StreamingResponse:

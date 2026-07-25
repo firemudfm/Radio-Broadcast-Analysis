@@ -3,10 +3,11 @@ from __future__ import annotations
 import json
 import sqlite3
 import threading
+from collections.abc import Iterator
 from contextlib import contextmanager
-from datetime import datetime, timedelta, timezone
+from datetime import UTC, datetime, timedelta
 from pathlib import Path
-from typing import Any, Iterator
+from typing import Any
 from uuid import uuid4
 
 from .models import CampaignCreate, CampaignUpdate
@@ -124,11 +125,11 @@ CREATE INDEX IF NOT EXISTS idx_semantic_scan_status ON semantic_scan_objects(sta
 
 
 def utc_now() -> datetime:
-    return datetime.now(timezone.utc)
+    return datetime.now(UTC)
 
 
 def iso(value: datetime) -> str:
-    return value.astimezone(timezone.utc).isoformat().replace("+00:00", "Z")
+    return value.astimezone(UTC).isoformat().replace("+00:00", "Z")
 
 
 class Database:
@@ -296,7 +297,7 @@ class Database:
                 updates.append("updated_at=?")
                 values.extend([now, campaign_id])
                 connection.execute(
-                    f"UPDATE campaigns SET {', '.join(updates)} WHERE id=?", values
+                    f"UPDATE campaigns SET {', '.join(updates)} WHERE id=?", values  # nosec B608 (hardcoded column names; values parameterized)
                 )
             if payload.station_ids is not None:
                 connection.execute(
@@ -546,21 +547,19 @@ class Database:
         with self._lock:
             total = int(
                 self._conn().execute(
-                    f"SELECT count(*) FROM mentions m WHERE {where_sql}", values
+                    f"SELECT count(*) FROM mentions m WHERE {where_sql}", values  # nosec B608 (hardcoded predicates; values parameterized)
                 ).fetchone()[0]
             )
-            rows = self._conn().execute(
-                f"""
-                SELECT m.*, c.name AS campaign_name, k.value AS keyword_value
-                FROM mentions m
-                JOIN campaigns c ON c.id=m.campaign_id
-                JOIN campaign_keywords k ON k.id=m.campaign_keyword_id
-                WHERE {where_sql}
-                ORDER BY m.broadcast_start_utc DESC, m.id DESC
-                LIMIT ? OFFSET ?
-                """,
-                [*values, limit, offset],
-            ).fetchall()
+            mention_sql = (
+                "SELECT m.*, c.name AS campaign_name, k.value AS keyword_value"
+                " FROM mentions m"
+                " JOIN campaigns c ON c.id=m.campaign_id"
+                " JOIN campaign_keywords k ON k.id=m.campaign_keyword_id"
+                f" WHERE {where_sql}"  # nosec B608 (hardcoded predicates; values parameterized)
+                " ORDER BY m.broadcast_start_utc DESC, m.id DESC"
+                " LIMIT ? OFFSET ?"
+            )
+            rows = self._conn().execute(mention_sql, [*values, limit, offset]).fetchall()
             return [self._mention(row) for row in rows], total
 
     def mention_view_by_id(self, mention_id: str) -> dict[str, Any] | None:

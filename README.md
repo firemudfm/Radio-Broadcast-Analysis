@@ -123,10 +123,29 @@ sudo journalctl -f -u 'radio-*'
 
 ## CI/CD
 
-Every push to `main` runs `.github/workflows/deploy.yml`:
+Five connected pipelines under `.github/workflows/`:
 
-1. **test**: installs requirements and runs the full pytest suite on a GitHub runner.
-2. **deploy** (only if tests pass): rsyncs `app/` + `requirements.txt` to the EC2 instance over SSH and runs `deploy/ci-deploy.sh` there, which compile-checks the new code, installs dependencies, swaps the code in, restarts `radio-intelligence-api`, `radio-station-reconciler`, and `radio-analysis-worker`, and verifies `/healthz`. If the health check fails, it rolls back to the previous code automatically and the workflow turns red.
+```text
+push / PR
+   |
+   v
+  CI  (ci.yml) ......... lint (ruff) + tests on Python 3.11 and 3.12
+   |                     + security gates (bandit medium+, pip-audit CVEs)
+   | success on main
+   v
+  CD  (deploy.yml) ..... preflight (reachable, disk, services healthy)
+   |                     -> deploy the exact CI-tested commit (rsync + ci-deploy.sh:
+   |                        compile check BEFORE swap, dep install, restart, health check)
+   |                     -> live smoke tests against the public API
+   |                     -> rollback job if deploy or smoke tests fail
+   |
+  Health monitor (health.yml) ... every 6 hours: services, disk, memory,
+   |                              journal errors, public /healthz
+  Rollback (rollback.yml) ....... one-click manual restore of the previous release
+  CodeQL (codeql.yml) ........... weekly + per-push deep security analysis
+```
+
+Deploy safety, in order: CI must be green, preflight must pass, the new code must compile on the instance before the old code is touched, a timestamped backup is kept under `/var/backups` (five most recent), the services must come back active, `/healthz` must answer, and the CD run then smoke-tests the public API. Any failure rolls the code back automatically.
 
 Per-station capture/uploader/worker units are not restarted by deploys; they run the separate ingestion package and keep recording through an API deploy.
 
@@ -140,8 +159,8 @@ One-time setup (repo Settings, then Secrets and variables, then Actions):
 Notes:
 
 - Without an Elastic IP, the instance IP changes on every stop/start and `EC2_HOST` must be updated to match. Allocating an Elastic IP removes that chore.
-- The instance security group must allow SSH (port 22) from GitHub-hosted runners for the deploy job to connect.
-- You can also trigger the pipeline manually from the Actions tab (`workflow_dispatch`).
+- The instance security group must allow SSH (port 22) from GitHub-hosted runners for deploys and the health monitor to connect.
+- Every workflow can also be run manually from the Actions tab.
 
 ## Security notes
 

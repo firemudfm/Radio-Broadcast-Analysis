@@ -15,10 +15,10 @@ from .db_catalog import CatalogStore
 from .services.analysis import MentionAnalysisService
 from .services.audio import AudioService
 from .services.campaigns import CampaignService
+from .services.catalog import CatalogService
 from .services.conversation import ConversationService
 from .services.keywords import KeywordConfigService
 from .services.llm import LocalLlmClient
-from .services.catalog import CatalogService
 from .services.monitoring import MonitoringService
 from .services.preview import PreviewService
 from .services.radio_browser import RadioBrowserClient

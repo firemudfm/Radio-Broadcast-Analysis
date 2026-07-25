@@ -1,17 +1,11 @@
 from __future__ import annotations
 
-import sqlite3
-from datetime import datetime, timedelta, timezone
+from datetime import UTC, datetime, timedelta
 from pathlib import Path
-
-import pytest
 
 from app.db import Database
 from app.db_catalog import CatalogStore, local_station_id_for
 from app.models import CampaignCreate
-from app.models_catalog import StationSelection
-from app.services.monitoring import MonitoringService
-
 from tests.test_catalog_monitoring import (  # noqa: F401 - reuse fixtures
     HERTZ_UUID,
     PLAIN_UUID,
@@ -49,7 +43,7 @@ def test_selection_only_payload_works() -> None:
 
 
 def test_attach_selection_materializes_members_and_bridges(
-    database, store, monitoring
+    database, store, monitoring  # noqa: F811 (imported fixtures shadowed by params)
 ) -> None:
     payload = CampaignCreate.model_validate(
         {
@@ -62,7 +56,7 @@ def test_attach_selection_materializes_members_and_bridges(
         }
     )
     campaign_id = database.create_campaign(
-        payload, datetime.now(timezone.utc) - timedelta(days=1)
+        payload, datetime.now(UTC) - timedelta(days=1)
     )
     monitoring.attach_campaign_selection(campaign_id, payload.station_selection)
 
@@ -96,7 +90,7 @@ def test_attach_selection_materializes_members_and_bridges(
     assert "seed" not in station_ids or True
 
 
-def test_country_top_selection_respects_capacity_plan(database, store, monitoring) -> None:
+def test_country_top_selection_respects_capacity_plan(database, store, monitoring) -> None:  # noqa: F811 (imported fixtures shadowed by params)
     payload = CampaignCreate.model_validate(
         {
             "name": "Germany top",
@@ -110,7 +104,7 @@ def test_country_top_selection_respects_capacity_plan(database, store, monitorin
         }
     )
     campaign_id = database.create_campaign(
-        payload, datetime.now(timezone.utc) - timedelta(days=1)
+        payload, datetime.now(UTC) - timedelta(days=1)
     )
     monitoring.attach_campaign_selection(campaign_id, payload.station_selection)
     members = store.members_for_campaign(campaign_id)
@@ -136,7 +130,7 @@ def test_migration_from_v031_schema(tmp_path: Path) -> None:
         }
     )
     campaign_id = database.create_campaign(
-        payload, datetime.now(timezone.utc) - timedelta(days=1)
+        payload, datetime.now(UTC) - timedelta(days=1)
     )
 
     before_tables = {
@@ -147,7 +141,7 @@ def test_migration_from_v031_schema(tmp_path: Path) -> None:
     }
     assert "managed_stations" not in before_tables
 
-    store = CatalogStore(database)
+    store = CatalogStore(database)  # noqa: F811 (imported fixtures shadowed by params)
     store.migrate()  # idempotent
     store.migrate()
 

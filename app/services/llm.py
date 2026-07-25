@@ -4,7 +4,7 @@ import json
 import re
 import urllib.error
 import urllib.request
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 from typing import Any
 
 from ..config import Settings
@@ -16,7 +16,7 @@ _ALLOWED_MATCH_TYPES = {"exact_alias", "phonetic_entity", "translated_equivalent
 
 
 def utc_iso() -> str:
-    return datetime.now(timezone.utc).isoformat().replace("+00:00", "Z")
+    return datetime.now(UTC).isoformat().replace("+00:00", "Z")
 
 
 def _clean_list(value: Any, *, maximum: int, max_length: int) -> list[str]:
@@ -49,7 +49,7 @@ class LocalLlmClient:
             return False
         request = urllib.request.Request(f"{self._base_url}/health", method="GET")
         try:
-            with urllib.request.urlopen(request, timeout=3) as response:
+            with urllib.request.urlopen(request, timeout=3) as response:  # nosec B310 (localhost LLM URL from validated settings)
                 return 200 <= response.status < 300
         except Exception:
             return False
@@ -186,7 +186,8 @@ needs_review: boolean
             "Accept only the same named entity, a clear spoken/phonetic spelling variant, or an explicit alias."
             if strict_entity
             else
-            "This is a concept/topic. A clear equivalent meaning in another language may match, but merely related words do not."
+            "This is a concept/topic. A clear equivalent meaning in another language"
+            " may match, but merely related words do not."
         )
         system = (
             "You are a conservative multilingual radio mention verifier. "
@@ -284,7 +285,7 @@ needs_review: boolean
             method="POST",
         )
         try:
-            with urllib.request.urlopen(
+            with urllib.request.urlopen(  # nosec B310 (localhost LLM URL from validated settings)
                 request,
                 timeout=self._settings.RADIO_LLM_TIMEOUT_SECONDS,
             ) as response:
@@ -311,7 +312,7 @@ needs_review: boolean
         except json.JSONDecodeError:
             match = _JSON_BLOCK.search(text)
             if not match:
-                raise RuntimeError("Local LLM did not return valid JSON")
+                raise RuntimeError("Local LLM did not return valid JSON") from None
             try:
                 parsed = json.loads(match.group(0))
             except json.JSONDecodeError as error:

@@ -5,7 +5,7 @@ import hashlib
 import json
 import logging
 from collections import defaultdict
-from datetime import datetime, timedelta, timezone
+from datetime import UTC, datetime, timedelta
 from typing import Any
 
 from ..config import Settings
@@ -17,11 +17,11 @@ logger = logging.getLogger(__name__)
 
 def _datetime(value: Any) -> datetime | None:
     if isinstance(value, datetime):
-        return value if value.tzinfo else value.replace(tzinfo=timezone.utc)
+        return value if value.tzinfo else value.replace(tzinfo=UTC)
     if not isinstance(value, str) or not value.strip():
         return None
     parsed = datetime.fromisoformat(value.strip().replace("Z", "+00:00"))
-    return parsed if parsed.tzinfo else parsed.replace(tzinfo=timezone.utc)
+    return parsed if parsed.tzinfo else parsed.replace(tzinfo=UTC)
 
 
 def _dict(value: Any) -> dict[str, Any]:
@@ -173,7 +173,7 @@ class IntelligenceSyncService:
                 continue
 
     def _list_result_objects(self) -> list[dict[str, Any]]:
-        cutoff = datetime.now(timezone.utc) - timedelta(days=self._settings.RADIO_SYNC_LOOKBACK_DAYS)
+        cutoff = datetime.now(UTC) - timedelta(days=self._settings.RADIO_SYNC_LOOKBACK_DAYS)
         paginator = self._s3.get_paginator("list_objects_v2")
         objects: list[dict[str, Any]] = []
         for page in paginator.paginate(
@@ -331,5 +331,5 @@ class IntelligenceSyncService:
             "objects_loaded": objects_loaded,
             "mentions_seen": mentions_seen,
             "mentions_materialized": mentions_materialized,
-            "completed_at_utc": datetime.now(timezone.utc),
+            "completed_at_utc": datetime.now(UTC),
         }

@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 import asyncio
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 
 from app.models import CampaignCreate, CampaignView
 from app.services.campaigns import CampaignService
@@ -45,7 +45,7 @@ def test_hydrate_removes_internal_station_ids(database) -> None:
             "station_ids": ["hertz879"],
         }
     )
-    database.create_campaign(payload, datetime.now(timezone.utc))
+    database.create_campaign(payload, datetime.now(UTC))
     service = CampaignService(database, FakeStations(), FakeKeywords(), FakeSync())
 
     campaigns = asyncio.run(service.list_campaigns())

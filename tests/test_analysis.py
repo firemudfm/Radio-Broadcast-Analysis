@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 
 from app.models import CampaignCreate, MentionDetailView
 from app.services.analysis import MentionAnalysisService
@@ -37,7 +37,7 @@ def test_analysis_is_cached_and_detail_validates(settings, database, fake_s3) ->
     payload = CampaignCreate.model_validate(
         {"name": "Watch", "keywords": [{"value": "Supersuckers"}], "station_ids": ["hertz879"]}
     )
-    campaign_id = database.create_campaign(payload, datetime.now(timezone.utc))
+    campaign_id = database.create_campaign(payload, datetime.now(UTC))
     binding = database.active_bindings()[0]
     transcript_key = "transcripts/hertz879/2026/07/13/chunk/segment.transcript.json"
     fake_s3.put_json(
@@ -54,8 +54,8 @@ def test_analysis_is_cached_and_detail_validates(settings, database, fake_s3) ->
                         {"word": " This"}, {"word": " is"}, {"word": " the"},
                         {"word": " complete"}, {"word": " transcript"}, {"word": " about"},
                         {"word": " the"},
-                        {"word": " Super", "broadcast_start_utc": "2026-07-13T01:00:03Z", "broadcast_end_utc": "2026-07-13T01:00:03.4Z"},
-                        {"word": " Suckers.", "broadcast_start_utc": "2026-07-13T01:00:03.4Z", "broadcast_end_utc": "2026-07-13T01:00:04Z"},
+                        {"word": " Super", "broadcast_start_utc": "2026-07-13T01:00:03Z", "broadcast_end_utc": "2026-07-13T01:00:03.4Z"},  # noqa: E501
+                        {"word": " Suckers.", "broadcast_start_utc": "2026-07-13T01:00:03.4Z", "broadcast_end_utc": "2026-07-13T01:00:04Z"},  # noqa: E501
                     ],
                 }
             ],
@@ -142,7 +142,7 @@ def test_detail_is_nonblocking_and_shared_worker_performs_analysis(settings, dat
     payload = CampaignCreate.model_validate(
         {"name": "Pending watch", "keywords": [{"value": "TechSara"}], "station_ids": ["hertz879"]}
     )
-    campaign_id = database.create_campaign(payload, datetime.now(timezone.utc))
+    campaign_id = database.create_campaign(payload, datetime.now(UTC))
     binding = database.active_bindings()[0]
     transcript_key = "transcripts/hertz879/2026/07/13/chunk2/segment.transcript.json"
     fake_s3.put_json(

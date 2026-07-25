@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 
 from app.models import CampaignCreate
 
@@ -14,7 +14,7 @@ def test_campaign_round_trip(database) -> None:
             "station_ids": ["hertz879"],
         }
     )
-    campaign_id = database.create_campaign(payload, datetime.now(timezone.utc))
+    campaign_id = database.create_campaign(payload, datetime.now(UTC))
     campaign = database.get_campaign(campaign_id)
     assert campaign is not None
     assert campaign["name"] == "Supersuckers test"
@@ -27,7 +27,7 @@ def test_delete_campaign_cascades(database) -> None:
     payload = CampaignCreate.model_validate(
         {"name": "Delete me", "keywords": [{"value": "Brand"}], "station_ids": ["hertz879"]}
     )
-    campaign_id = database.create_campaign(payload, datetime.now(timezone.utc))
+    campaign_id = database.create_campaign(payload, datetime.now(UTC))
     assert database.delete_campaign(campaign_id) is True
     assert database.get_campaign(campaign_id) is None
 

@@ -17,8 +17,9 @@ import time
 import urllib.error
 import urllib.parse
 import urllib.request
-from datetime import datetime, timezone
-from typing import Any, Iterator
+from collections.abc import Iterator
+from datetime import UTC, datetime
+from typing import Any
 
 from ..config import Settings
 from ..db_catalog import CatalogStore
@@ -84,7 +85,7 @@ class PreviewService:
         self._store.record_preview_audit(station_uuid, "token_issued", None)
         return {
             "token": f"{body}.{signature}",
-            "expires_at_utc": datetime.fromtimestamp(expires, tz=timezone.utc),
+            "expires_at_utc": datetime.fromtimestamp(expires, tz=UTC),
             "max_seconds": self._settings.RADIO_PREVIEW_MAX_SECONDS,
         }
 

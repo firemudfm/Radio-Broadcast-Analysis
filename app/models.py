@@ -49,7 +49,7 @@ class KeywordInput(ApiModel):
         return output
 
     @model_validator(mode="after")
-    def set_semantic_default(self) -> "KeywordInput":
+    def set_semantic_default(self) -> KeywordInput:
         # Cross-language meaning matching is useful for concepts/topics, while
         # brand/person/product names remain exact/alias-first unless explicitly enabled.
         if self.semantic_matching is None:
@@ -78,7 +78,7 @@ class CampaignCreate(ApiModel):
     # Legacy pre-v0.4 contract: pipeline station ids (e.g. "hertz879"). Still
     # accepted. New callers send station_selection instead.
     station_ids: list[str] = Field(default_factory=list, max_length=100)
-    station_selection: "StationSelection | None" = None
+    station_selection: StationSelection | None = None
     backfill_days: int = Field(default=7, ge=0, le=14)
 
     @field_validator("station_ids")
@@ -95,7 +95,7 @@ class CampaignCreate(ApiModel):
         return output
 
     @model_validator(mode="after")
-    def require_station_source(self) -> "CampaignCreate":
+    def require_station_source(self) -> CampaignCreate:
         if not self.station_ids and self.station_selection is None:
             raise ValueError("Provide station_ids (legacy) or station_selection")
         return self
@@ -152,7 +152,7 @@ class CampaignView(ApiModel):
     stations: list[StationView]
     keywords: list[KeywordView]
     mentions_7d: int
-    selection: "CampaignSelectionSummary | None" = None
+    selection: CampaignSelectionSummary | None = None
     created_at: datetime
     updated_at: datetime
 

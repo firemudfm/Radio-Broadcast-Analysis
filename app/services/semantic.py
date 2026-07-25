@@ -5,7 +5,7 @@ import json
 import logging
 import re
 from collections import defaultdict
-from datetime import datetime, timedelta, timezone
+from datetime import UTC, datetime, timedelta
 from pathlib import PurePosixPath
 from typing import Any
 
@@ -19,20 +19,20 @@ logger = logging.getLogger(__name__)
 
 def _datetime(value: Any) -> datetime | None:
     if isinstance(value, datetime):
-        return value if value.tzinfo else value.replace(tzinfo=timezone.utc)
+        return value if value.tzinfo else value.replace(tzinfo=UTC)
     if not isinstance(value, str) or not value.strip():
         return None
     try:
         parsed = datetime.fromisoformat(value.strip().replace("Z", "+00:00"))
     except ValueError:
         return None
-    return parsed if parsed.tzinfo else parsed.replace(tzinfo=timezone.utc)
+    return parsed if parsed.tzinfo else parsed.replace(tzinfo=UTC)
 
 
 def _iso(value: datetime | None) -> str | None:
     if value is None:
         return None
-    return value.astimezone(timezone.utc).isoformat().replace("+00:00", "Z")
+    return value.astimezone(UTC).isoformat().replace("+00:00", "Z")
 
 
 def _float(value: Any) -> float | None:
@@ -235,10 +235,10 @@ class SemanticDiscoveryService:
         return stats
 
     def _transcript_groups(self) -> list[dict[str, Any]]:
-        cutoff = datetime.now(timezone.utc) - timedelta(
+        cutoff = datetime.now(UTC) - timedelta(
             days=self._settings.RADIO_SEMANTIC_SCAN_LOOKBACK_DAYS
         )
-        settled_before = datetime.now(timezone.utc) - timedelta(
+        settled_before = datetime.now(UTC) - timedelta(
             seconds=self._settings.RADIO_SEMANTIC_SETTLE_SECONDS
         )
         grouped: dict[str, list[dict[str, Any]]] = defaultdict(list)
@@ -428,14 +428,14 @@ class SemanticDiscoveryService:
                 "semantic_threshold": binding.get("semantic_threshold"),
             },
             "llm_match": result,
-            "processed_at_utc": _iso(datetime.now(timezone.utc)),
+            "processed_at_utc": _iso(datetime.now(UTC)),
         }
         return record, audit
 
     def _audit_key(self, group: dict[str, Any], binding: dict[str, Any]) -> str:
-        date = datetime.now(timezone.utc).strftime("%Y/%m/%d")
+        date = datetime.now(UTC).strftime("%Y/%m/%d")
         marker = hashlib.sha256(
-            f"{binding['keyword_id']}|{group['group_key']}".encode("utf-8")
+            f"{binding['keyword_id']}|{group['group_key']}".encode()
         ).hexdigest()[:20]
         return (
             f"{self._settings.RADIO_SEMANTIC_RESULTS_PREFIX}"

@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 import json
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 from typing import Any
 
 from ..config import Settings
@@ -23,7 +23,7 @@ class KeywordConfigService:
             for item in existing if isinstance(item, dict) and item.get("managed_by") != MANAGED_BY
         ]
         managed = self._managed_entities(self._database.active_bindings())
-        now = datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%SZ")
+        now = datetime.now(UTC).strftime("%Y%m%dT%H%M%SZ")
         output = {
             **document,
             "schema_version": "1.0",

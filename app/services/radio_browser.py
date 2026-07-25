@@ -86,7 +86,7 @@ def default_http_get(url: str, headers: dict[str, str], timeout: float, max_byte
     """Fetch ``url`` with urllib, capping the response at ``max_bytes``."""
     request = urllib.request.Request(url, headers=headers, method="GET")
     try:
-        with urllib.request.urlopen(request, timeout=timeout) as response:
+        with urllib.request.urlopen(request, timeout=timeout) as response:  # nosec B310 (https mirror URLs from the vetted pool)
             body = response.read(max_bytes + 1)
     except urllib.error.HTTPError as exc:
         try:

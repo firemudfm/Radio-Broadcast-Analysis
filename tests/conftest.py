@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import io
 import json
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any
 
@@ -18,7 +18,7 @@ class FakeBody(io.BytesIO):
 
 
 class FakePaginator:
-    def __init__(self, client: "FakeS3") -> None:
+    def __init__(self, client: FakeS3) -> None:
         self.client = client
 
     def paginate(self, *, Bucket: str, Prefix: str):
@@ -28,7 +28,7 @@ class FakePaginator:
                 rows.append(
                     {
                         "Key": key,
-                        "LastModified": value.get("LastModified", datetime.now(timezone.utc)),
+                        "LastModified": value.get("LastModified", datetime.now(UTC)),
                         "ETag": value.get("ETag", '"etag"'),
                     }
                 )
@@ -48,7 +48,7 @@ class FakeS3:
             "Body": json.dumps(value).encode(),
             "ContentType": "application/json",
             "ETag": f'"{etag}"',
-            "LastModified": datetime.now(timezone.utc),
+            "LastModified": datetime.now(UTC),
         }
 
     def put_bytes(self, key: str, value: bytes, *, content_type: str = "audio/wav") -> None:
@@ -56,7 +56,7 @@ class FakeS3:
             "Body": value,
             "ContentType": content_type,
             "ETag": '"audio"',
-            "LastModified": datetime.now(timezone.utc),
+            "LastModified": datetime.now(UTC),
         }
 
     def get_paginator(self, name: str) -> FakePaginator:
@@ -100,7 +100,7 @@ class FakeS3:
             "Body": bytes(Body),
             "ContentType": ContentType,
             "ETag": '"put"',
-            "LastModified": datetime.now(timezone.utc),
+            "LastModified": datetime.now(UTC),
         }
         return {"ETag": '"put"'}
 

@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 import asyncio
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 
 from fastapi import APIRouter, Header, HTTPException, Query, Request, Response, status
 
@@ -118,7 +118,6 @@ async def list_campaigns(request: Request) -> CampaignListResponse:
 async def create_campaign(payload: CampaignCreate, request: Request) -> CampaignView:
     import asyncio
 
-    from ..db_catalog import local_station_id_for
     from ..services.monitoring import MonitoringError
     from ..services.radio_browser import RadioBrowserError
 
@@ -298,7 +297,7 @@ async def dashboard(
         mentions=mentions,
         sentiment=SentimentSummary.model_validate(sentiment),
         total_mentions=total,
-        generated_at_utc=datetime.now(timezone.utc),
+        generated_at_utc=datetime.now(UTC),
         mention_window_days=request.app.state.settings.RADIO_MENTION_WINDOW_DAYS,
     )
 

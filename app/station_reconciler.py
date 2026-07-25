@@ -18,15 +18,15 @@ import shlex
 import subprocess
 import sys
 import time
-from datetime import datetime, timezone
+from collections.abc import Callable
 from pathlib import Path
-from typing import Any, Callable
+from typing import Any
 
 from .config import Settings, get_settings
 from .db import Database
 from .db_catalog import CatalogStore
 from .services.net_safety import MAX_REDIRECTS, NetSafetyError, validate_public_http_url
-from .services.radio_browser import RadioBrowserClient, RadioBrowserError
+from .services.radio_browser import RadioBrowserClient
 
 log = logging.getLogger("station-reconciler")
 

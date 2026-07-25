@@ -4,7 +4,7 @@ import json
 import re
 import unicodedata
 from dataclasses import dataclass
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 from pathlib import PurePosixPath
 from typing import Any
 
@@ -13,14 +13,14 @@ from ..config import Settings
 
 def _datetime(value: Any) -> datetime | None:
     if isinstance(value, datetime):
-        return value if value.tzinfo else value.replace(tzinfo=timezone.utc)
+        return value if value.tzinfo else value.replace(tzinfo=UTC)
     if not isinstance(value, str) or not value.strip():
         return None
     try:
         parsed = datetime.fromisoformat(value.strip().replace("Z", "+00:00"))
     except ValueError:
         return None
-    return parsed if parsed.tzinfo else parsed.replace(tzinfo=timezone.utc)
+    return parsed if parsed.tzinfo else parsed.replace(tzinfo=UTC)
 
 
 def _float(value: Any) -> float | None:
@@ -377,14 +377,14 @@ class ConversationService:
         def can_include(candidate_left: int, candidate_right: int) -> bool:
             start = self._document_start(documents[candidate_left][1])
             end = self._document_end(documents[candidate_right][1])
-            if start == datetime.max.replace(tzinfo=timezone.utc) or end is None:
+            if start == datetime.max.replace(tzinfo=UTC) or end is None:
                 return False
             return (end - start).total_seconds() <= duration_limit
 
         while left > 0:
             previous_end = self._document_end(documents[left - 1][1])
             current_start = self._document_start(documents[left][1])
-            if previous_end is None or current_start == datetime.max.replace(tzinfo=timezone.utc):
+            if previous_end is None or current_start == datetime.max.replace(tzinfo=UTC):
                 break
             if (current_start - previous_end).total_seconds() > gap_limit:
                 break
@@ -395,7 +395,7 @@ class ConversationService:
         while right + 1 < len(documents):
             current_end = self._document_end(documents[right][1])
             next_start = self._document_start(documents[right + 1][1])
-            if current_end is None or next_start == datetime.max.replace(tzinfo=timezone.utc):
+            if current_end is None or next_start == datetime.max.replace(tzinfo=UTC):
                 break
             if (next_start - current_end).total_seconds() > gap_limit:
                 break
@@ -416,7 +416,7 @@ class ConversationService:
                 value = _datetime(segment.get("broadcast_start_utc"))
                 if value:
                     return value
-        return datetime.max.replace(tzinfo=timezone.utc)
+        return datetime.max.replace(tzinfo=UTC)
 
     @staticmethod
     def _document_end(document: dict[str, Any]) -> datetime | None:
@@ -433,7 +433,7 @@ class ConversationService:
         if values:
             return max(values)
         start = ConversationService._document_start(document)
-        return None if start == datetime.max.replace(tzinfo=timezone.utc) else start
+        return None if start == datetime.max.replace(tzinfo=UTC) else start
 
     @staticmethod
     def _sentence_for_span(text: str, start: int, end: int) -> str | None:

@@ -1,46 +1,115 @@
-name: Test and deploy
+name: CD
 
+# Chained pipeline: runs automatically after CI succeeds on main, and deploys
+# exactly the commit CI tested. Manual runs are possible from the Actions tab.
 on:
-  push:
+  workflow_run:
+    workflows: [CI]
+    types: [completed]
     branches: [main]
   workflow_dispatch:
 
+concurrency:
+  group: production-deploy
+  cancel-in-progress: false
+
+env:
+  DEPLOY_SHA: ${{ github.event.workflow_run.head_sha || github.sha }}
+
 jobs:
-  test:
+  preflight:
+    name: Preflight checks
+    if: github.event_name == 'workflow_dispatch' || github.event.workflow_run.conclusion == 'success'
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
-      - uses: actions/setup-python@v5
-        with:
-          python-version: "3.12"
-      - name: Install dependencies
-        run: pip install -r requirements.txt -r requirements-dev.txt
-      - name: Run test suite
-        run: python -m pytest tests/ -q
-
-  deploy:
-    needs: test
-    runs-on: ubuntu-latest
-    # One deploy at a time; a second push waits instead of racing the first.
-    concurrency: deploy-ec2
-    steps:
-      - uses: actions/checkout@v4
-
       - name: Load SSH key
         run: |
           mkdir -p ~/.ssh
           printf '%s\n' "${{ secrets.EC2_SSH_KEY }}" > ~/.ssh/deploy_key
           chmod 600 ~/.ssh/deploy_key
           ssh-keyscan -H "${{ secrets.EC2_HOST }}" >> ~/.ssh/known_hosts 2>/dev/null
+      - name: Instance reachable, disk and services sane
+        run: |
+          ssh -i ~/.ssh/deploy_key -o ConnectTimeout=15 ec2-user@${{ secrets.EC2_HOST }} '
+            set -e
+            echo "host: $(hostname)"
+            df -h / | tail -1
+            used=$(df --output=pcent / | tail -1 | tr -dc 0-9)
+            [ "$used" -lt 90 ] || { echo "Disk usage ${used}% is too high to deploy"; exit 1; }
+            systemctl is-active radio-intelligence-api radio-station-reconciler radio-analysis-worker
+            curl -sf --max-time 10 http://127.0.0.1:8788/healthz > /dev/null
+            echo "preflight OK"
+          '
 
+  deploy:
+    name: Deploy to EC2
+    needs: preflight
+    runs-on: ubuntu-latest
+    environment: production
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ env.DEPLOY_SHA }}
+      - name: Load SSH key
+        run: |
+          mkdir -p ~/.ssh
+          printf '%s\n' "${{ secrets.EC2_SSH_KEY }}" > ~/.ssh/deploy_key
+          chmod 600 ~/.ssh/deploy_key
+          ssh-keyscan -H "${{ secrets.EC2_HOST }}" >> ~/.ssh/known_hosts 2>/dev/null
       - name: Sync code to the instance
         run: |
           rsync -az --delete \
             -e "ssh -i ~/.ssh/deploy_key" \
             app requirements.txt deploy \
             ec2-user@${{ secrets.EC2_HOST }}:/tmp/radio-ci-deploy/
-
-      - name: Apply on the instance (install, restart, health check, rollback on failure)
+      - name: Apply on the instance (compile check, install, restart, health check)
         run: |
           ssh -i ~/.ssh/deploy_key ec2-user@${{ secrets.EC2_HOST }} \
             'bash /tmp/radio-ci-deploy/deploy/ci-deploy.sh'
+      - name: Deployment summary
+        if: success()
+        run: |
+          {
+            echo "## Deployed to production"
+            echo ""
+            echo "- Commit: \`${{ env.DEPLOY_SHA }}\`"
+            echo "- Services restarted: radio-intelligence-api, radio-station-reconciler, radio-analysis-worker"
+          } >> "$GITHUB_STEP_SUMMARY"
+
+  verify:
+    name: Live smoke tests
+    needs: deploy
+    runs-on: ubuntu-latest
+    steps:
+      - name: API answers with healthy components
+        run: |
+          body=$(curl -sf --max-time 15 "http://${{ secrets.EC2_HOST }}:8788/healthz")
+          echo "$body"
+          echo "$body" | jq -e '.status == "ok" and .database == "ok" and .s3 == "ok"' > /dev/null
+      - name: Capacity endpoint is coherent
+        run: |
+          body=$(curl -sf --max-time 15 "http://${{ secrets.EC2_HOST }}:8788/api/v1/monitoring/capacity")
+          echo "$body"
+          echo "$body" | jq -e '.active_station_limit >= 1 and (.active_stations | type == "number")' > /dev/null
+      - name: Dashboard endpoint returns campaigns
+        run: |
+          curl -sf --max-time 20 "http://${{ secrets.EC2_HOST }}:8788/api/v1/brand-signal/dashboard?mention_limit=1" \
+            | jq -e '.campaigns | type == "array"' > /dev/null
+          echo "smoke tests OK"
+
+  rollback-on-failure:
+    name: Roll back failed deploy
+    needs: [deploy, verify]
+    if: failure() && needs.preflight.result == 'success'
+    runs-on: ubuntu-latest
+    steps:
+      - name: Load SSH key
+        run: |
+          mkdir -p ~/.ssh
+          printf '%s\n' "${{ secrets.EC2_SSH_KEY }}" > ~/.ssh/deploy_key
+          chmod 600 ~/.ssh/deploy_key
+          ssh-keyscan -H "${{ secrets.EC2_HOST }}" >> ~/.ssh/known_hosts 2>/dev/null
+      - name: Restore previous release
+        run: |
+          ssh -i ~/.ssh/deploy_key ec2-user@${{ secrets.EC2_HOST }} \
+            'bash /tmp/radio-ci-deploy/deploy/ci-rollback.sh'

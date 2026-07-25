@@ -37,7 +37,7 @@ import sys
 import uuid
 import zipfile
 from dataclasses import dataclass
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any
 from urllib.parse import urlparse
@@ -267,7 +267,7 @@ def _write_json(path: Path, payload: dict[str, Any]) -> None:
 def write_outputs(data: OverlayData, zip_path: Path, out_dir: Path) -> tuple[Path, Path]:
     """Write both overlay files into ``out_dir`` and return their paths."""
     out_dir.mkdir(parents=True, exist_ok=True)
-    metadata = build_metadata(zip_path, data, datetime.now(timezone.utc))
+    metadata = build_metadata(zip_path, data, datetime.now(UTC))
     overrides_path = out_dir / OVERRIDES_FILENAME
     deletions_path = out_dir / DELETIONS_FILENAME
     _write_json(overrides_path, {"metadata": metadata, "overrides": data.overrides})

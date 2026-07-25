@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 import asyncio
-from datetime import datetime, timedelta, timezone
+from datetime import UTC, datetime, timedelta
 from typing import Any
 
 from ..models import CampaignCreate, CampaignUpdate
@@ -38,7 +38,7 @@ class CampaignService:
         missing = [station_id for station_id in payload.station_ids if station_id not in station_map]
         if missing:
             raise ValueError(f"Unknown or disconnected station: {', '.join(missing)}")
-        monitor_from = datetime.now(timezone.utc) - timedelta(days=payload.backfill_days)
+        monitor_from = datetime.now(UTC) - timedelta(days=payload.backfill_days)
         campaign_id = await asyncio.to_thread(
             self._database.create_campaign, payload, monitor_from
         )

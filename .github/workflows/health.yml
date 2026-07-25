@@ -1,0 +1,40 @@
+name: Health monitor
+
+# Scheduled production check. A red run means the instance needs attention;
+# GitHub emails the repo owner when a scheduled workflow fails.
+on:
+  schedule:
+    - cron: "17 */6 * * *"
+  workflow_dispatch:
+
+jobs:
+  check:
+    name: Instance and API health
+    runs-on: ubuntu-latest
+    steps:
+      - name: Load SSH key
+        run: |
+          mkdir -p ~/.ssh
+          printf '%s\n' "${{ secrets.EC2_SSH_KEY }}" > ~/.ssh/deploy_key
+          chmod 600 ~/.ssh/deploy_key
+          ssh-keyscan -H "${{ secrets.EC2_HOST }}" >> ~/.ssh/known_hosts 2>/dev/null
+      - name: Services, disk, memory, and recent errors
+        run: |
+          ssh -i ~/.ssh/deploy_key -o ConnectTimeout=15 ec2-user@${{ secrets.EC2_HOST }} '
+            set -e
+            failed=$(systemctl --failed --no-legend | wc -l)
+            [ "$failed" -eq 0 ] || { systemctl --failed --no-pager; exit 1; }
+            systemctl is-active radio-intelligence-api radio-station-reconciler radio-analysis-worker radio-llm
+            used=$(df --output=pcent / | tail -1 | tr -dc 0-9)
+            echo "disk used: ${used}%"
+            [ "$used" -lt 90 ] || { echo "Disk critically full"; exit 1; }
+            free -h | head -2
+            errors=$(sudo journalctl -u radio-intelligence-api -u radio-station-reconciler \
+              --since "6 hours ago" -p err --no-pager -q | wc -l)
+            echo "journal error lines (6h): $errors"
+            [ "$errors" -lt 20 ] || { echo "Too many recent errors"; exit 1; }
+          '
+      - name: Public API health
+        run: |
+          curl -sf --max-time 15 "http://${{ secrets.EC2_HOST }}:8788/healthz" \
+            | jq -e '.status == "ok" and .database == "ok" and .s3 == "ok"'

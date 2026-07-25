@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 import asyncio
-from datetime import datetime, timedelta, timezone
+from datetime import UTC, datetime, timedelta
 
 from app.models import CampaignCreate
 from app.services.stations import StationService
@@ -20,9 +20,9 @@ def test_sync_materializes_campaign_mention(settings, database, fake_s3) -> None
             "backfill_days": 7,
         }
     )
-    database.create_campaign(payload, datetime.now(timezone.utc) - timedelta(days=1))
+    database.create_campaign(payload, datetime.now(UTC) - timedelta(days=1))
     binding = database.active_bindings()[0]
-    now = datetime.now(timezone.utc)
+    now = datetime.now(UTC)
     result_key = "results/intelligence/hertz879/2026/07/13/test.intelligence.json"
     fake_s3.put_json(
         result_key,
@@ -70,7 +70,7 @@ def test_sync_is_idempotent(settings, database, fake_s3) -> None:
     payload = CampaignCreate.model_validate(
         {"name": "Watch", "keywords": [{"value": "Brand"}], "station_ids": ["hertz879"]}
     )
-    database.create_campaign(payload, datetime.now(timezone.utc) - timedelta(days=1))
+    database.create_campaign(payload, datetime.now(UTC) - timedelta(days=1))
     fake_s3.put_json(
         "results/intelligence/hertz879/one.json",
         {"source": {"station_id": "hertz879"}, "mentions": []},

@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+from datetime import UTC
 from typing import Any
 
 import pytest
@@ -216,14 +217,14 @@ def test_explicit_selection_over_campaign_cap_rejected(monitoring, settings) -> 
 
 
 def _campaign(database, name: str) -> str:
-    from datetime import datetime, timedelta, timezone
+    from datetime import datetime, timedelta
 
     from app.models import CampaignCreate
 
     payload = CampaignCreate.model_validate(
         {"name": name, "keywords": [{"value": "X" + name}], "station_ids": ["seed"]}
     )
-    return database.create_campaign(payload, datetime.now(timezone.utc) - timedelta(days=1))
+    return database.create_campaign(payload, datetime.now(UTC) - timedelta(days=1))
 
 
 def test_shared_station_reference_counting(database, store, settings) -> None:

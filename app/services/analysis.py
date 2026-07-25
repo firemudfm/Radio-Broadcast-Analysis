@@ -3,7 +3,7 @@ from __future__ import annotations
 import hashlib
 import json
 import logging
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 from typing import Any
 
 from ..config import Settings
@@ -245,7 +245,7 @@ class MentionAnalysisService:
                 "evidence": [],
                 "confidence": None,
                 "needs_review": True,
-                "generated_at_utc": datetime.now(timezone.utc),
+                "generated_at_utc": datetime.now(UTC),
                 "error": message,
             }
 

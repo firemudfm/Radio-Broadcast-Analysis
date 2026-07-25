@@ -1,8 +1,7 @@
 from __future__ import annotations
 
 import asyncio
-from datetime import datetime, timezone
-from types import SimpleNamespace
+from datetime import UTC, datetime
 
 from app.models import CampaignCreate
 from app.services.audio import AudioService
@@ -18,7 +17,7 @@ def test_audio_token_and_range(settings, database, fake_s3) -> None:
     payload = CampaignCreate.model_validate(
         {"name": "Watch", "keywords": [{"value": "Brand"}], "station_ids": ["hertz879"]}
     )
-    campaign_id = database.create_campaign(payload, datetime.now(timezone.utc))
+    campaign_id = database.create_campaign(payload, datetime.now(UTC))
     binding = database.active_bindings()[0]
     record = {
         "campaign_id": campaign_id,
