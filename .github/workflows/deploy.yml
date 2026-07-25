@@ -56,9 +56,14 @@ jobs:
           printf '%s\n' "${{ secrets.EC2_SSH_KEY }}" > ~/.ssh/deploy_key
           chmod 600 ~/.ssh/deploy_key
           ssh-keyscan -H "${{ secrets.EC2_HOST }}" >> ~/.ssh/known_hosts 2>/dev/null
+      - name: Prepare a clean staging directory
+        run: |
+          ssh -i ~/.ssh/deploy_key ec2-user@${{ secrets.EC2_HOST }} \
+            'sudo rm -rf /tmp/radio-ci-deploy && mkdir -p /tmp/radio-ci-deploy'
       - name: Sync code to the instance
         run: |
           rsync -az --delete \
+            --exclude '__pycache__' --exclude '*.pyc' \
             -e "ssh -i ~/.ssh/deploy_key" \
             app requirements.txt deploy \
             ec2-user@${{ secrets.EC2_HOST }}:/tmp/radio-ci-deploy/
@@ -99,7 +104,7 @@ jobs:
 
   rollback-on-failure:
     name: Roll back failed deploy
-    needs: [deploy, verify]
+    needs: [preflight, deploy, verify]
     if: failure() && needs.preflight.result == 'success'
     runs-on: ubuntu-latest
     steps:
