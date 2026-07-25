@@ -1,6 +1,6 @@
 # Radio Broadcast Analysis
 
-A self-hosted radio intelligence backend. It records live radio stations, filters speech from music, transcribes it with a multilingual model, matches campaign keywords (exact and semantic, across languages), scores sentiment, and serves everything through a FastAPI service that a web dashboard consumes.
+A self-hosted radio intelligence backend. It records live radio stations, filters speech from music, transcribes it with a multilingual model, matches campaign keywords (exact and semantic, across languages), scores sentiment, and serves everything through a FastAPI service that a web dashboard consumes
 
 Everything runs on one EC2 instance with a local LLM. No external AI APIs are called.
 
