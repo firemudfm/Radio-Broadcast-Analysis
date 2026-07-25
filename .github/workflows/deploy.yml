@@ -1,0 +1,46 @@
+name: Test and deploy
+
+on:
+  push:
+    branches: [main]
+  workflow_dispatch:
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - name: Install dependencies
+        run: pip install -r requirements.txt -r requirements-dev.txt
+      - name: Run test suite
+        run: python -m pytest tests/ -q
+
+  deploy:
+    needs: test
+    runs-on: ubuntu-latest
+    # One deploy at a time; a second push waits instead of racing the first.
+    concurrency: deploy-ec2
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Load SSH key
+        run: |
+          mkdir -p ~/.ssh
+          printf '%s\n' "${{ secrets.EC2_SSH_KEY }}" > ~/.ssh/deploy_key
+          chmod 600 ~/.ssh/deploy_key
+          ssh-keyscan -H "${{ secrets.EC2_HOST }}" >> ~/.ssh/known_hosts 2>/dev/null
+
+      - name: Sync code to the instance
+        run: |
+          rsync -az --delete \
+            -e "ssh -i ~/.ssh/deploy_key" \
+            app requirements.txt deploy \
+            ec2-user@${{ secrets.EC2_HOST }}:/tmp/radio-ci-deploy/
+
+      - name: Apply on the instance (install, restart, health check, rollback on failure)
+        run: |
+          ssh -i ~/.ssh/deploy_key ec2-user@${{ secrets.EC2_HOST }} \
+            'bash /tmp/radio-ci-deploy/deploy/ci-deploy.sh'

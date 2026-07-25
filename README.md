@@ -121,6 +121,28 @@ Watch live logs:
 sudo journalctl -f -u 'radio-*'
 ```
 
+## CI/CD
+
+Every push to `main` runs `.github/workflows/deploy.yml`:
+
+1. **test**: installs requirements and runs the full pytest suite on a GitHub runner.
+2. **deploy** (only if tests pass): rsyncs `app/` + `requirements.txt` to the EC2 instance over SSH and runs `deploy/ci-deploy.sh` there, which compile-checks the new code, installs dependencies, swaps the code in, restarts `radio-intelligence-api`, `radio-station-reconciler`, and `radio-analysis-worker`, and verifies `/healthz`. If the health check fails, it rolls back to the previous code automatically and the workflow turns red.
+
+Per-station capture/uploader/worker units are not restarted by deploys; they run the separate ingestion package and keep recording through an API deploy.
+
+One-time setup (repo Settings, then Secrets and variables, then Actions):
+
+| Secret | Value |
+|---|---|
+| `EC2_HOST` | The instance public IP or DNS name |
+| `EC2_SSH_KEY` | The full contents of the instance's private key file (PEM) |
+
+Notes:
+
+- Without an Elastic IP, the instance IP changes on every stop/start and `EC2_HOST` must be updated to match. Allocating an Elastic IP removes that chore.
+- The instance security group must allow SSH (port 22) from GitHub-hosted runners for the deploy job to connect.
+- You can also trigger the pipeline manually from the Actions tab (`workflow_dispatch`).
+
 ## Security notes
 
 - This is an open pilot: `auth_mode=none`, no sign-in. Restrict the API port (8788) and SSH (22) to trusted IPs in your security group before exposing the instance anywhere.
