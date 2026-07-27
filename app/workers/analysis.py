@@ -242,12 +242,18 @@ class AnalysisWorker(BaseWorker):
     def _campaign_policies(self, campaign_ids: list[str]) -> dict[str, dict[str, bool]]:
         if not campaign_ids:
             return {}
+        # `placeholders` is built from the COUNT of ids only -- it can never be
+        # anything but "?,?,?". Every campaign id travels as a bound parameter,
+        # so no caller-supplied text reaches the SQL text. The id count is
+        # bounded by MAX_CAMPAIGN_IDS in the message contract, which is what
+        # keeps the statement from growing without limit.
         placeholders = ",".join("?" for _ in campaign_ids)
-        rows = self.database.read_all(
-            f"SELECT campaign_id, policy_json FROM campaign_content_policies"  # noqa: S608 - placeholders only
-            f" WHERE campaign_id IN ({placeholders})",
-            tuple(campaign_ids),
+        sql = (
+            "SELECT campaign_id, policy_json"  # nosec B608 (only '?' is interpolated)
+            " FROM campaign_content_policies"
+            f" WHERE campaign_id IN ({placeholders})"
         )
+        rows = self.database.read_all(sql, tuple(campaign_ids))
         policies: dict[str, dict[str, bool]] = {}
         for row in rows:
             try:
