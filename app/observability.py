@@ -152,14 +152,27 @@ def configure_logging(
     root.setLevel(resolved)
 
 
-def log_fields(**fields: Any) -> dict[str, Any]:
-    """Build an ``extra=`` mapping, dropping Nones and redacting secrets."""
+def safe_extra(fields: dict[str, Any]) -> dict[str, Any]:
+    """Make a mapping safe to pass to ``logging`` as ``extra=``.
+
+    ``logging.Logger.makeRecord`` raises ``KeyError`` if ``extra`` contains a
+    reserved ``LogRecord`` attribute (``created``, ``name``, ``module``,
+    ``process``, ...). That turns an innocuous metrics dict into a runtime
+    crash on the logging call, so reserved keys are prefixed rather than
+    allowed through.
+    """
     output: dict[str, Any] = {}
     for key, value in fields.items():
         if value is None:
             continue
-        output[key] = _REDACTED if key.lower() in _REDACTED_KEYS else _safe(value)
+        safe_key = f"field_{key}" if key in _LOG_RECORD_BUILTINS else key
+        output[safe_key] = _REDACTED if key.lower() in _REDACTED_KEYS else _safe(value)
     return output
+
+
+def log_fields(**fields: Any) -> dict[str, Any]:
+    """Build an ``extra=`` mapping, dropping Nones and redacting secrets."""
+    return safe_extra(fields)
 
 
 __all__ = [
@@ -169,6 +182,7 @@ __all__ = [
     "configure_logging",
     "current_trace_id",
     "log_fields",
+    "safe_extra",
     "set_trace_id",
     "trace_context",
 ]
