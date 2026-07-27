@@ -1,9 +1,11 @@
 from __future__ import annotations
 
 import json
+import random
 import sqlite3
 import threading
-from collections.abc import Iterator
+import time
+from collections.abc import Callable, Iterator
 from contextlib import contextmanager
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
@@ -132,18 +134,81 @@ def iso(value: datetime) -> str:
     return value.astimezone(UTC).isoformat().replace("+00:00", "Z")
 
 
+#: Applied to EVERY connection in EVERY process.
+#:
+#: journal_mode is a database-level setting and persists, but the other three
+#: are per-connection: a worker that opens its own connection and does not set
+#: them runs with SQLite's defaults (`synchronous=FULL`, no busy handler)
+#: regardless of what any other process configured. That was the gap this
+#: closes (ADR-004).
+CONNECTION_PRAGMAS: tuple[tuple[str, str], ...] = (
+    ("journal_mode", "WAL"),
+    ("foreign_keys", "ON"),
+    ("busy_timeout", "30000"),
+    ("synchronous", "NORMAL"),
+)
+
+#: Marker substrings identifying a lock conflict. Anything else propagates
+#: immediately — a retry loop that swallows real errors is worse than none.
+_BUSY_MARKERS = ("database is locked", "database is busy", "database table is locked")
+
+
+def configure_connection(connection: sqlite3.Connection) -> None:
+    """Apply the required pragmas to a freshly opened connection."""
+    for pragma, value in CONNECTION_PRAGMAS:
+        connection.execute(f"PRAGMA {pragma} = {value}")  # nosec B608 (fixed literals)
+
+
+def is_busy_error(error: BaseException) -> bool:
+    """Whether ``error`` is a transient SQLite lock conflict."""
+    if not isinstance(error, sqlite3.OperationalError):
+        return False
+    message = str(error).lower()
+    return any(marker in message for marker in _BUSY_MARKERS)
+
+
+def retry_on_busy(
+    operation: Callable[[], Any],
+    *,
+    retries: int = 5,
+    base_delay: float = 0.05,
+    max_delay: float = 1.0,
+    sleep: Callable[[float], None] = time.sleep,
+    random_source: Callable[[], float] | None = None,
+) -> Any:
+    """Run ``operation``, retrying only on SQLITE_BUSY.
+
+    Exponential backoff with full jitter. Jitter matters: without it, several
+    workers that collide once tend to collide again on the same schedule.
+    """
+    jitter = random_source or random.random
+    attempt = 0
+    while True:
+        try:
+            return operation()
+        except sqlite3.OperationalError as error:
+            if not is_busy_error(error) or attempt >= retries:
+                raise
+            delay = min(max_delay, base_delay * (2**attempt)) * jitter()
+            attempt += 1
+            sleep(delay)
+
+
 class Database:
     def __init__(
         self,
         path: Path,
         mention_window_days: int = 7,
         mention_audio_pad_seconds: float = 2.0,
+        *,
+        busy_retries: int = 5,
     ) -> None:
         self._path = path
         self._connection: sqlite3.Connection | None = None
         self._lock = threading.RLock()
         self._mention_window_days = mention_window_days
         self._mention_audio_pad_seconds = mention_audio_pad_seconds
+        self._busy_retries = busy_retries
 
     def connect(self) -> None:
         self._path.parent.mkdir(parents=True, exist_ok=True)
@@ -151,12 +216,37 @@ class Database:
         connection.row_factory = sqlite3.Row
         with self._lock:
             self._connection = connection
+            configure_connection(connection)
             connection.executescript(SCHEMA)
+            # executescript issues an implicit COMMIT, which resets nothing here
+            # but does end any transaction; re-apply the per-connection pragmas
+            # so foreign_keys is definitely on for the session that follows.
+            configure_connection(connection)
             self._migrate(connection)
             connection.execute(
                 "INSERT OR IGNORE INTO app_meta(key, value) VALUES('campaign_revision', '0')"
             )
             connection.commit()
+            self._run_versioned_migrations(connection)
+
+    @staticmethod
+    def _run_versioned_migrations(connection: sqlite3.Connection) -> None:
+        """Apply the versioned migration set (ADR-004).
+
+        Runs in BOTH pipeline modes on purpose: if migrations were mode-gated,
+        the two modes' schemas would diverge and switching modes would become a
+        data-migration event. Creating empty tables costs nothing; populating
+        them is what is mode-gated.
+        """
+        from .migrations import run_migrations
+
+        run_migrations(connection)
+
+    def pragma(self, name: str) -> Any:
+        """Read back a pragma. Used by tests and readiness checks."""
+        with self._lock:
+            row = self._conn().execute(f"PRAGMA {name}").fetchone()  # nosec B608 (caller-fixed name)
+            return row[0] if row else None
 
     @staticmethod
     def _migrate(connection: sqlite3.Connection) -> None:
@@ -180,6 +270,12 @@ class Database:
 
     @contextmanager
     def transaction(self) -> Iterator[sqlite3.Connection]:
+        """Short write transaction.
+
+        Holds the process-wide RLock for the whole block, so no network,
+        subprocess or model I/O may happen inside it (ADR-004 §3). One slow
+        transaction stalls every thread in the process, not just the writer.
+        """
         with self._lock:
             if self._connection is None:
                 raise RuntimeError("Database is not connected")
@@ -190,6 +286,27 @@ class Database:
             except Exception:
                 self._connection.rollback()
                 raise
+
+    def write(self, operation: Callable[[sqlite3.Connection], Any]) -> Any:
+        """Run a short write transaction with SQLITE_BUSY retry.
+
+        ``operation`` must be idempotent with respect to a retry: it may be
+        invoked more than once when a lock conflict occurs.
+        """
+
+        def attempt() -> Any:
+            with self.transaction() as connection:
+                return operation(connection)
+
+        return retry_on_busy(attempt, retries=self._busy_retries)
+
+    def read_all(self, sql: str, args: tuple | list = ()) -> list[sqlite3.Row]:
+        with self._lock:
+            return list(self._conn().execute(sql, tuple(args)).fetchall())
+
+    def read_one(self, sql: str, args: tuple | list = ()) -> sqlite3.Row | None:
+        with self._lock:
+            return self._conn().execute(sql, tuple(args)).fetchone()
 
     def transaction_read(self, sql: str, args: tuple | list = ()) -> list[sqlite3.Row]:
         """Read-only helper for the v0.4 catalog store (see db_catalog.py)."""
