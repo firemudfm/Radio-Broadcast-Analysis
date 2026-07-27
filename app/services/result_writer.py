@@ -38,6 +38,7 @@ from __future__ import annotations
 import json
 import logging
 import sqlite3
+from collections.abc import Callable
 from dataclasses import dataclass, field
 from datetime import UTC, datetime
 from typing import Any
@@ -109,11 +110,17 @@ class ResultWriter:
         conversation: ClosedConversation,
         analysis: AnalysisResult,
         context: MentionContext | None = None,
+        *,
+        on_commit: Callable[[sqlite3.Connection], None] | None = None,
     ) -> WriteOutcome:
         """Commit the mention and all of its mappings in one short transaction.
 
         Short on purpose: no network, no S3, no model call happens inside it
         (ADR-004 §3). One slow transaction stalls every writer in the process.
+
+        ``on_commit`` runs inside that same transaction. The analysis worker
+        uses it to write its inbox row, so acknowledging the message and
+        recording the mention either both happen or neither does.
         """
         ctx = context or MentionContext()
         now = self._clock()
@@ -199,6 +206,8 @@ class ResultWriter:
             campaign_rows = self._write_campaign_rows(connection, conversation, ctx, resolved_id, stamp)
             keyword_rows = self._write_keyword_rows(connection, conversation, resolved_id, stamp)
             self._write_analysis(connection, resolved_id, analysis, stamp)
+            if on_commit is not None:
+                on_commit(connection)
 
             return WriteOutcome(
                 mention_id=resolved_id,

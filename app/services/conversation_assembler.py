@@ -33,6 +33,7 @@ so the class stays pure and testable while durability lives in the worker.
 from __future__ import annotations
 
 import logging
+import uuid
 from collections import deque
 from collections.abc import Iterable
 from dataclasses import dataclass, field
@@ -45,6 +46,25 @@ from ..pipeline.ids import new_id
 from .keyword_matcher import KeywordMatch
 
 logger = logging.getLogger(__name__)
+
+#: Namespace for deterministic conversation ids.
+_CONVERSATION_NAMESPACE = uuid.UUID("6f9619ff-8b86-d011-b42d-00c04fc964ff")
+
+
+def conversation_id_for(station_session_id: str, first_sequence_number: int) -> str:
+    """Derive a stable conversation id from where the conversation started.
+
+    Deterministic rather than random, and that matters for correctness rather
+    than tidiness. A redelivered segment processed by a *restarted* worker has
+    no in-memory assembler state to recognise it, so a random id would open a
+    second conversation and produce a duplicate mention. Deriving the id from
+    ``(station_session_id, first sequence number)`` makes the replay collide
+    with the original, and every downstream write is keyed on
+    ``conversation_id`` -- so the duplicate collapses into a no-op instead.
+    """
+    return str(
+        uuid.uuid5(_CONVERSATION_NAMESPACE, f"{station_session_id}:{first_sequence_number}")
+    )
 
 #: Cap on retained pre-roll segments per station, independent of the time
 #: window. A station emitting many very short segments must not grow the
@@ -243,7 +263,10 @@ class ConversationAssembler:
         """Start a conversation, reaching back for pre-keyword context."""
         preroll = self._preroll_for(station, segment)
         station.state = "open" if segment.matches else "candidate"
-        station.conversation_id = new_id()
+        first = preroll[0] if preroll else segment
+        station.conversation_id = conversation_id_for(
+            segment.station_session_id, first.sequence_number
+        )
         station.trace_id = segment.trace_id or new_id()
         station.segments = [*preroll, segment]
         station.matches = list(segment.matches)
@@ -478,4 +501,5 @@ __all__ = [
     "ClosedConversation",
     "ConversationAssembler",
     "TranscribedSegment",
+    "conversation_id_for",
 ]
