@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 from datetime import datetime
-from typing import Literal
+from typing import Any, Literal
 
 from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
 
@@ -310,6 +310,46 @@ class HealthView(ApiModel):
     auth_mode: Literal["none"] = "none"
     storage_mode: Literal["sqlite"] = "sqlite"
     version: str
+    # v0.5, additive. Absent in legacy deployments, so existing clients that
+    # ignore unknown fields are unaffected and no field changes meaning.
+    pipeline_mode: Literal["legacy", "shared_sqs"] = "legacy"
+    pipeline: dict[str, Any] | None = None
+
+
+class ReadinessView(ApiModel):
+    """Whether this node can do its job right now, as opposed to being alive."""
+
+    ready: bool
+    pipeline_mode: Literal["legacy", "shared_sqs"]
+    checks: dict[str, str]
+
+
+class PipelineStatusView(ApiModel):
+    """Shared-pipeline capacity and worker liveness."""
+
+    pipeline_mode: Literal["legacy", "shared_sqs"]
+    queue_backend: str
+    segment_store: str
+    queues_configured: bool
+    components: dict[str, str]
+    catalog_station_count: int
+    campaign_station_reference_count: int
+    unique_requested_station_count: int
+    unique_active_station_count: int
+    pending_capacity_station_count: int
+    reused_station_stream_count: int
+    active_unique_station_limit: int
+    worker_count: int
+    listener_shard_count: int
+    queue_age_seconds: float | None = None
+    spool_usage_percent: float = 0.0
+    spool_pressure: str = "ok"
+    listener_heartbeat: dict[str, Any] | None = None
+    transcription_worker_heartbeat: dict[str, Any] | None = None
+    analysis_worker_heartbeat: dict[str, Any] | None = None
+    planner_heartbeat: dict[str, Any] | None = None
+    outbox: dict[str, int] = Field(default_factory=dict)
+    shard_coverage: dict[str, Any] = Field(default_factory=dict)
 
 
 # v0.4 forward references (kept at the bottom to avoid an import cycle).

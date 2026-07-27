@@ -20,6 +20,7 @@ from .services.conversation import ConversationService
 from .services.keywords import KeywordConfigService
 from .services.llm import LocalLlmClient
 from .services.monitoring import MonitoringService
+from .services.pipeline_status import PipelineStatusService
 from .services.preview import PreviewService
 from .services.radio_browser import RadioBrowserClient
 from .services.stations import StationService
@@ -125,6 +126,23 @@ async def lifespan(app: FastAPI):
     app.state.catalog_service = catalog_service
     app.state.monitoring_service = monitoring_service
     app.state.preview_service = preview_service
+
+    # v0.5 pipeline status. Constructed in BOTH modes so /readyz exists
+    # everywhere; it reports legacy readiness (database only) when the shared
+    # pipeline is off, and does not require any pipeline worker to be running.
+    segment_store = None
+    if settings.shared_pipeline_enabled:
+        try:
+            from .pipeline.factory import build_segment_store
+
+            segment_store = build_segment_store(settings)
+        except Exception:  # noqa: BLE001 - status must not block API start-up
+            logging.getLogger(__name__).warning(
+                "Segment store unavailable; spool usage will report 0"
+            )
+    app.state.pipeline_status_service = PipelineStatusService(
+        settings, database, segment_store=segment_store
+    )
 
     if settings.RADIO_SYNC_ON_STARTUP:
         try:

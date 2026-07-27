@@ -15,6 +15,8 @@ from ..models import (
     HealthView,
     MentionDetailView,
     MentionListResponse,
+    PipelineStatusView,
+    ReadinessView,
     RuntimeView,
     SentimentSummary,
     StationListResponse,
@@ -57,15 +59,76 @@ async def health(request: Request) -> HealthView:
         if database_state == "ok" and s3_state == "ok" and llm_state in {"ok", "disabled"}
         else "degraded"
     )
+    settings = request.app.state.settings
+    pipeline = None
+    status_service = getattr(request.app.state, "pipeline_status_service", None)
+    if status_service is not None and settings.shared_pipeline_enabled:
+        try:
+            pipeline = await asyncio.to_thread(status_service.snapshot)
+        except Exception:  # noqa: BLE001 - health must never fail on a sub-report
+            pipeline = None
+        if pipeline and _pipeline_degraded(pipeline):
+            overall = "degraded"
     return HealthView(
         status=overall,
         database=database_state,
         s3=s3_state,
         llm=llm_state,
-        sync_enabled=request.app.state.settings.RADIO_SYNC_ENABLED,
-        analysis_worker_enabled=request.app.state.settings.RADIO_ANALYSIS_WORKER_ENABLED,
-        version=request.app.state.settings.RADIO_API_VERSION,
+        sync_enabled=settings.RADIO_SYNC_ENABLED,
+        analysis_worker_enabled=settings.RADIO_ANALYSIS_WORKER_ENABLED,
+        version=settings.RADIO_API_VERSION,
+        pipeline_mode=settings.RADIO_PIPELINE_MODE,
+        pipeline=pipeline,
     )
+
+
+def _pipeline_degraded(snapshot: dict) -> bool:
+    components = snapshot.get("components", {})
+    if any(state not in {"ok"} for state in components.values() if isinstance(state, str)):
+        return True
+    return not snapshot.get("queues_configured", True)
+
+
+@router.get("/readyz", response_model=ReadinessView, tags=["health"])
+async def readiness(request: Request, response: Response) -> ReadinessView:
+    """Whether this node can serve traffic, as opposed to merely being alive.
+
+    Deliberately lighter than ``/healthz``: SQLite reads and one filesystem
+    stat, no S3 and no LLM call. A readiness probe runs constantly, and one
+    that does network I/O fails under exactly the load it exists to detect.
+    """
+    settings = request.app.state.settings
+    status_service = getattr(request.app.state, "pipeline_status_service", None)
+    if status_service is None:
+        alive = await asyncio.to_thread(request.app.state.database.ping)
+        return ReadinessView(
+            ready=bool(alive),
+            pipeline_mode=settings.RADIO_PIPELINE_MODE,
+            checks={"database": "ok" if alive else "error"},
+        )
+    report = await asyncio.to_thread(status_service.readiness)
+    if not report["ready"]:
+        # 503 so a load balancer or `docker compose` healthcheck can act on it
+        # without parsing the body.
+        response.status_code = status.HTTP_503_SERVICE_UNAVAILABLE
+    return ReadinessView(**report)
+
+
+@router.get(
+    "/api/v1/monitoring/pipeline",
+    response_model=PipelineStatusView,
+    tags=["monitoring"],
+)
+async def pipeline_status(request: Request) -> PipelineStatusView:
+    """Shared-pipeline capacity and worker liveness."""
+    status_service = getattr(request.app.state, "pipeline_status_service", None)
+    if status_service is None:
+        raise HTTPException(
+            status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+            detail="Pipeline status is unavailable",
+        )
+    snapshot = await asyncio.to_thread(status_service.snapshot)
+    return PipelineStatusView(**snapshot)
 
 
 @router.get("/api/v1/brand-signal/runtime", response_model=RuntimeView, tags=["brand-signal"])
