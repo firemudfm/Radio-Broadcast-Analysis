@@ -1,0 +1,118 @@
+# Development overlay.
+#
+#   docker compose -f compose.yaml -f compose.dev.yaml --profile core up
+#
+# Differences from production, all deliberate:
+#   * host directories under ./var instead of /var/lib/radio, so a checkout is
+#     self-contained and nothing needs root to create;
+#   * env files read from ./deploy/dev (set RADIO_ENV_DIR=./deploy/dev)
+#     instead of /etc, so a fresh clone runs without touching system paths;
+#   * source mounted read-only for reload;
+#   * writable root filesystem, because uvicorn --reload writes bytecode;
+#   * the LLM profile is NOT enabled by default -- starting it would pull a
+#     610 MiB model nobody asked for on a first `compose up`.
+
+# Run with RADIO_ENV_DIR=./deploy/dev; the Makefile does this for you
+# (`make dev-up`).
+x-dev-common: &dev-common
+  read_only: false
+  restart: "no"
+
+services:
+
+  api:
+    <<: *dev-common
+    build:
+      context: .
+      dockerfile: docker/api.Dockerfile
+    volumes: !override
+      # Read-only source mount: reload picks up edits, but a container cannot
+      # rewrite the working tree.
+      - ./app:/app/app:ro
+      - ./var/database:/var/lib/radio/database:rw
+      - ./var/evidence:/var/lib/radio/evidence:rw
+      - ./var/logs:/var/lib/radio/logs:rw
+      - ./var/spool:/var/lib/radio/spool:ro
+    environment:
+      LOG_LEVEL: DEBUG
+      RADIO_LOG_FORMAT: text
+      RADIO_PIPELINE_MODE: ${RADIO_PIPELINE_MODE:-legacy}
+    command: ["--host", "0.0.0.0", "--port", "8788", "--reload", "--reload-dir", "/app/app"]
+
+  planner:
+    <<: *dev-common
+    volumes: !override
+      - ./app:/app/app:ro
+      - ./var/database:/var/lib/radio/database:rw
+      - ./var/logs:/var/lib/radio/logs:rw
+    environment:
+      RADIO_WORKER_ROLE: planner
+      LOG_LEVEL: DEBUG
+      RADIO_LOG_FORMAT: text
+
+  listener:
+    <<: *dev-common
+    volumes: !override
+      - ./app:/app/app:ro
+      - ./var/database:/var/lib/radio/database:rw
+      - ./var/spool:/var/lib/radio/spool:rw
+      - ./var/models:/models:ro
+      - ./var/logs:/var/lib/radio/logs:rw
+    environment:
+      RADIO_WORKER_ROLE: listener
+      LOG_LEVEL: DEBUG
+      RADIO_LOG_FORMAT: text
+      # Two stations locally: enough to prove sharing works, small enough to run
+      # on a laptop alongside everything else.
+      RADIO_MAX_ACTIVE_UNIQUE_STATIONS: "2"
+      RADIO_LISTENER_MAX_SESSIONS: "2"
+
+  transcription-worker:
+    <<: *dev-common
+    volumes: !override
+      - ./app:/app/app:ro
+      - ./var/database:/var/lib/radio/database:rw
+      - ./var/spool:/var/lib/radio/spool:rw
+      - ./var/models:/models:ro
+      - ./var/logs:/var/lib/radio/logs:rw
+    environment:
+      RADIO_WORKER_ROLE: transcription
+      LOG_LEVEL: DEBUG
+      RADIO_LOG_FORMAT: text
+      # No model needed for a dev loop; the fake engine returns deterministic
+      # transcripts so the whole pipeline runs without a 480 MiB download.
+      RADIO_ASR_BACKEND: ${RADIO_ASR_BACKEND:-fake}
+
+  analysis-worker:
+    <<: *dev-common
+    volumes: !override
+      - ./app:/app/app:ro
+      - ./var/database:/var/lib/radio/database:rw
+      - ./var/evidence:/var/lib/radio/evidence:rw
+      - ./var/logs:/var/lib/radio/logs:rw
+    environment:
+      RADIO_WORKER_ROLE: analysis
+      LOG_LEVEL: DEBUG
+      RADIO_LOG_FORMAT: text
+      # Off by default: the deterministic fallback exercises the full persist
+      # and publish path without needing llama-server running.
+      RADIO_LLM_ENABLED: ${RADIO_LLM_ENABLED:-false}
+      RADIO_LLM_BASE_URL: http://llm:8790
+
+  cleanup-worker:
+    <<: *dev-common
+    volumes: !override
+      - ./app:/app/app:ro
+      - ./var/database:/var/lib/radio/database:rw
+      - ./var/spool:/var/lib/radio/spool:rw
+      - ./var/evidence:/var/lib/radio/evidence:rw
+      - ./var/logs:/var/lib/radio/logs:rw
+    environment:
+      RADIO_WORKER_ROLE: cleanup
+      LOG_LEVEL: DEBUG
+      RADIO_LOG_FORMAT: text
+
+  llm:
+    <<: *dev-common
+    volumes: !override
+      - ./var/models:/models:ro

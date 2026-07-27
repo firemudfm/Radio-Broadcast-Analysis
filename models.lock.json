@@ -1,0 +1,97 @@
+{
+  "schema": "radio.models.lock.v1",
+  "comment": [
+    "Pinned model artefacts. Every digest here was verified against the",
+    "provider's API on the research date; see docs/research/TECHNOLOGY_RESEARCH.md.",
+    "Models are NEVER baked into an image and NEVER downloaded implicitly at",
+    "container start-up: they are licensed separately, they are hundreds of",
+    "megabytes, and an implicit download makes a deploy depend on a third party",
+    "being up. scripts/download-models.py fetches them; scripts/verify-models.py",
+    "checks them before a worker is allowed to rely on them.",
+    "Changing a revision here changes transcription or analysis output, so it is",
+    "a reviewable change, not a runtime detail."
+  ],
+  "generated_from": "docs/research/TECHNOLOGY_RESEARCH.md",
+  "models": {
+    "asr.small": {
+      "role": "asr",
+      "purpose": "Pass-A discovery and pass-B confirmation (default)",
+      "provider": "huggingface",
+      "repository": "Systran/faster-whisper-small",
+      "revision": "536b0662742c02347bc0e980a01041f333bce120",
+      "license": "MIT",
+      "target_directory": "asr/Systran__faster-whisper-small",
+      "files": [
+        {
+          "name": "model.bin",
+          "size_bytes": 483546902,
+          "sha256": "3e305921506d8872816023e4c273e75d2419fb89b24da97b4fe7bce14170d671"
+        },
+        {
+          "name": "config.json",
+          "sha256": null,
+          "comment": "Non-LFS companion; pinned by repository revision rather than digest."
+        },
+        {
+          "name": "tokenizer.json",
+          "sha256": null,
+          "comment": "Non-LFS companion; pinned by repository revision."
+        },
+        {
+          "name": "vocabulary.txt",
+          "sha256": null,
+          "comment": "Non-LFS companion; pinned by repository revision."
+        }
+      ],
+      "runtime_memory_estimate_mib": 700,
+      "notes": "Multilingual, 99 languages including en, hi, mr, es, de. int8 on CPU."
+    },
+    "llm.qwen3-0.6b": {
+      "role": "llm",
+      "purpose": "Post-match conversation analysis",
+      "provider": "huggingface",
+      "repository": "Qwen/Qwen3-0.6B-GGUF",
+      "revision": "23749fefcc72300e3a2ad315e1317431b06b590a",
+      "license": "Apache-2.0",
+      "target_directory": "qwen",
+      "files": [
+        {
+          "name": "Qwen3-0.6B-Q8_0.gguf",
+          "size_bytes": 639446688,
+          "sha256": "9465e63a22add5354d9bb4b99e90117043c7124007664907259bd16d043bb031"
+        }
+      ],
+      "runtime_memory_estimate_mib": 1100,
+      "notes": "Q8_0 is the only quantisation the official Qwen repository publishes."
+    },
+    "vad.silero": {
+      "role": "vad",
+      "purpose": "Voice-activity signal for the audio classifier (OPTIONAL)",
+      "provider": "github",
+      "repository": "snakers4/silero-vad",
+      "revision": "v6.2.1",
+      "license": "MIT",
+      "target_directory": "vad",
+      "files": [
+        {
+          "name": "silero_vad.onnx",
+          "source_path": "src/silero_vad/data/silero_vad.onnx",
+          "size_bytes": 2327524,
+          "sha256": null,
+          "comment": "Size confirmed from the tag's Content-Length. Digest NOT pinned: the upstream release publishes none, and deriving one from a single local download would assert a verification that never happened. Size alone still catches truncation. The classifier degrades to energy-only signals when this file is absent or unreadable, so a missing file is a quality regression rather than a correctness failure."
+        }
+      ],
+      "runtime_memory_estimate_mib": 40,
+      "notes": "Requires onnxruntime. Entirely optional; see ADR-005."
+    }
+  },
+  "runtimes": {
+    "llama.cpp": {
+      "repository": "https://github.com/ggml-org/llama.cpp",
+      "tag": "b10144",
+      "license": "MIT",
+      "built_from_source": true,
+      "notes": "Built in docker/llm.Dockerfile with GGML_NATIVE=OFF for portability."
+    }
+  }
+}

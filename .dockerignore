@@ -1,0 +1,83 @@
+# Keep secrets, state and models OUT of the build context.
+#
+# This file is a security control, not an optimisation. Anything reaching the
+# context can end up in an image layer, and a layer is readable by anyone who
+# can pull the image -- deleting a file in a later layer does not remove it.
+
+# Secrets and environment
+.env
+.env.*
+!.env.example
+*.pem
+*.key
+*.p12
+credentials
+.aws/
+application.env
+infrastructure.env
+
+# Runtime state that must never be baked in
+*.db
+*.db-wal
+*.db-shm
+*.sqlite
+*.sqlite3
+var/
+spool/
+evidence/
+logs/
+backups/
+
+# Models are mounted at runtime, never built in (hundreds of MB, and licensed
+# separately from this repository).
+models/
+*.gguf
+*.onnx
+*.bin
+*.pt
+*.pth
+
+# Audio
+*.wav
+*.opus
+*.mp3
+*.flac
+*.ogg
+*.aac
+*.m4a
+
+# Version control and CI
+.git/
+.github/
+.gitignore
+
+# Python build artefacts
+__pycache__/
+*.py[cod]
+*.egg-info/
+.eggs/
+build/
+dist/
+.venv/
+venv/
+.tox/
+.mypy_cache/
+.pytest_cache/
+.ruff_cache/
+htmlcov/
+.coverage
+.coverage.*
+
+# Editors and OS
+.idea/
+.vscode/
+.DS_Store
+Thumbs.db
+
+# Docs and tests are not needed at runtime; the smaller the image, the smaller
+# the attack surface.
+docs/
+tests/
+deploy/
+*.md
+!README.md

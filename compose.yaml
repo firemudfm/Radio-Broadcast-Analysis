@@ -1,0 +1,238 @@
+# Base Compose definition for the shared-station pipeline.
+#
+# Usage:
+#   Development : docker compose -f compose.yaml -f compose.dev.yaml up
+#   Production  : docker compose -f compose.yaml -f compose.prod.yaml up -d
+#
+# Profiles let you start a subset without editing this file:
+#   core        api + planner            (control plane only)
+#   pipeline    listener + workers       (capture and processing)
+#   llm         llama-server             (analysis model)
+#   integration everything, for smoke tests
+#
+# Security posture applied to EVERY service below:
+#   * no-new-privileges, so a setuid binary cannot escalate;
+#   * all capabilities dropped (none are needed -- nothing binds a low port);
+#   * read-only root filesystem with an explicit tmpfs for /tmp;
+#   * non-root user baked into the image;
+#   * pids limits, so a fork bomb in one container cannot exhaust host PIDs;
+#   * rotated JSON logs, so a chatty container cannot fill the disk.
+#
+# Explicitly NOT used anywhere: privileged, host networking, the Docker socket,
+# added capabilities, and plaintext secrets in this file. Secrets come from the
+# env files under /etc/radio-broadcast-analysis/, which are never committed.
+
+x-common: &common
+  restart: unless-stopped
+  init: true
+  security_opt:
+    - no-new-privileges:true
+  cap_drop:
+    - ALL
+  read_only: true
+  tmpfs:
+    - /tmp:rw,noexec,nosuid,size=64m
+  # Expressed under `deploy` rather than as the legacy top-level `pids_limit`.
+  # Compose normalises the old key into this one, so having both here and a
+  # `deploy` block in an overlay is rejected as a conflicting definition.
+  deploy:
+    resources:
+      limits:
+        pids: 256
+  logging:
+    driver: json-file
+    options:
+      max-size: "10m"
+      max-file: "5"
+  # Production default is /etc/radio-broadcast-analysis. RADIO_ENV_DIR exists so
+  # `docker compose config` can be validated in CI and on a developer machine
+  # without root-owned system paths -- the default is what deploys.
+  env_file:
+    - ${RADIO_ENV_DIR:-/etc/radio-broadcast-analysis}/infrastructure.env
+    - ${RADIO_ENV_DIR:-/etc/radio-broadcast-analysis}/application.env
+  networks:
+    - radio
+
+x-worker: &worker
+  <<: *common
+  image: ${RADIO_PIPELINE_IMAGE:-radio-pipeline:local}
+  build:
+    context: .
+    dockerfile: docker/pipeline.Dockerfile
+  depends_on:
+    api:
+      condition: service_healthy
+  environment: &worker-env
+    RADIO_DATABASE_PATH: /var/lib/radio/database/radio.db
+    RADIO_SPOOL_PATH: /var/lib/radio/spool
+    RADIO_MODEL_PATH: /models
+    RADIO_EVIDENCE_PATH: /var/lib/radio/evidence
+    RADIO_LOG_PATH: /var/lib/radio/logs
+    RADIO_LOG_FORMAT: json
+
+networks:
+  radio:
+    driver: bridge
+
+services:
+
+  # --- control plane ---------------------------------------------------------
+
+  api:
+    <<: *common
+    image: ${RADIO_API_IMAGE:-radio-api:local}
+    build:
+      context: .
+      dockerfile: docker/api.Dockerfile
+    profiles: [core, integration]
+    # The ONLY published port. Bound to loopback in compose.prod.yaml so a
+    # reverse proxy terminates TLS rather than exposing uvicorn directly.
+    ports:
+      - "8788:8788"
+    environment:
+      RADIO_DATABASE_PATH: /var/lib/radio/database/radio.db
+      RADIO_SPOOL_PATH: /var/lib/radio/spool
+      RADIO_EVIDENCE_PATH: /var/lib/radio/evidence
+      RADIO_LOG_PATH: /var/lib/radio/logs
+      RADIO_LOG_FORMAT: json
+    volumes:
+      - ${RADIO_HOST_DATABASE:-/var/lib/radio/database}:/var/lib/radio/database:rw
+      - ${RADIO_HOST_EVIDENCE:-/var/lib/radio/evidence}:/var/lib/radio/evidence:rw
+      - ${RADIO_HOST_LOGS:-/var/lib/radio/logs}:/var/lib/radio/logs:rw
+      # Read-only: the API reports spool usage for /readyz but must never write
+      # to the spool. Enforcing that here means a bug cannot.
+      - ${RADIO_HOST_SPOOL:-/var/lib/radio/spool}:/var/lib/radio/spool:ro
+    healthcheck:
+      test: ["CMD", "python", "/app/healthchecks/api.py"]
+      interval: 30s
+      timeout: 5s
+      start_period: 30s
+      retries: 3
+
+  planner:
+    <<: *worker
+    profiles: [core, integration]
+    command: ["planner"]
+    environment:
+      <<: *worker-env
+      RADIO_WORKER_ROLE: planner
+    volumes:
+      - ${RADIO_HOST_DATABASE:-/var/lib/radio/database}:/var/lib/radio/database:rw
+      - ${RADIO_HOST_LOGS:-/var/lib/radio/logs}:/var/lib/radio/logs:rw
+    healthcheck:
+      test: ["CMD", "python", "/app/healthchecks/worker.py"]
+      interval: 30s
+      timeout: 5s
+      start_period: 30s
+      retries: 3
+
+  # --- capture and processing ------------------------------------------------
+
+  listener:
+    <<: *worker
+    profiles: [pipeline, integration]
+    command: ["listener"]
+    environment:
+      <<: *worker-env
+      RADIO_WORKER_ROLE: listener
+    volumes:
+      - ${RADIO_HOST_DATABASE:-/var/lib/radio/database}:/var/lib/radio/database:rw
+      - ${RADIO_HOST_SPOOL:-/var/lib/radio/spool}:/var/lib/radio/spool:rw
+      - ${RADIO_HOST_MODELS:-/var/lib/radio/models}:/models:ro
+      - ${RADIO_HOST_LOGS:-/var/lib/radio/logs}:/var/lib/radio/logs:rw
+    # Graceful stop matters most here: a SIGKILLed listener loses the segment it
+    # is accumulating and leaves station_sessions rows claiming to be streaming.
+    stop_grace_period: 30s
+    healthcheck:
+      test: ["CMD", "python", "/app/healthchecks/worker.py"]
+      interval: 30s
+      timeout: 5s
+      start_period: 45s
+      retries: 3
+
+  transcription-worker:
+    <<: *worker
+    profiles: [pipeline, integration]
+    command: ["transcription"]
+    environment:
+      <<: *worker-env
+      RADIO_WORKER_ROLE: transcription
+    volumes:
+      - ${RADIO_HOST_DATABASE:-/var/lib/radio/database}:/var/lib/radio/database:rw
+      - ${RADIO_HOST_SPOOL:-/var/lib/radio/spool}:/var/lib/radio/spool:rw
+      - ${RADIO_HOST_MODELS:-/var/lib/radio/models}:/models:ro
+      - ${RADIO_HOST_LOGS:-/var/lib/radio/logs}:/var/lib/radio/logs:rw
+    # Long: an in-flight ASR decode should finish rather than be redelivered.
+    stop_grace_period: 60s
+    healthcheck:
+      test: ["CMD", "python", "/app/healthchecks/worker.py"]
+      interval: 30s
+      timeout: 5s
+      start_period: 60s
+      retries: 3
+
+  analysis-worker:
+    <<: *worker
+    profiles: [pipeline, integration]
+    command: ["analysis"]
+    environment:
+      <<: *worker-env
+      RADIO_WORKER_ROLE: analysis
+      # Service name on the Compose network. Never a host address, and never
+      # published -- see the llm service below.
+      RADIO_LLM_BASE_URL: http://llm:8790
+    volumes:
+      - ${RADIO_HOST_DATABASE:-/var/lib/radio/database}:/var/lib/radio/database:rw
+      - ${RADIO_HOST_EVIDENCE:-/var/lib/radio/evidence}:/var/lib/radio/evidence:rw
+      - ${RADIO_HOST_LOGS:-/var/lib/radio/logs}:/var/lib/radio/logs:rw
+    stop_grace_period: 60s
+    healthcheck:
+      test: ["CMD", "python", "/app/healthchecks/worker.py"]
+      interval: 30s
+      timeout: 5s
+      start_period: 60s
+      retries: 3
+
+  cleanup-worker:
+    <<: *worker
+    profiles: [pipeline, integration]
+    command: ["cleanup"]
+    environment:
+      <<: *worker-env
+      RADIO_WORKER_ROLE: cleanup
+    volumes:
+      - ${RADIO_HOST_DATABASE:-/var/lib/radio/database}:/var/lib/radio/database:rw
+      - ${RADIO_HOST_SPOOL:-/var/lib/radio/spool}:/var/lib/radio/spool:rw
+      - ${RADIO_HOST_EVIDENCE:-/var/lib/radio/evidence}:/var/lib/radio/evidence:rw
+      - ${RADIO_HOST_LOGS:-/var/lib/radio/logs}:/var/lib/radio/logs:rw
+    healthcheck:
+      test: ["CMD", "python", "/app/healthchecks/worker.py"]
+      interval: 60s
+      timeout: 5s
+      start_period: 30s
+      retries: 3
+
+  # --- local model -----------------------------------------------------------
+
+  llm:
+    <<: *common
+    image: ${RADIO_LLM_IMAGE:-radio-llm:local}
+    build:
+      context: .
+      dockerfile: docker/llm.Dockerfile
+      args:
+        LLAMA_CPP_TAG: ${LLAMA_CPP_TAG:-b10144}
+    profiles: [llm, integration]
+    # NO `ports:` entry, deliberately. 8790 is reachable from other containers
+    # on the `radio` network and from nowhere else. An unauthenticated inference
+    # endpoint on a host port is a remote code-execution-adjacent liability.
+    expose:
+      - "8790"
+    environment:
+      RADIO_LLM_MODEL_PATH: /models/qwen/Qwen3-0.6B-Q8_0.gguf
+      RADIO_LLM_PORT: "8790"
+      RADIO_LLM_THREADS: ${RADIO_LLM_THREADS:-2}
+      RADIO_LLM_CONTEXT: ${RADIO_LLM_CONTEXT:-4096}
+    volumes:
+      - ${RADIO_HOST_MODELS:-/var/lib/radio/models}:/models:ro
+    stop_grace_period: 20s

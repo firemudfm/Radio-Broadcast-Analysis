@@ -12,6 +12,13 @@ dependencies = [
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]
+# The load suite takes ~1 minute and exists to catch superlinear regressions,
+# not to gate every edit. Run it explicitly with `make test-load` or
+# `pytest -m load`.
+addopts = "-m 'not load'"
+markers = [
+  "load: synthetic load tests at the 1,000-station scale (slow, opt-in)",
+]
 
 [tool.ruff]
 target-version = "py311"

@@ -15,3 +15,18 @@ radio-database-main.zip
 # Env files with real values
 .env
 *.env.local
+
+# Real environment files. Root-anchored so the committed placeholder values in
+# deploy/dev/ (which grant nothing) stay tracked.
+/application.env
+/infrastructure.env
+/deploy/application.env
+/deploy/infrastructure.env
+
+# Local Compose state (compose.dev.yaml puts everything under ./var)
+/var/
+prod-config.tmp.yaml
+
+# Models are fetched with scripts/download-models.py, never committed
+*.onnx
+models/

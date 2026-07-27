@@ -1,0 +1,25 @@
+# Pipeline worker dependencies (ASR, audio classification, matching).
+#
+# Only installed into the pipeline image; the API image stays lean and has no
+# ASR stack. Versions are the ones verified for cp311 linux/aarch64 wheels in
+# docs/research/TECHNOLOGY_RESEARCH.md -- do not bump without re-verifying the
+# wheel exists for ARM64, or the image silently falls back to a source build.
+-r requirements.txt
+
+# CTranslate2 is the inference engine; faster-whisper is the pure-Python wrapper.
+ctranslate2==4.8.1
+faster-whisper==1.2.1
+
+# Audio decoding for faster-whisper. Bundles FFmpeg libraries, which is separate
+# from the ffmpeg *binary* the listener spawns for stream capture.
+av==18.0.0
+
+# Silero VAD via ONNX. onnxruntime is optional at runtime: app/services/
+# audio_classifier.py degrades to energy-only signals when it is absent, so a
+# failed install is a quality regression rather than an outage.
+onnxruntime==1.28.0
+
+# Optional compiled Aho-Corasick. app/services/keyword_matcher.py ships a pure
+# Python automaton and never imports this; it is listed so a future opt-in has a
+# pinned, ARM64-verified version to use.
+# pyahocorasick==2.3.1

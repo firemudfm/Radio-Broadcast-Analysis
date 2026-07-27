@@ -1,0 +1,92 @@
+# Production overlay for the 4 vCPU / 8 GiB ARM64 target.
+#
+#   docker compose -f compose.yaml -f compose.prod.yaml --profile core --profile pipeline up -d
+#
+# The memory limits below are a **conservative starting allocation**, not a
+# benchmarked optimum. They are chosen so the sum cannot exceed the host, which
+# is the property that matters: an unbounded container on an 8 GiB box takes the
+# whole machine down with it, and the OOM killer picks its victim by score, not
+# by importance -- it is as likely to kill the API as the worker that grew.
+#
+#   api                    512 MiB
+#   planner                256 MiB
+#   listener             1 024 MiB   (ring buffers: ~1.83 MiB per station)
+#   transcription-worker 2 048 MiB   (small int8 model + decode)
+#   analysis-worker        512 MiB
+#   cleanup-worker         256 MiB
+#   llm                  1 536 MiB   (610 MiB weights + KV cache)
+#   --------------------------------
+#   total                6 144 MiB   leaving ~2 GiB for the kernel, page cache
+#                                    and the SQLite WAL
+#
+# Re-measure with `docker stats` under real load before raising any of these;
+# see docs/OPERATIONS.md.
+
+services:
+
+  api:
+    # Loopback only. TLS termination and any authentication belong in a reverse
+    # proxy; uvicorn is not the right thing to expose to a network directly.
+    ports: !override
+      - "127.0.0.1:8788:8788"
+    deploy:
+      resources:
+        limits:
+          memory: 512M
+          cpus: "1.0"
+    environment:
+      LOG_LEVEL: INFO
+      RADIO_LOG_FORMAT: json
+
+  planner:
+    deploy:
+      resources:
+        limits:
+          memory: 256M
+          cpus: "0.5"
+
+  listener:
+    deploy:
+      resources:
+        limits:
+          memory: 1024M
+          # Decoding several streams is genuinely parallel work, so the listener
+          # gets the largest CPU share after transcription.
+          cpus: "1.5"
+
+  transcription-worker:
+    deploy:
+      resources:
+        limits:
+          memory: 2048M
+          cpus: "2.0"
+    environment:
+      RADIO_ASR_DEVICE: cpu
+      RADIO_ASR_COMPUTE_TYPE: int8
+      # Two threads, not four. CTranslate2 scales poorly past a couple of cores
+      # on a small model, and taking all four starves the listener -- which
+      # drops live audio that can never be recovered, unlike a slower queue.
+      RADIO_ASR_CPU_THREADS: "2"
+
+  analysis-worker:
+    deploy:
+      resources:
+        limits:
+          memory: 512M
+          cpus: "0.5"
+
+  cleanup-worker:
+    deploy:
+      resources:
+        limits:
+          memory: 256M
+          cpus: "0.25"
+
+  llm:
+    deploy:
+      resources:
+        limits:
+          memory: 1536M
+          # Below 1.0 on purpose: analysis is the only part of the pipeline that
+          # can wait. Live capture cannot.
+          cpus: "0.75"
