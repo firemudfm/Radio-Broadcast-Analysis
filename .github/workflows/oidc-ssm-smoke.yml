@@ -1,0 +1,123 @@
+name: AWS OIDC and SSM smoke test
+
+on:
+  workflow_dispatch:
+
+permissions:
+  id-token: write
+  contents: read
+
+concurrency:
+  group: radio-production-oidc-ssm-smoke
+  cancel-in-progress: false
+
+jobs:
+  smoke:
+    name: Verify AWS OIDC and fixed SSM command
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    environment: production
+    steps:
+      - name: Configure short-lived AWS credentials
+        uses: aws-actions/configure-aws-credentials@e6de054238d6b7531b4efff3b6587d9aade6a06c
+        with:
+          role-to-assume: ${{ vars.AWS_ROLE_ARN }}
+          aws-region: ${{ vars.AWS_REGION }}
+          role-session-name: gha-radio-smoke-${{ github.run_id }}
+          role-duration-seconds: 900
+          allowed-account-ids: ${{ vars.AWS_ACCOUNT_ID }}
+
+      - name: Verify assumed identity
+        shell: bash
+        run: |
+          set -euo pipefail
+          identity="$(aws sts get-caller-identity)"
+          account="$(jq -r '.Account' <<<"${identity}")"
+          arn="$(jq -r '.Arn' <<<"${identity}")"
+          echo "AWS account: ${account}"
+          echo "Assumed role ARN: ${arn}"
+          if [[ "${account}" != "${{ vars.AWS_ACCOUNT_ID }}" ]]; then
+            echo "Unexpected AWS account."
+            exit 1
+          fi
+          expected_prefix="arn:aws:sts::${{ vars.AWS_ACCOUNT_ID }}:assumed-role/GitHubActionsRadioDeployRole/"
+          if [[ "${arn}" != "${expected_prefix}"* ]]; then
+            echo "Unexpected assumed-role ARN."
+            exit 1
+          fi
+
+      - name: Verify target instance is online
+        shell: bash
+        run: |
+          set -euo pipefail
+          ping_status="$(
+            aws ssm describe-instance-information \
+              --filters "Key=InstanceIds,Values=${{ vars.EC2_INSTANCE_ID }}" \
+              --query 'InstanceInformationList[0].PingStatus' \
+              --output text
+          )"
+          echo "Systems Manager PingStatus: ${ping_status}"
+          if [[ "${ping_status}" != "Online" ]]; then
+            echo "Target EC2 instance is not online in Systems Manager."
+            exit 1
+          fi
+
+      - name: Send fixed smoke document
+        id: send
+        shell: bash
+        run: |
+          set -euo pipefail
+          command_id="$(
+            aws ssm send-command \
+              --document-name "${{ vars.SSM_SMOKE_DOCUMENT }}" \
+              --instance-ids "${{ vars.EC2_INSTANCE_ID }}" \
+              --comment "GitHub OIDC fixed smoke test ${GITHUB_RUN_ID}" \
+              --timeout-seconds 60 \
+              --max-concurrency "1" \
+              --max-errors "0" \
+              --query 'Command.CommandId' \
+              --output text
+          )"
+          if [[ -z "${command_id}" || "${command_id}" == "None" ]]; then
+            echo "Systems Manager did not return a command ID."
+            exit 1
+          fi
+          echo "command_id=${command_id}" >> "${GITHUB_OUTPUT}"
+          echo "Submitted fixed SSM command: ${command_id}"
+
+      - name: Wait for fixed command and verify output
+        shell: bash
+        run: |
+          set -euo pipefail
+          command_id="${{ steps.send.outputs.command_id }}"
+          instance_id="${{ vars.EC2_INSTANCE_ID }}"
+          aws ssm wait command-executed \
+            --command-id "${command_id}" \
+            --instance-id "${instance_id}"
+          invocation="$(
+            aws ssm get-command-invocation \
+              --command-id "${command_id}" \
+              --instance-id "${instance_id}" \
+              --output json
+          )"
+          status="$(jq -r '.Status' <<<"${invocation}")"
+          response_code="$(jq -r '.ResponseCode' <<<"${invocation}")"
+          stdout="$(jq -r '.StandardOutputContent' <<<"${invocation}")"
+          stderr="$(jq -r '.StandardErrorContent' <<<"${invocation}")"
+          echo "Command status: ${status}"
+          echo "Response code: ${response_code}"
+          echo "Fixed command output:"
+          printf '%s\n' "${stdout}"
+          if [[ -n "${stderr}" ]]; then
+            echo "Fixed command stderr:"
+            printf '%s\n' "${stderr}"
+          fi
+          if [[ "${status}" != "Success" ]]; then
+            exit 1
+          fi
+          if [[ "${response_code}" != "0" ]]; then
+            exit 1
+          fi
+          grep -q '^GITHUB_OIDC_SSM_OK$' <<<"${stdout}"
+          grep -q '^architecture=aarch64$' <<<"${stdout}"
+          grep -q '^SSM_FIXED_DOCUMENT_OK$' <<<"${stdout}"
