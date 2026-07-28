@@ -298,7 +298,19 @@ class Settings(BaseSettings):
     RADIO_BROWSER_MAX_ATTEMPTS: int = 3
     RADIO_DATABASE_OVERRIDE_URL: str = "https://db.radio-browser.info/all.json"
     RADIO_DATABASE_OVERRIDE_REFRESH_SECONDS: int = 21600
-    RADIO_MAX_ACTIVE_STATIONS: int = 8
+    # Legacy systemd-pipeline admission limit: how many station unit sets
+    # (radio-capture@, radio-uploader@, radio-pipeline-worker@) may run at once.
+    # The backward-compatible default is 2, and it is the number the monitoring
+    # API reports as active_station_limit.
+    #
+    # The v0.5 shared-SQS pipeline does not read this setting. It has its own
+    # capacity knob, RADIO_MAX_ACTIVE_UNIQUE_STATIONS (default 8), declared in
+    # the v0.5 block below. The two defaults are intentionally independent and
+    # must not be collapsed into one another: they size different runtimes.
+    #
+    # Production may override either value through environment configuration
+    # (see deploy/radio-intelligence.env.example).
+    RADIO_MAX_ACTIVE_STATIONS: int = 2
     RADIO_MAX_STATIONS_PER_CAMPAIGN: int = 10
     RADIO_ALLOW_COUNTRY_ALL: bool = False
     RADIO_STATION_STOP_GRACE_SECONDS: int = 300
