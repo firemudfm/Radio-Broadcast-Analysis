@@ -96,9 +96,14 @@ print(" ".join(sorted({m.get("role", "") for m in models.values()} - {""})))
 LOCKED="$(locked_roles)"
 log "roles pinned in the lock: ${LOCKED}"
 
+# --require-present, always. A deployment asked for these roles explicitly, so
+# "optional" must not mean "reported VERIFIED while absent" -- that is how a host
+# silently ends up running without a model the lock pins. The general verifier
+# keeps its permissive mode for callers that genuinely accept energy-only
+# degradation.
 verify_role() {
     python3 "${SCRIPT_DIR}/verify-models.py" \
-        --root "${MODEL_ROOT}" --lock "${LOCK}" --role "$1" >/dev/null 2>&1
+        --root "${MODEL_ROOT}" --lock "${LOCK}" --role "$1" --require-present >/dev/null 2>&1
 }
 
 # role_files_present <role> -- any file for this role already on disk.
@@ -156,7 +161,7 @@ for role in "${ROLES[@]}"; do
         #    system was running on something unverified.
         fail "${role}: files exist under ${MODEL_ROOT} but FAILED verification"
         python3 "${SCRIPT_DIR}/verify-models.py" \
-            --root "${MODEL_ROOT}" --lock "${LOCK}" --role "${role}" >&2 || true
+            --root "${MODEL_ROOT}" --lock "${LOCK}" --role "${role}" --require-present >&2 || true
         remediation "inspect the paths above, then remove them explicitly if you are satisfied they are corrupt"
         die "${EXIT_PRECONDITION}" \
             "refusing to overwrite or delete an existing model that does not verify"

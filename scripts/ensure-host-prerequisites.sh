@@ -91,6 +91,58 @@ else
     warn "mount check skipped (RADIO_SKIP_MOUNT_CHECK=1); non-production validation only"
 fi
 
+# version_at_least <have> <want> -- dotted numeric comparison.
+#
+# Compared field by field as integers, never as strings: "3.3.4624.0" sorts
+# BEFORE "3.3.2746.0" lexically, so a string comparison would reject the newer
+# agent that is actually running in production.
+version_at_least() {
+    local have="$1" want="$2" i
+    local -a h w
+    IFS='.' read -r -a h <<<"${have}"
+    IFS='.' read -r -a w <<<"${want}"
+    for i in 0 1 2 3; do
+        local hv="${h[i]:-0}" wv="${w[i]:-0}"
+        case "${hv}${wv}" in
+            *[!0-9]*) return 2 ;;   # malformed: caller decides
+        esac
+        if [ "${hv}" -gt "${wv}" ]; then return 0; fi
+        if [ "${hv}" -lt "${wv}" ]; then return 1; fi
+    done
+    return 0
+}
+
+# ---------------------------------------------------------------------------
+stage "2a/5 Checking the SSM Agent"
+MIN_SSM_AGENT="$(lock_query 'd["minimum_versions"]["ssm_agent"]')"
+SSM_AGENT_VERSION="${RADIO_SSM_AGENT_VERSION:-}"
+if [ -z "${SSM_AGENT_VERSION}" ]; then
+    SSM_AGENT_VERSION="$(rpm -q --queryformat '%{VERSION}' amazon-ssm-agent 2>/dev/null || true)"
+fi
+if [ -z "${SSM_AGENT_VERSION}" ]; then
+    warn "amazon-ssm-agent version could not be determined; skipping the version gate"
+    warn "this host is not managed by Systems Manager, or the agent is not an rpm"
+else
+    log "amazon-ssm-agent ${SSM_AGENT_VERSION} (minimum ${MIN_SSM_AGENT})"
+    # A malformed version is a refusal, not a shrug: the deployment document
+    # relies on ENV_VAR parameter interpolation, and an agent that does not
+    # support it silently falls back to substituting the parameter into the
+    # command text -- the exact behaviour the document is written to avoid.
+    if ! version_at_least "${SSM_AGENT_VERSION}" "${MIN_SSM_AGENT}"; then
+        case $? in
+            2)
+                fail "amazon-ssm-agent version '${SSM_AGENT_VERSION}' is not a dotted numeric version"
+                ;;
+            *)
+                fail "amazon-ssm-agent ${SSM_AGENT_VERSION} is older than the required ${MIN_SSM_AGENT}"
+                fail "older agents ignore interpolationType: ENV_VAR and fall back to raw string substitution"
+                ;;
+        esac
+        remediation "sudo dnf update amazon-ssm-agent && sudo systemctl restart amazon-ssm-agent"
+        die "${EXIT_PRECONDITION}" "unsupported SSM Agent version"
+    fi
+fi
+
 # ---------------------------------------------------------------------------
 stage "2/5  Checking packages"
 REQUIRED_PACKAGES="$(lock_query 'chr(32).join(d["packages"]["required"])')"
@@ -153,23 +205,51 @@ with open(sys.argv[2], "w", encoding="utf-8") as handle:
         chmod 0644 "${DOCKER_CONFIG}"
     fi
 else
-    # An existing configuration is never edited. A data-root that disagrees with
-    # the lock means images live somewhere this deployment does not manage, and
-    # quietly rewriting it would orphan every existing image and container.
-    ACTUAL_DATA_ROOT="$(python3 -c '
+    # An existing configuration is never edited. Anything that disagrees with
+    # the lock is reported: quietly rewriting data-root would orphan every
+    # existing image and container, and quietly rewriting the log driver would
+    # change how every container's logs are stored for no deployment reason.
+    DAEMON_DIFF="$(python3 -c '
 import json, sys
 try:
     with open(sys.argv[1], encoding="utf-8") as handle:
-        print(json.load(handle).get("data-root", ""))
-except Exception:
-    print("<unreadable>")
-' "${DOCKER_CONFIG}")"
-    if [ "${ACTUAL_DATA_ROOT}" != "${EXPECTED_DATA_ROOT}" ]; then
-        fail "${DOCKER_CONFIG} has data-root '${ACTUAL_DATA_ROOT}', expected '${EXPECTED_DATA_ROOT}'"
+        actual = json.load(handle)
+except Exception as error:
+    print(f"unreadable: {type(error).__name__}")
+    raise SystemExit(0)
+with open(sys.argv[2], encoding="utf-8") as handle:
+    expected = json.load(handle)["docker_daemon"]["expected"]
+
+problems = []
+for key, want in expected.items():
+    have = actual.get(key)
+    if have != want:
+        problems.append(f"{key}: have {have!r}, expected {want!r}")
+
+# A TCP listener exposes the Docker API, which is root on the host. It is a
+# refusal regardless of what else matches.
+for entry in actual.get("hosts", []) or []:
+    if str(entry).startswith("tcp://"):
+        problems.append(f"hosts: unexpected TCP listener {entry!r}")
+
+print("; ".join(problems))
+' "${DOCKER_CONFIG}" "${LOCK_FILE}")"
+    if [ -n "${DAEMON_DIFF}" ]; then
+        fail "${DOCKER_CONFIG} does not match the approved baseline: ${DAEMON_DIFF}"
         remediation "review ${DOCKER_CONFIG} by hand; this script never edits an existing daemon configuration"
         die "${EXIT_PRECONDITION}" "conflicting Docker daemon configuration"
     fi
-    log "${DOCKER_CONFIG} already matches the expected data-root"
+    log "${DOCKER_CONFIG} matches the approved baseline"
+fi
+
+# Without this, Docker can start before the data volume is mounted and write its
+# entire image store to the root filesystem, which then fills.
+MOUNT_REQUIREMENT="$(lock_query 'd["docker_daemon"]["systemd_mount_requirement"]')"
+if systemctl cat docker 2>/dev/null | grep -qF "${MOUNT_REQUIREMENT}"; then
+    log "systemd unit carries ${MOUNT_REQUIREMENT}"
+else
+    warn "docker.service does not declare ${MOUNT_REQUIREMENT}"
+    remediation "sudo systemctl edit docker  # add [Unit] ${MOUNT_REQUIREMENT}"
 fi
 
 if [ "${DRY_RUN}" -eq 0 ]; then
@@ -238,6 +318,24 @@ else
     mv -f "${temp}" "${COMPOSE_PATH}"
     INSTALLED+=("docker-compose-plugin")
     log "installed docker compose ${COMPOSE_VERSION}"
+fi
+
+# Installing the right file is not the same as the CLI using it. Docker searches
+# several plugin directories, so a second copy elsewhere -- left by a package, or
+# by an earlier manual install -- can win, and then an unrelated Docker upgrade
+# changes which Compose runs with nothing having been deployed.
+if [ "${DRY_RUN}" -eq 0 ] && command -v docker >/dev/null 2>&1; then
+    ACTIVE_COMPOSE="$(docker compose version --short 2>/dev/null || true)"
+    EXPECTED_SHORT="${COMPOSE_VERSION#v}"
+    if [ -z "${ACTIVE_COMPOSE}" ]; then
+        die "${EXIT_PRECONDITION}" "the docker CLI does not resolve a compose plugin"
+    fi
+    if [ "${ACTIVE_COMPOSE#v}" != "${EXPECTED_SHORT}" ]; then
+        fail "docker compose resolves to ${ACTIVE_COMPOSE}, expected ${EXPECTED_SHORT}"
+        remediation "find / -name docker-compose -path '*cli-plugins*' 2>/dev/null  # remove the duplicate"
+        die "${EXIT_PRECONDITION}" "an unexpected compose plugin is active"
+    fi
+    log "docker compose resolves to ${ACTIVE_COMPOSE} from the pinned plugin"
 fi
 
 # ---------------------------------------------------------------------------

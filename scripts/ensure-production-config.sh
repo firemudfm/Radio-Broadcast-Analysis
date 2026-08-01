@@ -198,17 +198,25 @@ if [ -f "${COMPOSE_ENV}" ]; then
 fi
 
 # ---------------------------------------------------------------------------
-stage "4/4  Validating against the real Settings model"
-# Loaded through the actual pydantic model, so a typo or an out-of-range value
-# fails here rather than at container start-up -- but WITHOUT starting the API,
-# opening a socket or contacting AWS.
+stage "4/4  Structural validation (stdlib only)"
+# LAYER A of two. Deliberately stdlib-only and deliberately NOT `from app.config
+# import Settings`:
+#
+#   * this runs before any image is built, on the host's bare python, which has
+#     no FastAPI and no pydantic;
+#   * importing from the source working tree would validate against whatever is
+#     checked out, which after a fetch that did not move the working tree is not
+#     the commit being deployed.
+#
+# LAYER B runs the real Settings model inside the freshly built
+# radio-api:<commit> image -- see deploy-compose.sh -- which is the only place
+# the answer is about the code that will actually run.
 if [ "${DRY_RUN}" -eq 1 ] || [ ! -f "${APPLICATION}" ]; then
-    log "dry run or missing application.env: skipping model validation"
+    log "dry run or missing application.env: skipping structural validation"
 else
     APP_ENV_PATH="${APPLICATION}" INFRA_ENV_PATH="${INFRASTRUCTURE}" \
     python3 -c '
 import os, sys
-sys.path.insert(0, os.environ.get("RADIO_REPO_ROOT", "."))
 
 def load(path):
     values = {}
@@ -221,18 +229,40 @@ def load(path):
             values[key.strip()] = value.strip()
     return values
 
-environment = {**load(os.environ["INFRA_ENV_PATH"]), **load(os.environ["APP_ENV_PATH"])}
-os.environ.update(environment)
-try:
-    from app.config import Settings
-    settings = Settings()
-except Exception as error:
-    # Never echo the environment: it holds the audio token secret.
-    print(f"configuration is not valid: {type(error).__name__}: {error}", file=sys.stderr)
+merged = {**load(os.environ["INFRA_ENV_PATH"]), **load(os.environ["APP_ENV_PATH"])}
+problems = []
+
+for name in ("AWS_REGION", "RADIO_S3_BUCKET", "RADIO_AUDIO_TOKEN_SECRET"):
+    if not merged.get(name):
+        problems.append(f"{name} is missing or empty")
+
+secret = merged.get("RADIO_AUDIO_TOKEN_SECRET", "")
+if len(secret) < 32:
+    problems.append("RADIO_AUDIO_TOKEN_SECRET is shorter than 32 characters")
+
+for name in ("RADIO_MAX_ACTIVE_UNIQUE_STATIONS", "RADIO_LISTENER_MAX_SESSIONS",
+             "RADIO_LISTENER_SHARD_COUNT", "RADIO_LISTENER_SHARD_INDEX"):
+    raw = merged.get(name)
+    if raw is None:
+        continue
+    if not raw.isdigit():
+        problems.append(f"{name} is not a non-negative integer")
+
+mode = merged.get("RADIO_PIPELINE_MODE")
+if mode is not None and mode not in ("legacy", "shared_sqs"):
+    problems.append(f"RADIO_PIPELINE_MODE is {mode!r}")
+
+if problems:
+    # The problem, never the value. This file holds the audio token secret.
+    for problem in problems:
+        print(f"configuration problem: {problem}", file=sys.stderr)
     raise SystemExit(1)
-print(f"settings valid: mode={settings.RADIO_PIPELINE_MODE} "
-      f"capacity={settings.RADIO_MAX_ACTIVE_UNIQUE_STATIONS}")
-' || die "${EXIT_PRECONDITION}" "production configuration failed Settings validation"
+
+print("structural checks passed: "
+      f"mode={merged.get(\"RADIO_PIPELINE_MODE\", \"<default>\")} "
+      f"capacity={merged.get(\"RADIO_MAX_ACTIVE_UNIQUE_STATIONS\", \"<default>\")}")
+' || die "${EXIT_PRECONDITION}" "production configuration failed structural validation"
+    log "layer B (real Settings model) runs inside the exact-SHA image during deployment"
 fi
 
 log "created:   ${#CREATED[@]}${CREATED:+ (${CREATED[*]})}"

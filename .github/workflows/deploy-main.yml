@@ -29,6 +29,7 @@ on:
 permissions:
   id-token: write   # OIDC only. No static credential is ever created.
   contents: read
+  checks: read      # to confirm EVERY protected check, not just CI
 
 concurrency:
   group: radio-production-main-deploy
@@ -116,6 +117,75 @@ jobs:
           echo "Deploying commit: ${commit}"
           echo "commit=${commit}" >> "${GITHUB_OUTPUT}"
           echo "should_deploy=true" >> "${GITHUB_OUTPUT}"
+
+      - name: Require every protected check to have passed on this commit
+        if: steps.target.outputs.should_deploy == 'true'
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+          COMMIT_SHA: ${{ steps.target.outputs.commit }}
+        run: |
+          set -euo pipefail
+
+          # CI succeeding is NOT the same as every protected check succeeding.
+          # CodeQL runs as a separate workflow, so a workflow_run trigger from CI
+          # fires while "Analyze Python" may still be queued -- or already
+          # failed. Deploying then would ship a commit that the branch
+          # protection would have refused to merge.
+          required=(
+            "Lint (ruff)"
+            "Tests (Python 3.11)"
+            "Tests (Python 3.12)"
+            "Security (bandit + pip-audit)"
+            "Analyze Python"
+          )
+
+          # Bounded polling: CodeQL routinely finishes a few minutes after CI.
+          deadline=$(( SECONDS + 1800 ))
+          while :; do
+            runs="$(gh api --paginate \
+              "repos/${GITHUB_REPOSITORY}/commits/${COMMIT_SHA}/check-runs" \
+              --jq '.check_runs[] | "\(.name)\t\(.status)\t\(.conclusion)"' 2>/dev/null || true)"
+
+            pending=0
+            failed=0
+            missing=0
+            report=""
+            for name in "${required[@]}"; do
+              line="$(grep -F -m1 "${name}"$'\t' <<<"${runs}" || true)"
+              if [[ -z "${line}" ]]; then
+                report+=$'\n'"  ${name}: MISSING"
+                missing=1
+                continue
+              fi
+              status="$(cut -f2 <<<"${line}")"
+              conclusion="$(cut -f3 <<<"${line}")"
+              report+=$'\n'"  ${name}: ${status}/${conclusion}"
+              if [[ "${status}" != "completed" ]]; then
+                pending=1
+              elif [[ "${conclusion}" != "success" ]]; then
+                # skipped, cancelled, timed_out, neutral and failure are all
+                # refusals. A check that did not actually run has not passed.
+                failed=1
+              fi
+            done
+
+            if (( failed )); then
+              echo "A required check did not succeed:${report}" >&2
+              exit 1
+            fi
+            if (( pending || missing )) && (( SECONDS < deadline )); then
+              echo "Waiting for required checks:${report}"
+              sleep 30
+              continue
+            fi
+            if (( pending || missing )); then
+              echo "Required checks did not complete in time:${report}" >&2
+              exit 1
+            fi
+            echo "All required checks passed:${report}"
+            break
+          done
 
       - name: Configure short-lived AWS credentials
         if: steps.target.outputs.should_deploy == 'true'
@@ -215,7 +285,7 @@ jobs:
               --instance-ids "${{ vars.EC2_INSTANCE_ID }}" \
               --parameters "CommitSha=${COMMIT_SHA}" \
               --comment "Deploy main ${COMMIT_SHA} (run ${GITHUB_RUN_ID})" \
-              --timeout-seconds 7200 \
+              --timeout-seconds 6600 \
               --max-concurrency "1" \
               --max-errors "0" \
               --query 'Command.CommandId' \
@@ -238,7 +308,17 @@ jobs:
 
           # Polled rather than `aws ssm wait command-executed`, which gives up
           # well before a first install finishes building three aarch64 images.
-          deadline=$(( SECONDS + 7200 ))
+          #
+          # A deliberate ladder, widest first, so nothing races anything:
+          #   role credentials     7200s
+          #   poll deadline        6700s  <- leaves 500s for the final
+          #                                  GetCommandInvocation, the summary
+          #                                  and failure reporting
+          #   SendCommand timeout  6600s
+          #   document execution   6300s
+          # Using 7200 for all four would mean the credentials expire at the
+          # exact moment the last call needs them.
+          deadline=$(( SECONDS + 6700 ))
           status="Pending"
           while (( SECONDS < deadline )); do
             status="$(
@@ -298,7 +378,19 @@ jobs:
             echo "Deployment did not succeed." >&2
             exit 1
           fi
-          grep -q '^MAIN_AUTO_DEPLOY_OK$' <<<"${stdout}"
+
+          # The document writes the full build log to the host and returns only
+          # a concise result, so this marker is genuinely present rather than
+          # having been cut off: SSM truncates StandardOutputContent at 24,000
+          # characters, and a first install produces far more than that. If the
+          # document ever went back to streaming, this assertion would fail
+          # rather than silently pass on truncated output.
+          if ! grep -q '^MAIN_AUTO_DEPLOY_OK$' <<<"${stdout}"; then
+            echo "The deployment did not report its success marker." >&2
+            echo "Output length: ${#stdout} characters." >&2
+            exit 1
+          fi
+          printf '%s\n' "${stdout}" | grep -E '^(commit|deploy_log|deploy_exit_code)=' || true
           echo "Deployment succeeded."
 
       - name: Report skipped deployment

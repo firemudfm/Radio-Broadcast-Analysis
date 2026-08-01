@@ -80,17 +80,50 @@ validate_full_sha "${COMMIT}"
 
 # ---------------------------------------------------------------------------
 stage "1/9  Validating the source repository"
-require_commands git docker tar stat df awk python3 flock
+# Only the commands a BASELINE Amazon Linux host already has. Requiring docker
+# here was a first-install deadlock: the script demanded Docker before running
+# the script whose entire job is to install Docker, so a bare host could never
+# get past step one. The full toolchain is required in stage 4a, after
+# ensure-host-prerequisites.sh has had its chance to provide it.
+require_commands bash python3 rpm dnf mountpoint flock git
+if [ -L "${SOURCE_REPO}" ]; then
+    die "${EXIT_PRECONDITION}" "${SOURCE_REPO} is a symlink; refusing to follow it"
+fi
 [ -d "${SOURCE_REPO}/.git" ] || die "${EXIT_PRECONDITION}" "${SOURCE_REPO} is not a git repository"
+if [ -L "${SOURCE_REPO}/.git" ]; then
+    die "${EXIT_PRECONDITION}" "${SOURCE_REPO}/.git is a symlink; refusing to follow it"
+fi
+
+# The clone belongs to ec2-user; this script runs as root under SSM. Every git
+# command goes through that account so a deployment never leaves root-owned
+# objects in a repository its owner then cannot maintain -- the failure shows up
+# later as a permission error during an unrelated fetch, long after the cause.
+REPO_USER="${RADIO_REPO_USER:-ec2-user}"
+REPO_OWNER="$(stat -c '%U' "${SOURCE_REPO}" 2>/dev/null || echo '?')"
+if [ "$(id -u)" -eq 0 ] && id -u "${REPO_USER}" >/dev/null 2>&1; then
+    if [ "${REPO_OWNER}" != "${REPO_USER}" ]; then
+        die "${EXIT_PRECONDITION}" \
+            "${SOURCE_REPO} is owned by '${REPO_OWNER}', expected ${REPO_USER}"
+    fi
+    repo_git() {
+        runuser -u "${REPO_USER}" -- env HOME="/home/${REPO_USER}" git -C "${SOURCE_REPO}" "$@"
+    }
+    log "git operations run as ${REPO_USER}"
+else
+    # Not root, or the account does not exist: run as whoever we are. Used by
+    # the Linux test harness, never by the production path.
+    repo_git() { git -C "${SOURCE_REPO}" "$@"; }
+    log "git operations run as $(id -un)"
+fi
 
 EXPECTED_ORIGIN="${RADIO_EXPECTED_ORIGIN:-https://github.com/naman1995jain/Radio-Broadcast-Analysis.git}"
-ACTUAL_ORIGIN="$(git -C "${SOURCE_REPO}" remote get-url origin 2>/dev/null || true)"
+ACTUAL_ORIGIN="$(repo_git remote get-url origin 2>/dev/null || true)"
 if [ "${ACTUAL_ORIGIN}" != "${EXPECTED_ORIGIN}" ]; then
     die "${EXIT_PRECONDITION}" \
         "origin is '${ACTUAL_ORIGIN}', expected '${EXPECTED_ORIGIN}'; refusing to deploy from an unexpected source"
 fi
 
-commit_exists_locally "${SOURCE_REPO}" "${COMMIT}" \
+repo_git cat-file -e "${COMMIT}^{commit}" 2>/dev/null \
     || die "${EXIT_PRECONDITION}" \
        "commit ${COMMIT} is not present in ${SOURCE_REPO}; this script never fetches"
 
@@ -98,7 +131,7 @@ commit_exists_locally "${SOURCE_REPO}" "${COMMIT}" \
 # exists on the host for any other reason -- a stale fetch, a feature branch, a
 # tag -- cannot be deployed. This is what makes "main is the only deployment
 # source" true on the host and not merely in the workflow.
-git -C "${SOURCE_REPO}" merge-base --is-ancestor "${COMMIT}" origin/main 2>/dev/null \
+repo_git merge-base --is-ancestor "${COMMIT}" origin/main 2>/dev/null \
     || die "${EXIT_PRECONDITION}" \
        "commit ${COMMIT} is not an ancestor of origin/main; only reviewed main commits deploy"
 log "commit ${COMMIT} is present and on origin/main"
@@ -126,6 +159,14 @@ log "${DATA_ROOT} mounted with sufficient space"
 stage "4/9  Ensuring host prerequisites"
 bash "${SCRIPT_DIR}/ensure-host-prerequisites.sh" \
     || die "${EXIT_PRECONDITION}" "host prerequisites could not be satisfied"
+
+# ---------------------------------------------------------------------------
+stage "4a/9 Requiring the full toolchain"
+# Now, not before. Everything below is either installed by the step above or was
+# already present, so a missing command here is a real failure rather than the
+# ordering bug of asking for Docker before installing it.
+require_commands git docker tar stat df awk jq curl sha256sum python3
+log "full toolchain present"
 
 # ---------------------------------------------------------------------------
 stage "5/9  Ensuring runtime directories"

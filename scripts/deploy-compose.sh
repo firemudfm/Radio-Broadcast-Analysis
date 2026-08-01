@@ -516,6 +516,30 @@ while IFS='=' read -r image_repo image_id; do
 done <<<"$(stage_image_ids "${STAGE}" "${COMMIT}")"
 
 # ---------------------------------------------------------------------------
+# LAYER B of configuration validation. The real Settings model, inside the image
+# that was just built from the exact commit -- so the answer is about the code
+# that will actually run, not about whatever is checked out in the source clone.
+# Runs before the backup and the migration, because a configuration that cannot
+# load is a deployment that must stop before it changes any persistent state.
+stage "14a/16 Validating configuration against the exact image"
+FAILURE_PHASE="config-validation"
+docker run --rm \
+    --name "radio-config-validate-$$" \
+    --network none \
+    --user "${RADIO_CONTAINER_UID}:${RADIO_CONTAINER_GID}" \
+    --env-file "${ENV_DIR}/infrastructure.env" \
+    --env-file "${ENV_DIR}/application.env" \
+    --security-opt no-new-privileges:true \
+    --cap-drop ALL \
+    --read-only \
+    --tmpfs /tmp:rw,noexec,nosuid,size=16m \
+    --entrypoint python \
+    "${RADIO_API_IMAGE}" \
+    -m app.cli.validate_configuration 2>&1 | tee -a "${DEPLOY_LOG}" \
+    || die "${EXIT_PRECONDITION}" \
+       "configuration is not valid for the code at ${COMMIT}; nothing was migrated"
+
+# ---------------------------------------------------------------------------
 stage "15/16 Backing up and migrating the database"
 FAILURE_PHASE="backup"
 DATABASE_FILE="${DATA_ROOT}/database/radio.db"

@@ -101,6 +101,12 @@ echo "==> Checking the audio token secret"
 while IFS= read -r match; do
     case "${match}" in
         *replace-me*|*development-only*|*RADIO_AUDIO_TOKEN_SECRET=$*|*x*x*x*) continue ;;
+        # An install-time marker in a public template, not a value.
+        *REPLACE_WITH_*) continue ;;
+        # A redaction pattern, not a secret. The deployment workflow and the SSM
+        # document both sed this name out of host output before it reaches a
+        # public log, so the name legitimately appears next to a regex.
+        *'[^[:space:]]'*|*'<redacted>'*) continue ;;
     esac
     file="${match%%:*}"
     # grep -r reports ./tests/x, git grep reports tests/x. The exclusions below
