@@ -319,6 +319,13 @@ Runs `python -m app.cli.migrate_database` in a one-shot container with
 mounted. It reuses the same `Database` class and `run_migrations` as normal
 start-up — a different entrypoint, not a second migration engine.
 
+`--database PATH` is a real escape hatch: given an explicit path, the CLI runs
+without the rest of the application configuration and falls back to the SQLite
+defaults, printing `configuration unavailable ... continuing`. Recovering a
+schema should not require a bucket name and an audio-token secret to be valid
+first. Without `--database` there is no way to know which file to migrate, so a
+broken configuration is still a usage error (exit 64).
+
 ---
 
 ## 6d. Spool cleanup on demand

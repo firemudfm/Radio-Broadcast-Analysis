@@ -285,6 +285,44 @@ def test_migration_output_contains_no_secret(tmp_path: Path) -> None:
     assert secret not in result.stderr
 
 
+def migrate_bare(*args: str) -> subprocess.CompletedProcess:
+    """Run the CLI with the application configuration deliberately absent."""
+    environment = {
+        key: value
+        for key, value in os.environ.items()
+        if not key.startswith("RADIO_") and not key.startswith("AWS_")
+    }
+    return subprocess.run(  # noqa: S603 - fixed interpreter, argument array
+        [sys.executable, "-m", "app.cli.migrate_database", *args],
+        capture_output=True, text=True, timeout=120, check=False,
+        cwd=str(REPO_ROOT), env=environment,
+    )
+
+
+def test_migration_runs_without_application_configuration(tmp_path: Path) -> None:
+    """--database is a real escape hatch, not a decoration.
+
+    Recovering a schema must not require an S3 bucket name and an audio-token
+    secret to be present -- those have nothing to do with SQLite, and demanding
+    them couples recovery to exactly the configuration an operator may be in the
+    middle of fixing.
+    """
+    database = tmp_path / "radio.db"
+    result = migrate_bare("--database", str(database))
+    assert result.returncode == 0, result.stderr
+    payload = json.loads(result.stdout)
+    assert payload["status"] == "PASS"
+    assert payload["schema_version_after"] >= 6
+    assert payload["pragmas"]["journal_mode"] == "wal"
+
+
+def test_migration_without_database_or_configuration_is_a_usage_error() -> None:
+    """With neither, there is no way to know which file to migrate."""
+    result = migrate_bare("--check-only")
+    assert result.returncode == 64
+    assert "--database" in result.stderr, "the error must say how to proceed"
+
+
 def test_the_cli_package_imports_without_boto3(tmp_path: Path) -> None:
     """The migration CLI must not depend on the AWS SDK."""
     probe = (

@@ -69,24 +69,46 @@ def build_parser() -> argparse.ArgumentParser:
 def main(argv: list[str] | None = None) -> int:
     args = build_parser().parse_args(argv)
 
+    # Configuration is preferred but not always required. Without --database
+    # there is no way to know which file to migrate, so a bad config is fatal.
+    # With --database the caller has already answered the only question that
+    # settings were needed for, and the remaining three values are SQLite
+    # tunings that Database already defaults. Requiring RADIO_S3_BUCKET and an
+    # audio-token secret before a schema migration would couple recovery to
+    # unrelated configuration -- exactly when an operator is least able to
+    # supply it.
+    settings = None
     try:
         settings = get_settings()
     except Exception as error:  # noqa: BLE001 - a bad config is a usage error
-        print(f"configuration error: {type(error).__name__}: {error}", file=sys.stderr)
-        return EXIT_BAD_USAGE
+        if args.database is None:
+            print(f"configuration error: {type(error).__name__}: {error}", file=sys.stderr)
+            print(
+                "hint: pass --database PATH to migrate without full application "
+                "configuration",
+                file=sys.stderr,
+            )
+            return EXIT_BAD_USAGE
+        print(
+            f"configuration unavailable ({type(error).__name__}); "
+            "continuing with SQLite defaults because --database was given",
+            file=sys.stderr,
+        )
 
-    database_path = Path(args.database) if args.database else Path(settings.RADIO_DATABASE_PATH)
+    database_path = Path(args.database) if args.database else Path(settings.RADIO_DATABASE_PATH)  # type: ignore[union-attr]
 
     if args.check_only and not database_path.exists():
         _report({"status": "ABSENT", "database": str(database_path), "schema_version": None})
         return EXIT_OK
 
-    database = Database(
-        database_path,
-        mention_window_days=settings.RADIO_MENTION_WINDOW_DAYS,
-        mention_audio_pad_seconds=settings.RADIO_MENTION_AUDIO_PAD_SECONDS,
-        busy_retries=settings.RADIO_SQLITE_BUSY_RETRIES,
-    )
+    tunings: dict[str, Any] = {}
+    if settings is not None:
+        tunings = {
+            "mention_window_days": settings.RADIO_MENTION_WINDOW_DAYS,
+            "mention_audio_pad_seconds": settings.RADIO_MENTION_AUDIO_PAD_SECONDS,
+            "busy_retries": settings.RADIO_SQLITE_BUSY_RETRIES,
+        }
+    database = Database(database_path, **tunings)
 
     try:
         # Database.connect() applies the schema and runs the versioned
