@@ -1,0 +1,378 @@
+AWSTemplateFormatVersion: '2010-09-09'
+
+Description: >-
+  GitHub OIDC access for the Radio Broadcast Analysis production host. Grants
+  GitHub Actions the ability to run exactly two FIXED Systems Manager documents
+  against exactly one instance, and nothing else. There is no SSH, no EC2 key
+  pair, no static AWS credential, and no way to send an arbitrary shell command.
+
+  Source-controlled representation of the existing radio-broadcast-github-oidc
+  stack. Compare against the live template before updating: this must be an
+  UPDATE that adds the deployment document and widens one inline policy, never
+  a replacement of the OIDC provider or the role.
+
+Parameters:
+  GitHubOwner:
+    Type: String
+    Default: naman1995jain
+    AllowedPattern: '^[A-Za-z0-9][A-Za-z0-9-]{0,38}$'
+    Description: GitHub account that owns the repository.
+
+  GitHubRepository:
+    Type: String
+    Default: Radio-Broadcast-Analysis
+    AllowedPattern: '^[A-Za-z0-9._-]{1,100}$'
+    Description: Repository name.
+
+  DeploymentBranch:
+    Type: String
+    Default: main
+    AllowedValues: [main]
+    Description: >-
+      The only branch permitted to assume the role. Constrained to `main` in the
+      template itself so a future parameter change cannot quietly introduce a
+      staging or deployment branch.
+
+  TargetInstanceId:
+    Type: String
+    Default: i-0ae7d15561e58806b
+    AllowedPattern: '^i-[0-9a-f]{8,17}$'
+    Description: The single EC2 instance this role may target.
+
+  MaxSessionDurationSeconds:
+    Type: Number
+    Default: 7200
+    MinValue: 3600
+    MaxValue: 7200
+    Description: >-
+      A first install builds three images and downloads roughly 1.1 GiB of
+      models on 4 aarch64 vCPUs, which does not fit in the default hour. Capped
+      at the approved 7200 seconds.
+
+Resources:
+
+  # ---------------------------------------------------------------------------
+  # Existing resource. Present so the template is a complete representation of
+  # the stack; it must NOT be replaced by an update.
+  GitHubOidcProvider:
+    Type: AWS::IAM::OIDCProvider
+    DeletionPolicy: Retain
+    UpdateReplacePolicy: Retain
+    Properties:
+      Url: https://token.actions.githubusercontent.com
+      ClientIdList:
+        - sts.amazonaws.com
+      ThumbprintList:
+        - 6938fd4d98bab03faadb97b34396831e3780aea1
+        - 1c58a3a8518e8759bf075b76b750d4f2df264fcd
+
+  # ---------------------------------------------------------------------------
+  # Existing fixed smoke document. Preserved unchanged.
+  RadioBroadcastOidcSmoke:
+    Type: AWS::SSM::Document
+    Properties:
+      Name: RadioBroadcastOidcSmoke
+      DocumentType: Command
+      DocumentFormat: YAML
+      TargetType: /AWS::EC2::Instance
+      UpdateMethod: NewVersion
+      Content:
+        schemaVersion: '2.2'
+        description: >-
+          Fixed read-only proof that GitHub OIDC can reach this instance through
+          Systems Manager. Takes no parameters and changes nothing.
+        mainSteps:
+          - action: aws:runShellScript
+            name: smoke
+            inputs:
+              timeoutSeconds: '60'
+              runCommand:
+                - |
+                  set -euo pipefail
+                  echo "GITHUB_OIDC_SSM_OK"
+                  echo "architecture=$(uname -m)"
+                  echo "SSM_FIXED_DOCUMENT_OK"
+
+  # ---------------------------------------------------------------------------
+  # NEW. The only way GitHub can cause a production deployment.
+  #
+  # CommitSha is the single parameter, constrained to 40 lower-case hex
+  # characters by AllowedPattern, and interpolated as an ENVIRONMENT VARIABLE
+  # rather than substituted into the command text. That distinction is the whole
+  # security story: with ENV_VAR the value can never be parsed as shell, so even
+  # a parameter that somehow escaped the pattern cannot become a command.
+  #
+  # There is deliberately no branch parameter, no tag parameter, no stage
+  # parameter, no package parameter, no model parameter and no command
+  # parameter. Everything else is decided by the repository content at the
+  # commit being deployed, which is reviewed.
+  RadioBroadcastDeployMain:
+    Type: AWS::SSM::Document
+    Properties:
+      Name: RadioBroadcastDeployMain
+      DocumentType: Command
+      DocumentFormat: YAML
+      TargetType: /AWS::EC2::Instance
+      UpdateMethod: NewVersion
+      Content:
+        schemaVersion: '2.2'
+        description: >-
+          Deploy one exact, reviewed main commit of Radio-Broadcast-Analysis.
+          Fetches only that commit, extracts it read-only, and runs the
+          repository's own first-install-or-update script. Accepts no shell
+          command, no branch and no tag.
+        parameters:
+          CommitSha:
+            type: String
+            description: Full 40-character lower-case commit id on main.
+            allowedPattern: '^[0-9a-f]{40}$'
+        mainSteps:
+          - action: aws:runShellScript
+            name: deployExactMainCommit
+            inputs:
+              timeoutSeconds: '7200'
+              # ENV_VAR, never string substitution into runCommand.
+              interpolationType: ENV_VAR
+              runCommand:
+                - |
+                  set -euo pipefail
+
+                  REPO_URL="https://github.com/naman1995jain/Radio-Broadcast-Analysis.git"
+                  REPO_DIR="/var/lib/radio/app/Radio-Broadcast-Analysis"
+                  DATA_ROOT="/var/lib/radio"
+
+                  commit="${SSM_CommitSha:-}"
+
+                  # Validated again on the host. The document pattern is the
+                  # first gate; this is the one that runs where the value is
+                  # actually used. Shell globbing, not `grep -E '^...$'`, which
+                  # anchors per line and would accept a value whose first line
+                  # is 40 hex characters.
+                  if [ "${#commit}" -ne 40 ]; then
+                    echo "CommitSha is not 40 characters" >&2
+                    exit 64
+                  fi
+                  case "${commit}" in
+                    *[!0-9a-f]*)
+                      echo "CommitSha is not lower-case hexadecimal" >&2
+                      exit 64
+                      ;;
+                  esac
+                  echo "commit=${commit}"
+
+                  architecture="$(uname -m)"
+                  echo "architecture=${architecture}"
+                  if [ "${architecture}" != "aarch64" ]; then
+                    echo "unexpected architecture" >&2
+                    exit 65
+                  fi
+
+                  # The data volume must be a real mount before anything is
+                  # written: the spool and the database live on it, and a
+                  # deployment onto the root volume fills / and wedges the host.
+                  if ! mountpoint -q "${DATA_ROOT}"; then
+                    echo "${DATA_ROOT} is not a mount point" >&2
+                    exit 65
+                  fi
+
+                  if ! command -v git >/dev/null 2>&1; then
+                    echo "installing git"
+                    dnf install -y git
+                  fi
+
+                  mkdir -p "$(dirname "${REPO_DIR}")"
+
+                  if [ ! -d "${REPO_DIR}/.git" ]; then
+                    echo "cloning ${REPO_URL}"
+                    git clone --quiet "${REPO_URL}" "${REPO_DIR}"
+                  else
+                    actual="$(git -C "${REPO_DIR}" remote get-url origin || true)"
+                    if [ "${actual}" != "${REPO_URL}" ]; then
+                      echo "existing clone points at '${actual}'" >&2
+                      exit 65
+                    fi
+                  fi
+
+                  # Fetch only. No pull, no reset, no checkout: nothing here
+                  # ever moves the working tree, so the on-host clone cannot
+                  # drift into being a second source of deployable content.
+                  git -C "${REPO_DIR}" fetch --quiet origin main
+                  git -C "${REPO_DIR}" fetch --quiet origin "${commit}" || true
+
+                  if ! git -C "${REPO_DIR}" cat-file -e "${commit}^{commit}" 2>/dev/null; then
+                    echo "commit ${commit} is not present after fetch" >&2
+                    exit 65
+                  fi
+
+                  # MAIN ONLY, enforced on the host. A commit that exists for
+                  # any other reason -- a stale fetch, a feature branch, a tag --
+                  # is refused here even if something upstream sent it.
+                  if ! git -C "${REPO_DIR}" merge-base --is-ancestor "${commit}" origin/main; then
+                    echo "commit ${commit} is not an ancestor of origin/main" >&2
+                    exit 65
+                  fi
+                  echo "commit is on origin/main"
+
+                  # Bootstrap from an archive of that exact commit rather than
+                  # from the clone's working tree, so the scripts that run are
+                  # exactly the reviewed ones and cannot be affected by anything
+                  # left in the clone.
+                  bootstrap="$(mktemp -d /tmp/radio-bootstrap.XXXXXX)"
+                  cleanup() { rm -rf "${bootstrap}"; }
+                  trap cleanup EXIT
+
+                  git -C "${REPO_DIR}" archive --format=tar "${commit}" \
+                    | tar -x -C "${bootstrap}"
+
+                  if [ ! -f "${bootstrap}/scripts/main-auto-deploy.sh" ]; then
+                    echo "release is missing scripts/main-auto-deploy.sh" >&2
+                    exit 65
+                  fi
+
+                  set +e
+                  bash "${bootstrap}/scripts/main-auto-deploy.sh" \
+                    --commit "${commit}" \
+                    --source-repo "${REPO_DIR}"
+                  status=$?
+                  set -e
+
+                  echo "deploy_exit_code=${status}"
+                  exit "${status}"
+
+  # ---------------------------------------------------------------------------
+  # Existing role. Trust policy unchanged: only this repository's `main` branch
+  # may assume it. UPDATED inline policy adds SendCommand for the new document.
+  GitHubActionsRadioDeployRole:
+    Type: AWS::IAM::Role
+    DeletionPolicy: Retain
+    UpdateReplacePolicy: Retain
+    Properties:
+      RoleName: GitHubActionsRadioDeployRole
+      Description: >-
+        GitHub Actions deployment role. May run two fixed SSM documents against
+        one instance. Cannot run arbitrary shell, cannot start a session, and
+        holds no static credential.
+      MaxSessionDuration: !Ref MaxSessionDurationSeconds
+      AssumeRolePolicyDocument:
+        Version: '2012-10-17'
+        Statement:
+          - Sid: GitHubOidcMainBranchOnly
+            Effect: Allow
+            Principal:
+              Federated: !Sub >-
+                arn:${AWS::Partition}:iam::${AWS::AccountId}:oidc-provider/token.actions.githubusercontent.com
+            Action: sts:AssumeRoleWithWebIdentity
+            Condition:
+              StringEquals:
+                token.actions.githubusercontent.com:aud: sts.amazonaws.com
+                # Exact subject. Not StringLike with a wildcard: `repo:owner/name:*`
+                # would let a pull-request branch or a tag assume this role.
+                token.actions.githubusercontent.com:sub: !Sub >-
+                  repo:${GitHubOwner}/${GitHubRepository}:ref:refs/heads/${DeploymentBranch}
+      Policies:
+        - PolicyName: RadioFixedSsmDocumentsOnly
+          PolicyDocument:
+            Version: '2012-10-17'
+            Statement:
+              # --- run the two fixed documents, on one instance ---------------
+              # Two resource entries, both required: SendCommand is authorised
+              # against the document AND the target. Omitting the instance would
+              # allow the document to run anywhere in the account.
+              - Sid: RunFixedSmokeDocument
+                Effect: Allow
+                Action: ssm:SendCommand
+                Resource:
+                  - !Sub arn:${AWS::Partition}:ssm:${AWS::Region}:${AWS::AccountId}:document/RadioBroadcastOidcSmoke
+                  - !Sub arn:${AWS::Partition}:ec2:${AWS::Region}:${AWS::AccountId}:instance/${TargetInstanceId}
+
+              - Sid: RunFixedDeployDocument
+                Effect: Allow
+                Action: ssm:SendCommand
+                Resource:
+                  - !Sub arn:${AWS::Partition}:ssm:${AWS::Region}:${AWS::AccountId}:document/RadioBroadcastDeployMain
+                  - !Sub arn:${AWS::Partition}:ec2:${AWS::Region}:${AWS::AccountId}:instance/${TargetInstanceId}
+
+              # --- read-only, needed to poll a command to completion ----------
+              # These SSM read actions do not support resource-level constraints,
+              # so they are scoped by being read-only. None of them can change
+              # anything, and none can reveal a document this role cannot run.
+              - Sid: ReadCommandStatus
+                Effect: Allow
+                Action:
+                  - ssm:GetCommandInvocation
+                  - ssm:ListCommandInvocations
+                  - ssm:ListCommands
+                  - ssm:DescribeInstanceInformation
+                Resource: '*'
+
+              # --- confirm the document version before sending ----------------
+              - Sid: DescribeFixedDocuments
+                Effect: Allow
+                Action:
+                  - ssm:DescribeDocument
+                  - ssm:GetDocument
+                Resource:
+                  - !Sub arn:${AWS::Partition}:ssm:${AWS::Region}:${AWS::AccountId}:document/RadioBroadcastOidcSmoke
+                  - !Sub arn:${AWS::Partition}:ssm:${AWS::Region}:${AWS::AccountId}:document/RadioBroadcastDeployMain
+
+              # --- explicit denials -------------------------------------------
+              # Belt and braces. The Allow statements above already grant none of
+              # this, but an explicit Deny cannot be overridden by a future
+              # policy attached to the same role, and these are the exact
+              # escalations that would turn "run a reviewed deployment" into
+              # "run anything on the host".
+              - Sid: DenyArbitraryCommandExecution
+                Effect: Deny
+                Action: ssm:SendCommand
+                Resource:
+                  - !Sub arn:${AWS::Partition}:ssm:${AWS::Region}::document/AWS-RunShellScript
+                  - !Sub arn:${AWS::Partition}:ssm:${AWS::Region}::document/AWS-RunPowerShellScript
+                  - !Sub arn:${AWS::Partition}:ssm:${AWS::Region}::document/AWS-RunRemoteScript
+
+              - Sid: DenyInteractiveAccess
+                Effect: Deny
+                Action:
+                  - ssm:StartSession
+                  - ssm:ResumeSession
+                  - ssm:TerminateSession
+                  - ec2-instance-connect:SendSSHPublicKey
+                  - ec2-instance-connect:SendSerialConsoleSSHPublicKey
+                Resource: '*'
+
+              - Sid: DenyPrivilegeEscalation
+                Effect: Deny
+                Action:
+                  - iam:*
+                  - sts:AssumeRole
+                  - ec2:RunInstances
+                  - ec2:AuthorizeSecurityGroupIngress
+                  - ec2:ModifyInstanceAttribute
+                  - cloudformation:*
+                  - secretsmanager:*
+                Resource: '*'
+
+Outputs:
+  DeployDocumentName:
+    Description: Fixed deployment document name for the GitHub workflow.
+    Value: !Ref RadioBroadcastDeployMain
+    Export:
+      Name: !Sub '${AWS::StackName}-DeployDocumentName'
+
+  DeployDocumentArn:
+    Description: ARN of the fixed deployment document.
+    Value: !Sub arn:${AWS::Partition}:ssm:${AWS::Region}:${AWS::AccountId}:document/RadioBroadcastDeployMain
+
+  DeployRoleArn:
+    Description: Role ARN for aws-actions/configure-aws-credentials.
+    Value: !GetAtt GitHubActionsRadioDeployRole.Arn
+    Export:
+      Name: !Sub '${AWS::StackName}-DeployRoleArn'
+
+  DocumentVersionReminder:
+    Description: >-
+      After this stack updates, read the document's numeric version and set the
+      production environment variable SSM_DEPLOY_DOCUMENT_VERSION to it. The
+      workflow sends an explicit version and must never use $LATEST or $DEFAULT.
+    Value: >-
+      aws ssm describe-document --name RadioBroadcastDeployMain
+      --query 'Document.DocumentVersion' --output text
