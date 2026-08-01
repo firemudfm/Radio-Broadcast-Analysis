@@ -1,0 +1,101 @@
+{
+  "schema": "radio.toolchain.lock.v1",
+  "comment": [
+    "Pinned, non-secret deployment tooling for the Amazon Linux 2023 aarch64",
+    "production host. This exists so a replacement host prepares itself to the",
+    "same specification instead of to whatever the package mirrors happen to",
+    "hold that day.",
+    "",
+    "Nothing secret belongs here: no account id, no instance id, no token, no",
+    "credential, no private key, no environment value. scripts/secret-scan.sh",
+    "and tests/test_main_auto_deploy.py both enforce that.",
+    "",
+    "The Compose digest was taken from the official docker/compose release",
+    "checksum file, not computed from a local download -- deriving a digest from",
+    "one machine's copy would assert a verification that never happened."
+  ],
+  "docker_compose": {
+    "version": "v5.3.1",
+    "released": "2026-07-07",
+    "release_url": "https://github.com/docker/compose/releases/tag/v5.3.1",
+    "linux_aarch64": {
+      "asset": "docker-compose-linux-aarch64",
+      "sha256": "aa611e811d0ea25897839c404bfb5bf93ce706dc51c500a4457890f5d0606a86",
+      "checksum_asset": "docker-compose-linux-aarch64.sha256",
+      "install_path": "/usr/libexec/docker/cli-plugins/docker-compose"
+    },
+    "minimum_supported": "v2.24.0",
+    "minimum_reason": "compose.prod.yaml uses the !override tag, added in Compose 2.24."
+  },
+  "minimum_versions": {
+    "docker_engine": "24.0.0",
+    "python": "3.11",
+    "ssm_agent": "3.2.0.0",
+    "ssm_agent_reason": "Command document schema 2.2 with ENV_VAR interpolation."
+  },
+  "packages": {
+    "comment": [
+      "Approved Amazon Linux 2023 packages, checked with rpm -q and installed",
+      "only when missing. curl-minimal is deliberately listed rather than curl:",
+      "AL2023 ships curl-minimal, and installing full curl requires an erase of",
+      "curl-minimal, which is exactly the kind of unrelated churn a deployment",
+      "must not perform."
+    ],
+    "required": [
+      "git",
+      "docker",
+      "python3.11",
+      "python3.11-pip",
+      "python3.11-devel",
+      "gcc",
+      "gcc-c++",
+      "make",
+      "cmake",
+      "ninja-build",
+      "jq",
+      "unzip",
+      "tar",
+      "rsync",
+      "openssl",
+      "sqlite",
+      "xfsprogs",
+      "nvme-cli",
+      "htop",
+      "tmux",
+      "curl-minimal",
+      "wget",
+      "libgomp",
+      "shadow-utils",
+      "findutils",
+      "which"
+    ],
+    "forbidden": [
+      "curl"
+    ],
+    "forbidden_reason": "Installing full curl would erase curl-minimal.",
+    "dnf_forbidden_flags": [
+      "--allowerasing",
+      "--skip-broken",
+      "--nogpgcheck",
+      "--disablerepo"
+    ]
+  },
+  "docker_daemon": {
+    "config_path": "/etc/docker/daemon.json",
+    "expected": {
+      "data-root": "/var/lib/radio/docker",
+      "log-driver": "json-file",
+      "log-opts": {
+        "max-size": "10m",
+        "max-file": "5"
+      },
+      "live-restore": true
+    },
+    "rules": [
+      "Written only when /etc/docker/daemon.json is absent.",
+      "An existing file with a different data-root is a hard failure, never edited.",
+      "No TCP listener is ever configured.",
+      "The radio account is never added to the docker group."
+    ]
+  }
+}
