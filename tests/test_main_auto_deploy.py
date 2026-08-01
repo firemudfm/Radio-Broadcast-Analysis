@@ -330,7 +330,7 @@ def test_the_role_may_send_only_the_two_fixed_documents() -> None:
 def test_the_role_is_constrained_to_one_instance() -> None:
     text = cfn_text()
     assert "instance/${TargetInstanceId}" in text
-    assert "AllowedPattern: '^i-[0-9a-f]{8,17}$'" in text
+    assert "AllowedPattern: '^i-[0-9a-f]{17}$'" in text
 
 
 def test_the_role_denies_arbitrary_execution_and_escalation() -> None:
@@ -352,7 +352,7 @@ def test_the_trust_policy_pins_the_exact_live_subject() -> None:
     deployment authenticating. StringLike with a wildcard would let any branch,
     pull request or tag assume the role."""
     text = cfn_yaml()
-    assert "token.actions.githubusercontent.com:sub: !Ref GitHubOidcSubject" in text
+    assert "'token.actions.githubusercontent.com:sub': !Ref GitHubOidcSubject" in text
     assert "repo:naman1995jain/Radio-Broadcast-Analysis:environment:production" in text
     assert "StringEquals:" in text
     assert "StringLike" not in text

@@ -77,6 +77,10 @@ def cfn_resources() -> str:
     text = cfn_yaml()
     return text[text.index("\nResources:"):text.index("\nOutputs:")]
 
+def cfn_outputs() -> str:
+    text = cfn_yaml()
+    return text[text.index("\nOutputs:"):]
+
 
 def executable_lines(path: Path) -> str:
     return "\n".join(
@@ -144,26 +148,61 @@ def test_the_existing_inline_policy_name_is_preserved() -> None:
 
 
 def test_existing_resources_retain_their_retain_policies() -> None:
+    """The live template declares Retain on the OIDC provider only. Adding one
+    to another live resource moves the file away from the live baseline."""
     text = cfn_text()
-    assert text.count("DeletionPolicy: Retain") >= 2
-    assert text.count("UpdateReplacePolicy: Retain") >= 2
+    assert text.count("DeletionPolicy: Retain") == 1
+    assert text.count("UpdateReplacePolicy: Retain") == 1
+    provider = text[text.index("  GitHubOidcProvider:"):text.index("  OidcSmokeDocument:")]
+    assert "DeletionPolicy: Retain" in provider
+    assert "UpdateReplacePolicy: Retain" in provider
 
 
-def test_the_template_is_marked_as_pending_live_reconciliation() -> None:
-    """The live stack has 13 outputs and 5 tags whose names are not known here.
-    Inventing them would delete the real ones, so the file must refuse to
-    present itself as ready to execute."""
+def test_no_reconciliation_marker_remains() -> None:
+    """The template has been reconciled against the live stack, so it must no
+    longer describe itself as an unverified proposal."""
     text = cfn_text()
-    assert "PENDING LIVE RECONCILIATION" in text
-    assert "DO NOT CREATE A CHANGE SET FROM THIS FILE YET" in text
-    assert "13 Outputs" in text
-    assert "RECONCILIATION REQUIRED" in text, "the Outputs section must say so too"
+    assert "PENDING LIVE RECONCILIATION" not in text
+    assert "RECONCILIATION REQUIRED" not in text
+    assert "DO NOT CREATE A CHANGE SET FROM THIS FILE YET" not in text
 
 
-def test_the_template_documents_how_to_retrieve_the_live_baseline() -> None:
-    text = cfn_text()
-    assert "get-template" in text
-    assert "--template-stage Original" in text
+LIVE_OUTPUTS = [
+    "StackName",
+    "AWSAccountId",
+    "AWSRegion",
+    "GitHubOidcProviderArn",
+    "GitHubOidcSubject",
+    "GitHubActionsRoleName",
+    "GitHubActionsRoleArn",
+    "SsmSmokeDocumentName",
+    "SsmSmokeDocumentArn",
+    "TargetInstanceId",
+    "GitHubRepository",
+    "GitHubRepositoryId",
+    "GitHubRepositoryOwnerId",
+]
+
+NEW_OUTPUTS = [
+    "DeployDocumentName",
+    "DeployDocumentArn",
+    "DeployDocumentVersionCommand",
+]
+
+
+@pytest.mark.parametrize("name", LIVE_OUTPUTS)
+def test_every_live_output_is_still_declared(name: str) -> None:
+    """An output that disappears from a template is DELETED from the stack, and
+    anything importing it breaks."""
+    assert re.search(rf"^  {name}:$", cfn_outputs(), re.MULTILINE), (
+        f"live output {name} must be preserved verbatim"
+    )
+
+
+def test_the_thirteen_live_outputs_are_only_extended() -> None:
+    declared = re.findall(r"^  ([A-Za-z0-9]+):$", cfn_outputs(), re.MULTILINE)
+    assert len(LIVE_OUTPUTS) == 13
+    assert declared == LIVE_OUTPUTS + NEW_OUTPUTS
 
 
 # =============================================================================
@@ -186,7 +225,9 @@ def test_the_trust_subject_is_the_live_environment_form() -> None:
 def test_the_trust_subject_comes_from_a_parameter() -> None:
     text = cfn_text()
     assert "GitHubOidcSubject:" in text
-    assert "token.actions.githubusercontent.com:sub: !Ref GitHubOidcSubject" in text
+    assert (
+        "'token.actions.githubusercontent.com:sub': !Ref GitHubOidcSubject" in text
+    ), "the live template quotes the condition key"
 
 
 def test_the_trust_policy_uses_string_equals_without_a_wildcard() -> None:
@@ -211,10 +252,24 @@ def test_the_provider_url_and_client_id_are_unchanged() -> None:
     assert "- sts.amazonaws.com" in text
 
 
-def test_the_template_reminds_that_tags_must_be_reconciled() -> None:
+LIVE_TAGS = [
+    ("Project", "RadioBroadcastAnalysis"),
+    ("Environment", "Production"),
+    ("ManagedBy", "CloudFormation"),
+    ("Owner", "Naman"),
+    ("Purpose", "GitHubOIDC"),
+]
+
+
+@pytest.mark.parametrize("key,value", LIVE_TAGS)
+def test_every_live_tag_is_declared_on_every_resource(key: str, value: str) -> None:
     """Omitting tags on an update REMOVES them."""
     text = cfn_text()
-    assert text.count("reconcile the 5 live project tags") >= 2
+    assert text.count(f"- Key: {key}\n          Value: {value}") == 4
+
+
+def test_no_placeholder_tag_comment_remains() -> None:
+    assert "reconcile the 5 live project tags" not in cfn_text()
 
 
 # =============================================================================
@@ -248,6 +303,17 @@ def test_the_smoke_document_was_not_shortened() -> None:
     smoke = text[text.index("OidcSmokeDocument:"):text.index("DeployMainDocument:")]
     for line in LIVE_SMOKE_LINES:
         assert line in smoke
+
+
+def test_the_smoke_document_keeps_the_live_runcommand_form() -> None:
+    """The live document stores runCommand as ten separate strings and declares
+    no UpdateMethod. Rewriting either produces a new document version during an
+    update that is meant to leave this resource completely alone."""
+    text = cfn_text()
+    smoke = text[text.index("  OidcSmokeDocument:"):text.index("  DeployMainDocument:")]
+    assert "UpdateMethod" not in smoke
+    for line in LIVE_SMOKE_LINES:
+        assert f"- '{line}'" in smoke
 
 
 # =============================================================================

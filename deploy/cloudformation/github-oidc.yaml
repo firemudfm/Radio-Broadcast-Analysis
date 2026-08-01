@@ -1,65 +1,41 @@
 AWSTemplateFormatVersion: '2010-09-09'
-
-# =============================================================================
-# PENDING LIVE RECONCILIATION -- DO NOT CREATE A CHANGE SET FROM THIS FILE YET
-# =============================================================================
-#
-# This file preserves every identity of the live radio-broadcast-github-oidc
-# stack that is known from the deployment record, but it has NOT been compared
-# byte-for-byte against the live template, because the environment it was
-# written in has no AWS access.
-#
-# The live stack is recorded as having 13 Outputs and 5 project tags. Their
-# names and values are NOT known here and are deliberately NOT invented: a
-# guessed output is a stack update that deletes the real one, and a guessed tag
-# set removes the tags it does not name.
-#
-# Before any change set is created, an AWS-connected operator must:
-#
-#   aws cloudformation get-template --stack-name radio-broadcast-github-oidc \
-#       --template-stage Original --region eu-north-1
-#
-#   aws cloudformation describe-stacks --stack-name radio-broadcast-github-oidc \
-#       --region eu-north-1 --query 'Stacks[0].{Outputs:Outputs,Tags:Tags}'
-#
-# ...then merge the live Outputs and Tags into this file verbatim, diff the
-# result against the live template, and confirm the change set contains ONLY:
-#
-#   * Add    DeployMainDocument
-#   * Modify GitHubActionsRole   (inline policy, and MaxSessionDuration)
-#
-# with no replacement and no modification of GitHubOidcProvider or
-# OidcSmokeDocument. Until that is done, this template is a reviewed proposal,
-# not something to execute.
-# =============================================================================
-
 Description: >-
-  GitHub OIDC access for the Radio Broadcast Analysis production host. Grants
-  GitHub Actions the ability to run exactly two FIXED Systems Manager documents
-  against exactly one instance, and nothing else. No SSH, no EC2 key pair, no
-  static AWS credential, and no way to send an arbitrary shell command.
+  Separate GitHub OIDC bootstrap for Radio Broadcast Analysis. Creates one GitHub
+  IAM OIDC provider, two fixed SSM command documents and one restricted GitHub
+  Actions role. Does not modify the existing radio-broadcast-analysis-prod stack.
 
 Parameters:
+
   GitHubOidcSubject:
     Type: String
     Default: repo:naman1995jain/Radio-Broadcast-Analysis:environment:production
-    Description: >-
-      The exact OIDC subject permitted to assume the role. This is the LIVE
-      value and must not be changed to a `ref:refs/heads/main` form: the
-      deployment workflow runs with `environment: production`, so GitHub issues
-      an environment-scoped subject, and a ref-scoped trust policy would simply
-      stop the deployment working.
-
-      Main-only is not enforced here. It is enforced by four other things: the
-      production environment's own branch restriction, the protect-main ruleset,
-      the workflow's trigger checks, and the host refusing a commit that is not
-      an ancestor of origin/main.
+    Description: Exact GitHub Actions OIDC sub claim for the protected production environment
+    AllowedPattern: '^repo:[A-Za-z0-9._-]+/[A-Za-z0-9._-]+:[A-Za-z0-9._/:-]+$'
+    ConstraintDescription: >-
+      Must be a nonempty repo-scoped GitHub OIDC subject shaped as
+      repo:OWNER/REPOSITORY:CONTEXT. Wildcard characters are not accepted.
 
   TargetInstanceId:
     Type: String
     Default: i-0ae7d15561e58806b
-    AllowedPattern: '^i-[0-9a-f]{8,17}$'
-    Description: The single EC2 instance this role may target.
+    Description: The single production EC2 instance the fixed smoke document may target
+    AllowedPattern: '^i-[0-9a-f]{17}$'
+    ConstraintDescription: Must be a 17 character hexadecimal EC2 instance id.
+
+  GitHubRepository:
+    Type: String
+    Default: naman1995jain/Radio-Broadcast-Analysis
+    Description: GitHub repository that owns the protected production environment
+
+  GitHubRepositoryId:
+    Type: String
+    Default: '1298638244'
+    Description: Immutable GitHub repository_id claim
+
+  GitHubRepositoryOwnerId:
+    Type: String
+    Default: '131385927'
+    Description: Immutable GitHub repository_owner_id claim
 
   MaxSessionDurationSeconds:
     Type: Number
@@ -74,13 +50,6 @@ Parameters:
 
 Resources:
 
-  # ---------------------------------------------------------------------------
-  # EXISTING. Logical ID must stay GitHubOidcProvider.
-  #
-  # No ThumbprintList: the live provider was created without one, and IAM now
-  # validates GitHub's certificate chain natively. Adding thumbprints here would
-  # produce an UpdateOpenIDConnectProviderThumbprint action on a resource this
-  # change is not supposed to touch at all.
   GitHubOidcProvider:
     Type: AWS::IAM::OIDCProvider
     DeletionPolicy: Retain
@@ -89,16 +58,18 @@ Resources:
       Url: https://token.actions.githubusercontent.com
       ClientIdList:
         - sts.amazonaws.com
-      # Tags: reconcile the 5 live project tags here before creating a change
-      # set. Omitting them on an update REMOVES them.
+      Tags:
+        - Key: Project
+          Value: RadioBroadcastAnalysis
+        - Key: Environment
+          Value: Production
+        - Key: ManagedBy
+          Value: CloudFormation
+        - Key: Owner
+          Value: Naman
+        - Key: Purpose
+          Value: GitHubOIDC
 
-  # ---------------------------------------------------------------------------
-  # EXISTING. Logical ID must stay OidcSmokeDocument; physical name stays
-  # RadioBroadcastOidcSmoke.
-  #
-  # The content below is the live fixed behaviour, reproduced exactly. It is not
-  # shortened and not "tidied": any difference here produces a new document
-  # version during an update that is meant to leave this resource alone.
   OidcSmokeDocument:
     Type: AWS::SSM::Document
     Properties:
@@ -106,33 +77,39 @@ Resources:
       DocumentType: Command
       DocumentFormat: YAML
       TargetType: /AWS::EC2::Instance
-      UpdateMethod: NewVersion
       Content:
         schemaVersion: '2.2'
         description: >-
-          Fixed read-only proof that GitHub OIDC can reach this instance through
-          Systems Manager. Takes no parameters and changes nothing.
+          Fixed read only smoke check used to prove GitHub OIDC to Systems Manager
+          connectivity for the Radio Broadcast Analysis production instance.
         mainSteps:
           - action: aws:runShellScript
-            name: smoke
+            name: radioBroadcastOidcSmoke
             inputs:
               timeoutSeconds: '60'
               runCommand:
-                - |
-                  set -euo pipefail
-                  echo GITHUB_OIDC_SSM_OK
-                  echo "user=$(whoami)"
-                  echo "architecture=$(uname -m)"
-                  test "$(uname -m)" = "aarch64"
-                  test -d /var/lib/radio
-                  test -d /var/lib/radio/app/Radio-Broadcast-Analysis
-                  test -f /etc/radio-broadcast-analysis/infrastructure.env
-                  test "$(systemctl is-active amazon-ssm-agent)" = "active"
-                  echo SSM_FIXED_DOCUMENT_OK
+                - 'set -euo pipefail'
+                - 'echo GITHUB_OIDC_SSM_OK'
+                - 'echo "user=$(whoami)"'
+                - 'echo "architecture=$(uname -m)"'
+                - 'test "$(uname -m)" = "aarch64"'
+                - 'test -d /var/lib/radio'
+                - 'test -d /var/lib/radio/app/Radio-Broadcast-Analysis'
+                - 'test -f /etc/radio-broadcast-analysis/infrastructure.env'
+                - 'test "$(systemctl is-active amazon-ssm-agent)" = "active"'
+                - 'echo SSM_FIXED_DOCUMENT_OK'
+      Tags:
+        - Key: Project
+          Value: RadioBroadcastAnalysis
+        - Key: Environment
+          Value: Production
+        - Key: ManagedBy
+          Value: CloudFormation
+        - Key: Owner
+          Value: Naman
+        - Key: Purpose
+          Value: GitHubOIDC
 
-  # ---------------------------------------------------------------------------
-  # NEW. The only resource this update adds, and the only way GitHub can cause
-  # a production deployment.
   DeployMainDocument:
     Type: AWS::SSM::Document
     Properties:
@@ -176,7 +153,7 @@ Resources:
                   LOG_DIR="${DATA_ROOT}/logs/deployments"
                   REPO_USER="ec2-user"
 
-                  # Read only from the environment. Never `{{ CommitSha }}`.
+                  # Read only from the environment, never spliced into command text.
                   commit="${SSM_CommitSha:-}"
 
                   # Validated again where it is actually used. Shell globbing,
@@ -343,69 +320,53 @@ Resources:
                     status=1
                   fi
                   exit "${status}"
+      Tags:
+        - Key: Project
+          Value: RadioBroadcastAnalysis
+        - Key: Environment
+          Value: Production
+        - Key: ManagedBy
+          Value: CloudFormation
+        - Key: Owner
+          Value: Naman
+        - Key: Purpose
+          Value: GitHubOIDC
 
-  # ---------------------------------------------------------------------------
-  # EXISTING. Logical ID must stay GitHubActionsRole; physical name stays
-  # GitHubActionsRadioDeployRole; inline policy name stays
-  # GitHubActionsRadioOidcSmokeAccess. The policy is EXTENDED, not replaced --
-  # renaming it would delete the live policy and create a new one.
   GitHubActionsRole:
     Type: AWS::IAM::Role
-    DeletionPolicy: Retain
-    UpdateReplacePolicy: Retain
     Properties:
       RoleName: GitHubActionsRadioDeployRole
-      Description: >-
-        GitHub Actions deployment role. May run two fixed SSM documents against
-        one instance. Cannot run arbitrary shell, cannot start a session, and
-        holds no static credential.
+      Description: Restricted GitHub OIDC role for the fixed production SSM smoke document
       MaxSessionDuration: !Ref MaxSessionDurationSeconds
       AssumeRolePolicyDocument:
         Version: '2012-10-17'
         Statement:
-          - Sid: GitHubOidcProductionEnvironment
+          - Sid: GitHubOidcProductionEnvironmentOnly
             Effect: Allow
             Principal:
-              Federated: !Sub >-
-                arn:${AWS::Partition}:iam::${AWS::AccountId}:oidc-provider/token.actions.githubusercontent.com
+              Federated: !Ref GitHubOidcProvider
             Action: sts:AssumeRoleWithWebIdentity
             Condition:
               StringEquals:
-                token.actions.githubusercontent.com:aud: sts.amazonaws.com
-                # Exact subject, StringEquals. Never StringLike and never a
-                # wildcard: `repo:owner/name:*` would let any branch, any pull
-                # request and any tag assume this role.
-                token.actions.githubusercontent.com:sub: !Ref GitHubOidcSubject
-      # Tags: reconcile the 5 live project tags here before creating a change
-      # set. Omitting them on an update REMOVES them.
+                'token.actions.githubusercontent.com:aud': sts.amazonaws.com
+                'token.actions.githubusercontent.com:sub': !Ref GitHubOidcSubject
       Policies:
         - PolicyName: GitHubActionsRadioOidcSmokeAccess
           PolicyDocument:
             Version: '2012-10-17'
             Statement:
-              # --- existing smoke permission, unchanged ----------------------
-              - Sid: RunFixedSmokeDocument
+              - Sid: SendFixedSmokeCommand
                 Effect: Allow
                 Action: ssm:SendCommand
                 Resource:
-                  - !Sub arn:${AWS::Partition}:ssm:${AWS::Region}:${AWS::AccountId}:document/RadioBroadcastOidcSmoke
-                  - !Sub arn:${AWS::Partition}:ec2:${AWS::Region}:${AWS::AccountId}:instance/${TargetInstanceId}
-
-              # --- added: the deployment document ----------------------------
-              # Two resource entries, both required: SendCommand is authorised
-              # against the document AND the target. Omitting the instance would
-              # let the document run anywhere in the account.
+                  - !Sub 'arn:${AWS::Partition}:ssm:${AWS::Region}:${AWS::AccountId}:document/RadioBroadcastOidcSmoke'
+                  - !Sub 'arn:${AWS::Partition}:ec2:${AWS::Region}:${AWS::AccountId}:instance/${TargetInstanceId}'
               - Sid: RunFixedDeployDocument
                 Effect: Allow
                 Action: ssm:SendCommand
                 Resource:
-                  - !Sub arn:${AWS::Partition}:ssm:${AWS::Region}:${AWS::AccountId}:document/RadioBroadcastDeployMain
-                  - !Sub arn:${AWS::Partition}:ec2:${AWS::Region}:${AWS::AccountId}:instance/${TargetInstanceId}
-
-              # --- existing command-status reads, unchanged ------------------
-              # These SSM read actions do not support resource-level
-              # constraints. They are scoped by being read-only: none can change
-              # anything, and none can reveal a document this role cannot run.
+                  - !Sub 'arn:${AWS::Partition}:ssm:${AWS::Region}:${AWS::AccountId}:document/RadioBroadcastDeployMain'
+                  - !Sub 'arn:${AWS::Partition}:ec2:${AWS::Region}:${AWS::AccountId}:instance/${TargetInstanceId}'
               - Sid: ReadCommandStatus
                 Effect: Allow
                 Action:
@@ -414,30 +375,21 @@ Resources:
                   - ssm:ListCommands
                   - ssm:DescribeInstanceInformation
                 Resource: '*'
-
-              # --- added: confirm the pinned document version before sending --
               - Sid: DescribeFixedDocuments
                 Effect: Allow
                 Action:
                   - ssm:DescribeDocument
                   - ssm:GetDocument
                 Resource:
-                  - !Sub arn:${AWS::Partition}:ssm:${AWS::Region}:${AWS::AccountId}:document/RadioBroadcastOidcSmoke
-                  - !Sub arn:${AWS::Partition}:ssm:${AWS::Region}:${AWS::AccountId}:document/RadioBroadcastDeployMain
-
-              # --- explicit denials -------------------------------------------
-              # The Allow statements above already grant none of this, but a
-              # Deny cannot be overridden by a future policy attached to the
-              # same role, and these are the exact escalations that would turn
-              # "run a reviewed deployment" into "run anything on the host".
+                  - !Sub 'arn:${AWS::Partition}:ssm:${AWS::Region}:${AWS::AccountId}:document/RadioBroadcastOidcSmoke'
+                  - !Sub 'arn:${AWS::Partition}:ssm:${AWS::Region}:${AWS::AccountId}:document/RadioBroadcastDeployMain'
               - Sid: DenyArbitraryCommandExecution
                 Effect: Deny
                 Action: ssm:SendCommand
                 Resource:
-                  - !Sub arn:${AWS::Partition}:ssm:${AWS::Region}::document/AWS-RunShellScript
-                  - !Sub arn:${AWS::Partition}:ssm:${AWS::Region}::document/AWS-RunPowerShellScript
-                  - !Sub arn:${AWS::Partition}:ssm:${AWS::Region}::document/AWS-RunRemoteScript
-
+                  - !Sub 'arn:${AWS::Partition}:ssm:${AWS::Region}::document/AWS-RunShellScript'
+                  - !Sub 'arn:${AWS::Partition}:ssm:${AWS::Region}::document/AWS-RunPowerShellScript'
+                  - !Sub 'arn:${AWS::Partition}:ssm:${AWS::Region}::document/AWS-RunRemoteScript'
               - Sid: DenyInteractiveAccess
                 Effect: Deny
                 Action:
@@ -447,7 +399,6 @@ Resources:
                   - ec2-instance-connect:SendSSHPublicKey
                   - ec2-instance-connect:SendSerialConsoleSSHPublicKey
                 Resource: '*'
-
               - Sid: DenyPrivilegeEscalation
                 Effect: Deny
                 Action:
@@ -459,25 +410,85 @@ Resources:
                   - cloudformation:*
                   - secretsmanager:*
                 Resource: '*'
+      Tags:
+        - Key: Project
+          Value: RadioBroadcastAnalysis
+        - Key: Environment
+          Value: Production
+        - Key: ManagedBy
+          Value: CloudFormation
+        - Key: Owner
+          Value: Naman
+        - Key: Purpose
+          Value: GitHubOIDC
 
 Outputs:
-  # RECONCILIATION REQUIRED: the live stack has 13 outputs. Only the ones this
-  # change needs are declared here. The remaining live outputs must be copied in
-  # verbatim before a change set is created -- an output that disappears from a
-  # template is DELETED from the stack, and anything importing it breaks.
+
+  StackName:
+    Description: Name of this GitHub OIDC bootstrap stack
+    Value: !Ref 'AWS::StackName'
+
+  AWSAccountId:
+    Description: AWS account that owns the OIDC trust
+    Value: !Ref 'AWS::AccountId'
+
+  AWSRegion:
+    Description: AWS Region of this stack
+    Value: !Ref 'AWS::Region'
+
+  GitHubOidcProviderArn:
+    Description: ARN of the GitHub IAM OIDC provider
+    Value: !Ref GitHubOidcProvider
+
+  GitHubOidcSubject:
+    Description: Exact GitHub OIDC sub claim trusted by the role
+    Value: !Ref GitHubOidcSubject
+
+  GitHubActionsRoleName:
+    Description: Name of the restricted GitHub Actions role
+    Value: !Ref GitHubActionsRole
+
+  GitHubActionsRoleArn:
+    Description: ARN of the restricted GitHub Actions role
+    Value: !GetAtt GitHubActionsRole.Arn
+
+  SsmSmokeDocumentName:
+    Description: Name of the fixed SSM smoke document
+    Value: !Ref OidcSmokeDocument
+
+  SsmSmokeDocumentArn:
+    Description: ARN of the fixed SSM smoke document
+    Value: !Sub 'arn:${AWS::Partition}:ssm:${AWS::Region}:${AWS::AccountId}:document/${OidcSmokeDocument}'
+
+  TargetInstanceId:
+    Description: The only EC2 instance the smoke command may target
+    Value: !Ref TargetInstanceId
+
+  GitHubRepository:
+    Description: GitHub repository trusted by this stack
+    Value: !Ref GitHubRepository
+
+  GitHubRepositoryId:
+    Description: Immutable GitHub repository_id claim
+    Value: !Ref GitHubRepositoryId
+
+  GitHubRepositoryOwnerId:
+    Description: Immutable GitHub repository_owner_id claim
+    Value: !Ref GitHubRepositoryOwnerId
+
   DeployDocumentName:
-    Description: Fixed deployment document name for the GitHub workflow.
+    Description: Name of the fixed main deployment SSM document
     Value: !Ref DeployMainDocument
 
   DeployDocumentArn:
-    Description: ARN of the fixed deployment document.
-    Value: !Sub arn:${AWS::Partition}:ssm:${AWS::Region}:${AWS::AccountId}:document/RadioBroadcastDeployMain
+    Description: ARN of the fixed main deployment SSM document
+    Value: !Sub 'arn:${AWS::Partition}:ssm:${AWS::Region}:${AWS::AccountId}:document/${DeployMainDocument}'
 
-  DocumentVersionReminder:
+  DeployDocumentVersionCommand:
     Description: >-
-      After this stack updates, read the document's numeric version and set the
-      production environment variable SSM_DEPLOY_DOCUMENT_VERSION to it. The
-      workflow sends an explicit version and must never use $LATEST or $DEFAULT.
+      Reads the numeric version of the deployment document. The production
+      workflow must send that explicit numeric version and must never use the
+      LATEST or DEFAULT aliases.
     Value: >-
       aws ssm describe-document --name RadioBroadcastDeployMain
       --query 'Document.DocumentVersion' --output text
