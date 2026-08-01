@@ -25,10 +25,16 @@
 services:
 
   api:
-    # Loopback only. TLS termination and any authentication belong in a reverse
-    # proxy; uvicorn is not the right thing to expose to a network directly.
+    # Loopback by DEFAULT. TLS termination and any authentication belong in a
+    # reverse proxy; uvicorn is not the right thing to expose directly.
+    #
+    # RADIO_API_PUBLISH_HOST exists only so a restricted pilot can bind
+    # 0.0.0.0 without editing this file. scripts/deploy-compose.sh refuses that
+    # value unless RADIO_ALLOW_DIRECT_HTTP=1 is also set, because the API runs
+    # with auth_mode=none and no TLS -- network restriction then has to come
+    # from outside the container, which this repository cannot enforce.
     ports: !override
-      - "127.0.0.1:8788:8788"
+      - "${RADIO_API_PUBLISH_HOST:-127.0.0.1}:8788:8788"
     deploy:
       resources:
         limits:

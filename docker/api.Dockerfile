@@ -41,10 +41,31 @@ RUN apt-get update \
     && apt-get upgrade -y --no-install-recommends \
     && rm -rf /var/lib/apt/lists/*
 
-# Fixed uid/gid so bind-mounted host directories have predictable ownership;
-# an auto-assigned uid makes /var/lib/radio permissions a guessing game.
-RUN groupadd --gid 10001 radio \
-    && useradd --uid 10001 --gid radio --no-create-home --shell /usr/sbin/nologin radio
+# Runtime identity is a BUILD ARGUMENT, not a constant.
+#
+# Bind-mounted host directories must be writable by whatever uid the container
+# runs as, and the host's `radio` account is not guaranteed to be 10001 -- the
+# production host uses 992. Baking 10001 in forced either a recursive chown of
+# /var/lib/radio or a world-writable spool, and both are worse than rebuilding
+# the image with the host's real ids.
+#
+# Defaults stay 10001 so local development and generic builds are unchanged.
+ARG RADIO_UID=10001
+ARG RADIO_GID=10001
+
+RUN set -eu; \
+    for value in "${RADIO_UID}" "${RADIO_GID}"; do \
+        case "${value}" in \
+            ''|*[!0-9]*) echo "RADIO_UID/RADIO_GID must be numeric, got '${value}'" >&2; exit 1 ;; \
+        esac; \
+        # 0 is root: the whole point is that the runtime user is unprivileged.
+        [ "${value}" -ge 1 ] || { echo "RADIO_UID/RADIO_GID must not be 0 (root)" >&2; exit 1; }; \
+        # 65534 is `nobody` on Debian; 65535 is reserved.
+        [ "${value}" -le 65533 ] || { echo "RADIO_UID/RADIO_GID above 65533 is reserved" >&2; exit 1; }; \
+    done; \
+    groupadd --gid "${RADIO_GID}" radio; \
+    useradd --uid "${RADIO_UID}" --gid "${RADIO_GID}" \
+        --no-create-home --shell /usr/sbin/nologin radio
 
 COPY --from=builder /install /usr/local
 

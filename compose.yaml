@@ -59,6 +59,9 @@ x-worker: &worker
   build:
     context: .
     dockerfile: docker/pipeline.Dockerfile
+    args:
+      RADIO_UID: ${RADIO_CONTAINER_UID:-10001}
+      RADIO_GID: ${RADIO_CONTAINER_GID:-10001}
   depends_on:
     api:
       condition: service_healthy
@@ -84,6 +87,11 @@ services:
     build:
       context: .
       dockerfile: docker/api.Dockerfile
+      args:
+        # Runtime identity. Production overrides these with the host's real
+        # `radio` uid/gid so bind mounts are writable without a chown.
+        RADIO_UID: ${RADIO_CONTAINER_UID:-10001}
+        RADIO_GID: ${RADIO_CONTAINER_GID:-10001}
     profiles: [core, integration]
     # The ONLY published port. Bound to loopback in compose.prod.yaml so a
     # reverse proxy terminates TLS rather than exposing uvicorn directly.
@@ -222,6 +230,8 @@ services:
       dockerfile: docker/llm.Dockerfile
       args:
         LLAMA_CPP_TAG: ${LLAMA_CPP_TAG:-b10144}
+        RADIO_UID: ${RADIO_CONTAINER_UID:-10001}
+        RADIO_GID: ${RADIO_CONTAINER_GID:-10001}
     profiles: [llm, integration]
     # NO `ports:` entry, deliberately. 8790 is reachable from other containers
     # on the `radio` network and from nowhere else. An unauthenticated inference
