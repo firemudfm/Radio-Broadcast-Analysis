@@ -60,6 +60,31 @@ while IFS= read -r match; do
     report "a non-placeholder RADIO_AUDIO_TOKEN_SECRET appears in ${file}"
 done < <(git grep -nE 'RADIO_AUDIO_TOKEN_SECRET[[:space:]]*[:=][[:space:]]*[^$"'"'"' ]{16,}' -- . 2>/dev/null || true)
 
+echo "==> Checking public example configuration for production identifiers"
+# NOT a credential check -- an AWS account id is not a secret. This is a
+# separate category: a real account id, live endpoint or generated bucket name
+# in a PUBLIC template is free reconnaissance, and a realistic-looking value
+# invites somebody to copy it into a deployment where it half-works.
+#
+# Scoped to .env.example only. Docs, ADRs, CloudFormation outputs and test
+# fixtures legitimately reference real infrastructure and are not scanned.
+#
+# Matched by SHAPE, never by literal: storing the real account id here would
+# reintroduce the value this check exists to keep out.
+if [ -f .env.example ]; then
+    # Strip comments first; explanatory prose may legitimately mention formats.
+    example_values="$(grep -vE '^[[:space:]]*#' .env.example || true)"
+
+    if printf '%s' "${example_values}" | grep -qE '(^|[^0-9])[0-9]{12}([^0-9]|$)'; then
+        printf '%s' "${example_values}" | grep -nE '(^|[^0-9])[0-9]{12}([^0-9]|$)' >&2
+        report "production identifier found in public example configuration: AWS account id"
+    fi
+    if printf '%s' "${example_values}" | grep -q 'amazonaws\.com'; then
+        printf '%s' "${example_values}" | grep -n 'amazonaws\.com' >&2
+        report "production identifier found in public example configuration: live AWS endpoint"
+    fi
+fi
+
 echo "==> Checking that model binaries are not tracked"
 if git ls-files | grep -qE '\.(gguf|onnx|bin|pt|pth)$'; then
     git ls-files | grep -E '\.(gguf|onnx|bin|pt|pth)$' >&2

@@ -171,6 +171,13 @@ class FasterWhisperEngine:
     are not safe to call concurrently from several threads, and a transcription
     worker that shares one across threads corrupts state rather than failing
     cleanly. One model, one caller at a time, is the supported configuration.
+
+    **This engine never downloads anything.** It loads from a local directory
+    produced by ``scripts/download-models.py`` and checked by
+    ``scripts/verify-models.py``; a missing model is a named, permanent
+    :class:`ModelVerificationError` naming the exact commands to run. There is
+    deliberately no runtime escape hatch and no HTTP client here -- see
+    ``docs/MODEL_MANAGEMENT.md``.
     """
 
     def __init__(
@@ -182,7 +189,6 @@ class FasterWhisperEngine:
         compute_type: str = "int8",
         cpu_threads: int = 2,
         model_revision: str | None = None,
-        allow_download: bool = False,
     ) -> None:
         self.model_name = model_name
         self._model_root = Path(model_root)
@@ -190,7 +196,6 @@ class FasterWhisperEngine:
         self._compute_type = compute_type
         self._cpu_threads = cpu_threads
         self._model_revision = model_revision
-        self._allow_download = allow_download
         self._model: Any | None = None
         self._lock = threading.Lock()
 
@@ -213,29 +218,33 @@ class FasterWhisperEngine:
                 detail="Install the pipeline image, or set RADIO_ASR_BACKEND=fake for tests",
             ) from error
 
+        # A local, already-verified directory is the ONLY accepted source.
+        #
+        # Passing `self.model_name` to WhisperModel instead would make it fetch
+        # from the Hub, which is exactly what this engine must never do: it
+        # bypasses models.lock.json, makes a restart depend on a third party
+        # being reachable, turns start-up into an unbounded operation, and can
+        # place an unverified model on the runtime path. Acquisition is an
+        # explicit operator step (scripts/download-models.py), verified by
+        # scripts/verify-models.py before workers start.
         local = self._local_path()
-        if local.is_dir():
-            source: str = str(local)
-        elif self._allow_download:
-            # Only ever reached when ALLOW_MODEL_DOWNLOAD is set explicitly.
-            # Normal container startup must not pull hundreds of megabytes.
-            logger.warning(
-                "Downloading the ASR model because model download is explicitly allowed",
-                extra={"model": self.model_name},
-            )
-            source = self.model_name
-        else:
+        if not local.is_dir():
             raise ModelVerificationError(
                 f"ASR model {self.model_name!r} is not present locally",
                 detail=(
-                    f"Expected {local}. Run scripts/download-models.py, or set "
-                    f"ALLOW_MODEL_DOWNLOAD=1 to fetch at startup."
+                    f"Expected {local}.\n"
+                    f"Run from the repository root:\n"
+                    f"  python3 scripts/download-models.py "
+                    f"--root {self._model_root} --role asr\n"
+                    f"Then verify:\n"
+                    f"  python3 scripts/verify-models.py "
+                    f"--root {self._model_root} --role asr"
                 ),
             )
 
         try:
             self._model = WhisperModel(
-                source,
+                str(local),
                 device=self._device,
                 compute_type=self._compute_type,
                 cpu_threads=self._cpu_threads,

@@ -21,9 +21,36 @@ Three reasons, in order of importance:
 So: images contain code, `/models` is a read-only bind mount, and fetching is
 an explicit, verified step.
 
-`ALLOW_MODEL_DOWNLOAD=1` exists as an escape hatch for the ASR engine and is
-off by default. A missing model is a named permanent error
-(`model_verification_failed`), not a silent 480 MB download during a deploy.
+## 1a. There is no automatic download. Anywhere.
+
+This is a hard policy, not a default that can be flipped:
+
+* **No model is downloaded during Docker build.**
+* **No model is downloaded during container startup.**
+* **No model is downloaded during API startup.**
+* **No model is downloaded during worker startup.**
+
+`FasterWhisperEngine` loads only from a local directory. It holds no HTTP
+client and never passes a repository id to `WhisperModel`, so there is no code
+path that can reach the Hub. A missing model raises a named permanent
+`ModelVerificationError` (`model_verification_failed`) quoting the exact
+commands below.
+
+The LLM container fails fast the same way, exiting `78` with host-side
+instructions; it has no Python interpreter and only a read-only `/models`
+mount.
+
+> An earlier revision of this document described an `ALLOW_MODEL_DOWNLOAD=1`
+> escape hatch. **It never existed** — no such setting was ever read, and the
+> code branch behind it was unreachable. Both the claim and the dead branch
+> have been removed rather than implemented: runtime downloading bypasses
+> `models.lock.json`, makes a restart depend on a third party being reachable,
+> makes start-up unbounded, and can place an unverified model on the runtime
+> path.
+
+Acquisition is always two explicit operator steps: **download**, then
+**verify**. `models.lock.json` remains the single source of provenance and
+expected files.
 
 ---
 
@@ -62,10 +89,35 @@ make models                          # everything, ~1.1 GB
 make models-asr                      # ASR + VAD only (skip the 610 MB LLM)
 ```
 
-On the deployment host, as the container user:
+On the deployment host, as the container user. The role selector is
+`--role`, repeatable — there is no `--asr`, `--llm` or `--vad` flag:
 
 ```bash
-sudo -u '#10001' python3 scripts/download-models.py --root /var/lib/radio/models
+# ASR only
+python3 scripts/download-models.py \
+  --root /var/lib/radio/models \
+  --role asr
+
+# LLM only
+python3 scripts/download-models.py \
+  --root /var/lib/radio/models \
+  --role llm
+
+# VAD only (optional; the classifier degrades to energy signals without it)
+python3 scripts/download-models.py \
+  --root /var/lib/radio/models \
+  --role vad
+
+# Everything (~1.1 GB)
+python3 scripts/download-models.py \
+  --root /var/lib/radio/models
+```
+
+Run as the container user so the files land with the uid the containers use:
+
+```bash
+sudo -u '#10001' python3 scripts/download-models.py \
+  --root /var/lib/radio/models --role asr
 ```
 
 The downloader verifies each file's digest **before** moving it into place, and
@@ -79,14 +131,23 @@ is installed.
 
 ## 4. Verifying
 
+Verification uses the same `--role` selector, so it can be scoped to whatever
+was just downloaded:
+
 ```bash
+python3 scripts/verify-models.py --root /var/lib/radio/models --role asr
+python3 scripts/verify-models.py --root /var/lib/radio/models --role llm
+python3 scripts/verify-models.py --root /var/lib/radio/models --role vad
+
+# Everything
 make models-verify
 sudo -u '#10001' python3 scripts/verify-models.py --root /var/lib/radio/models
 ```
 
-Run this after every download and before every deploy. A worker that starts
-with a truncated or substituted model produces plausible-looking wrong output
-rather than an error — which is exactly the failure this exists to catch.
+Run this after every download and **before starting workers**. A worker that
+starts with a truncated or substituted model produces plausible-looking wrong
+output rather than an error — which is exactly the failure this exists to
+catch, and why there is no automatic-download path that could skip it.
 
 ```bash
 scripts/verify-models.py --root /var/lib/radio/models --quick   # size only, fast

@@ -13,8 +13,26 @@ set -eu
 : "${RADIO_LLM_CONTEXT:=4096}"
 
 if [ ! -r "${RADIO_LLM_MODEL_PATH}" ]; then
+    # Guidance is HOST-side on purpose. This container has no Python, no
+    # network egress for model fetching, and only a read-only /models mount --
+    # downloading from here is neither possible nor desirable. Acquisition is
+    # an explicit operator step against models.lock.json.
     echo "llm.sh: model not readable at ${RADIO_LLM_MODEL_PATH}" >&2
-    echo "Run: python scripts/download-models.py --llm  (see docs/MODEL_MANAGEMENT.md)" >&2
+    echo "" >&2
+    echo "The model is never downloaded automatically. On the HOST, from the" >&2
+    echo "repository root, run:" >&2
+    echo "" >&2
+    echo "  python3 scripts/download-models.py \\" >&2
+    echo "    --root /var/lib/radio/models \\" >&2
+    echo "    --role llm" >&2
+    echo "" >&2
+    echo "Then verify before starting the stack:" >&2
+    echo "" >&2
+    echo "  python3 scripts/verify-models.py \\" >&2
+    echo "    --root /var/lib/radio/models \\" >&2
+    echo "    --role llm" >&2
+    echo "" >&2
+    echo "See docs/MODEL_MANAGEMENT.md" >&2
     exit 78
 fi
 

@@ -81,8 +81,10 @@ Models are **not** baked into images. `/var/lib/radio/models` is mounted
 read-only into the pipeline container. `models.lock.json` pins repo, revision,
 filenames, sizes, SHA-256 and licence. `scripts/download-models.py` fetches and
 verifies; `scripts/verify-models.py` verifies without downloading and is what
-`/readyz` and the container healthcheck rely on. Automatic download during
-container startup is refused unless `ALLOW_MODEL_DOWNLOAD=1` is explicitly set.
+`/readyz` and the container healthcheck rely on. Automatic download is refused
+unconditionally: the engine loads only from a local directory, holds no HTTP
+client, and never passes a repository id to the model loader, so there is no
+code path to the Hub and no runtime setting that could open one.
 
 ## Alternatives considered
 
@@ -116,7 +118,7 @@ container startup is refused unless `ALLOW_MODEL_DOWNLOAD=1` is explicitly set.
 | Risk | Mitigation |
 |---|---|
 | Model files missing at startup | `/readyz` fails; the worker refuses to consume; explicit, not silent |
-| Model download during startup saturating the host | Refused without `ALLOW_MODEL_DOWNLOAD=1`; the documented path is the offline script |
+| Model download during startup saturating the host | Structurally impossible: no downloader in the engine. The only path is the offline script plus verification |
 | ASR slower than real time → queue growth | `transcription_queue_age_seconds` is the primary alert; the planner reduces admission |
 | INT8 on aarch64 degrades quality | `RADIO_ASR_COMPUTE_TYPE` is a setting; the benchmark script compares int8/float32 side by side |
 | Thread oversubscription with the LLM | `RADIO_ASR_CPU_THREADS=2` plus Compose CPU limits on both services |
