@@ -71,17 +71,33 @@ docker compose version
 ```bash
 sudo install -d -m 0750 /etc/radio-broadcast-analysis
 sudo install -d -m 0755 /var/lib/radio
-sudo install -d -m 0700 -o 10001 -g 10001 /var/lib/radio/spool
-sudo install -d -m 0750 -o 10001 -g 10001 \
+RADIO_UID="$(id -u radio)"; RADIO_GID="$(id -g radio)"
+
+sudo install -d -m 0700 -o "$RADIO_UID" -g "$RADIO_GID" /var/lib/radio/spool
+sudo install -d -m 0750 -o "$RADIO_UID" -g "$RADIO_GID" \
     /var/lib/radio/database /var/lib/radio/evidence \
     /var/lib/radio/logs /var/lib/radio/backups
-sudo install -d -m 0755 -o 10001 -g 10001 /var/lib/radio/models
+sudo install -d -m 0755 -o "$RADIO_UID" -g "$RADIO_GID" /var/lib/radio/models
+sudo install -d -m 0750 -o "$RADIO_UID" -g "$RADIO_GID"     /var/lib/radio/releases /var/lib/radio/deploy
 ```
 
-uid/gid **10001** is fixed in all three Dockerfiles. Host directories must be
-owned by it, otherwise a non-root container cannot write to a bind mount and
-the failure surfaces as a confusing permission error at first segment write
-rather than at start-up.
+**The container uid/gid is a build argument, not a constant.** `10001` is only
+the default for local development; this host's `radio` account is **992**, and
+the images are built with that so bind mounts are writable without a recursive
+`chown` of the data volume.
+
+Set it in `compose.env`:
+
+```
+RADIO_CONTAINER_UID=992
+RADIO_CONTAINER_GID=992
+```
+
+`scripts/deploy-compose.sh` reads `id -u radio` / `id -g radio` automatically
+and warns if `compose.env` disagrees. It **verifies** ownership and refuses to
+deploy when it is wrong, printing the exact `chown` to run — it never applies
+one itself, because a recursive `chown` across a spool full of evidence during
+a deploy is not something a script should decide to do.
 
 `spool/` is `0700` because it holds raw broadcast audio.
 
@@ -140,8 +156,8 @@ Models are never baked into an image and never downloaded at container
 start-up. See [MODEL_MANAGEMENT.md](MODEL_MANAGEMENT.md).
 
 ```bash
-sudo -u '#10001' python3 scripts/download-models.py --root /var/lib/radio/models
-sudo -u '#10001' python3 scripts/verify-models.py  --root /var/lib/radio/models
+sudo -u radio python3 scripts/download-models.py --root /var/lib/radio/models
+sudo -u radio python3 scripts/verify-models.py  --root /var/lib/radio/models
 ```
 
 Roughly 1.1 GB. Do this before the first `up`, or the transcription worker
@@ -183,6 +199,187 @@ scripts/smoke-test.sh http://127.0.0.1:8788
 
 Expected on a correct deployment: `/healthz` ok, `/readyz` ready, all four
 components `ok`, spool `ok`, `auth_mode: none`.
+
+---
+
+## 6a. Deploying a release (exact-commit)
+
+`scripts/deploy-compose.sh` deploys **one reviewed commit**, never a branch.
+
+```bash
+sudo scripts/deploy-compose.sh --commit <40-hex-sha> --stage api
+```
+
+### Why exact commits
+
+A branch name would let the deployed content change between approval and
+execution. The script refuses anything that is not a full 40-character sha —
+short shas, tags and branch names included — and it **never runs `git pull`,
+`git fetch`, `git reset` or `git checkout`**. Whoever approves the commit is
+responsible for it being present locally; the deployment step itself is offline
+and auditable.
+
+### Release layout
+
+```
+/var/lib/radio/releases/
+    <full-git-sha>/            immutable, created with `git archive`
+    current  -> <full-git-sha>
+    previous -> <full-git-sha>
+
+/var/lib/radio/deploy/
+    state.json                 non-secret deployment state, written atomically
+    history/                   one snapshot per deployment
+    logs/
+
+/var/lock/radio-compose-deploy.lock
+```
+
+A release contains no `.git`, no env file, no model, no database and no audio.
+`git archive` cannot include them, and the script asserts their absence anyway.
+
+### Stages
+
+| Stage | Starts | Needs models |
+|---|---|---|
+| `api` (default) | api | no |
+| `core` | api, planner | no |
+| `full` | api, planner, listener, transcription, analysis, cleanup, llm | **yes** |
+
+`full` is never the default: it starts live capture. It verifies models with
+`scripts/verify-models.py` before starting anything and refuses if they are
+absent — it never downloads them.
+
+Deploy `api` first on a new host, confirm `/readyz`, then widen.
+
+### The deployment lock
+
+An exclusive `flock` on `/var/lock/radio-compose-deploy.lock` serialises
+deployments and rollbacks. Two concurrent runs would race on the release
+symlinks and the database backup. The lock is released on exit, including on
+failure.
+
+### Order of operations
+
+1. Every validation gate (commit, clean source, mount, ownership, env files,
+   permissions, placeholder secret, static credentials, exposure policy, disk).
+2. Immutable release via `git archive`, then a secret scan inside it.
+3. `docker compose config` from the release.
+4. Build images tagged with the exact sha.
+5. **SQLite backup** (`sqlite3 .backup`, verified) if a database exists.
+6. **Migration** in a one-shot container with `--network none`.
+7. Start services, wait for container health.
+8. Run `scripts/smoke-test.sh` against loopback.
+9. Only then move `current` / `previous` and write `state.json`.
+
+### Failure semantics
+
+The distinction matters and the script reports it explicitly:
+
+* **Failure before any container changed** — the running release is completely
+  untouched. Only the failed temporary release directory is cleaned up. This is
+  *not* a rollback, and the script does not call it one.
+* **Failure after containers began changing** — the database is **not**
+  restored, the new backup is preserved, logs are kept, and the exact failed
+  health check is reported with the rollback command to run.
+
+`current` and `previous` never move until the new release is healthy.
+
+---
+
+## 6b. Rolling back
+
+```bash
+sudo scripts/rollback-compose.sh --previous
+sudo scripts/rollback-compose.sh --to-commit <40-hex-sha>
+sudo scripts/rollback-compose.sh --previous --dry-run
+```
+
+**Code and images roll back. The database does not.**
+
+That is deliberate. Restoring the SQLite file would discard every mention,
+transcript and analysis written since the backup, and the schema is
+forward-only by policy (ADR-004). A backup *is* taken before the rollback, so
+if older code turns out to be incompatible with the newer schema you can
+restore it — as a separate, explicit operator action, never as a side effect.
+
+Rollback never rebuilds: the target commit's images must still exist locally.
+
+---
+
+## 6c. Database migration on its own
+
+```bash
+sudo scripts/migrate-db.sh --image radio-api:<sha>
+sudo scripts/migrate-db.sh --image radio-api:<sha> --check-only
+```
+
+Runs `python -m app.cli.migrate_database` in a one-shot container with
+`--network none`, no published port and only the database and log directories
+mounted. It reuses the same `Database` class and `run_migrations` as normal
+start-up — a different entrypoint, not a second migration engine.
+
+---
+
+## 6d. Spool cleanup on demand
+
+```bash
+sudo scripts/cleanup-spool.sh --image radio-pipeline:<sha> --dry-run
+sudo scripts/cleanup-spool.sh --image radio-pipeline:<sha>
+```
+
+A thin wrapper with no deletion policy of its own. Retention, watermarks and
+containment are enforced by `app/workers/cleanup.py`, which joins every
+candidate against SQLite job state. A `pending` segment or audio belonging to a
+confirmed mention is never deleted, at any watermark.
+
+---
+
+## 6e. Direct HTTP exposure (restricted pilot only)
+
+The API binds `127.0.0.1:8788` by default. To publish it directly, **both** are
+required in `compose.env`:
+
+```
+RADIO_API_PUBLISH_HOST=0.0.0.0
+RADIO_ALLOW_DIRECT_HTTP=1
+```
+
+Without the acknowledgement the deployment fails before anything is built.
+
+This is a **restricted-pilot option, not the recommended architecture.** The
+API runs with `auth_mode=none` and no TLS; nothing in this repository can
+restrict who reaches it, so that must be enforced by the host firewall or
+security group. A reverse proxy with TLS remains deferred work and is not part
+of this repository.
+
+---
+
+## 6f. Deployment state
+
+`/var/lib/radio/deploy/state.json`, written through a temporary file and
+renamed atomically:
+
+```json
+{
+  "schema_version": 1,
+  "current_commit": "…", "previous_commit": "…",
+  "deployed_at": "…", "deployed_by": "…", "stage": "api",
+  "compose_project": "radio-prod", "release_path": "…",
+  "api_image": "radio-api:…", "api_image_id": "sha256:…",
+  "migration": "ok", "backup_path": "…", "smoke_test": "pass"
+}
+```
+
+It holds no credential, no token, no environment-file content and no transcript.
+Logs are under `/var/lib/radio/deploy/logs/`.
+
+### Not yet automated
+
+There is deliberately **no** GitHub production deployment workflow and **no**
+deployment SSM document in this repository. The GitHub OIDC role remains
+smoke-only. These scripts are the reviewed foundation a fixed SSM document can
+call later; `AWS-RunShellScript` is not an acceptable transport for it.
 
 ---
 
@@ -248,7 +445,7 @@ remains readable throughout.
 | Symptom | Likely cause | Check |
 |---|---|---|
 | Worker exits immediately with `RADIO_PIPELINE_MODE is 'legacy'` | Mode not enabled | `application.env` |
-| Container cannot write the spool | Host dir not owned by 10001 | `ls -ln /var/lib/radio` |
+| Container cannot write the spool | Host dir not owned by the container uid | `ls -ln /var/lib/radio`, compare with `id -u radio` |
 | `model_verification_failed` | Models absent or truncated | `scripts/verify-models.py` |
 | LLM container exits 78 | GGUF missing | `ls -l /var/lib/radio/models/qwen/` |
 | `/readyz` 503, components `absent` | Workers not started | `docker compose ps` |

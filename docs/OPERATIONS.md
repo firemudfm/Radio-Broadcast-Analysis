@@ -201,7 +201,7 @@ Restore:
 ```bash
 docker compose --profile core --profile pipeline down
 gunzip -c /var/lib/radio/backups/radio-<stamp>.db.gz > /var/lib/radio/database/radio.db
-chown 10001:10001 /var/lib/radio/database/radio.db
+chown "$(id -u radio):$(id -g radio)" /var/lib/radio/database/radio.db
 docker compose --profile core --profile pipeline up -d
 ```
 
