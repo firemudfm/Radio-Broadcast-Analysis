@@ -174,10 +174,11 @@ def test_empty_result_is_reported_as_empty() -> None:
 def test_a_missing_model_fails_with_a_named_error_not_a_silent_download(
     tmp_path: Path,
 ) -> None:
+    # No `allow_download` argument exists any more: acquisition is an explicit
+    # operator step, never a runtime fallback.
     engine = FasterWhisperEngine(
         model_name="Systran/faster-whisper-small",
         model_root=tmp_path / "models",
-        allow_download=False,
     )
     with pytest.raises((ModelVerificationError, Exception)) as error:
         engine.transcribe(AUDIO, DecodeOptions())
