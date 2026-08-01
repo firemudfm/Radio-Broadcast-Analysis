@@ -21,6 +21,7 @@ SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 source "${SCRIPT_DIR}/lib/deploy-common.sh"
 
 TARGET_COMMIT=""
+TARGET_STAGE=""
 USE_PREVIOUS=0
 DRY_RUN=0
 COMPOSE_ENV="${RADIO_COMPOSE_ENV:-/etc/radio-broadcast-analysis/compose.env}"
@@ -32,13 +33,19 @@ usage() {
 Roll back to a previously deployed release (code and images only).
 
 Usage:
-  scripts/rollback-compose.sh --previous            [--dry-run]
-  scripts/rollback-compose.sh --to-commit <sha>     [--dry-run]
+  scripts/rollback-compose.sh --previous                          [--dry-run]
+  scripts/rollback-compose.sh --to-commit <sha> --stage <stage>   [--dry-run]
 
 Options:
-  --previous          Roll back to the release recorded as previous.
+  --previous          Roll back to the release recorded as previous, using its
+                      recorded commit AND stage.
   --to-commit SHA     Roll back to an explicit full 40-character commit.
                       Branch names are refused.
+  --stage STAGE       api | core | full. REQUIRED with --to-commit: one commit
+                      may have been released at more than one stage, and
+                      guessing which -- or defaulting to api, or picking the
+                      newest directory -- would start the wrong service set
+                      during an incident.
   --dry-run           Validate everything, change no container.
   --compose-env PATH  Compose CLI env file.
   -h, --help          Show this help.
@@ -52,6 +59,7 @@ while [ $# -gt 0 ]; do
     case "$1" in
         --previous)    USE_PREVIOUS=1; shift ;;
         --to-commit)   TARGET_COMMIT="${2:-}"; shift 2 ;;
+        --stage)       TARGET_STAGE="${2:-}"; shift 2 ;;
         --compose-env) COMPOSE_ENV="${2:-}"; shift 2 ;;
         --dry-run)     DRY_RUN=1; shift ;;
         -h|--help)     usage; exit "${EXIT_OK}" ;;
@@ -65,6 +73,29 @@ if [ "${USE_PREVIOUS}" -eq 0 ] && [ -z "${TARGET_COMMIT}" ]; then
 fi
 if [ "${USE_PREVIOUS}" -eq 1 ] && [ -n "${TARGET_COMMIT}" ]; then
     die "${EXIT_USAGE}" "--previous and --to-commit are mutually exclusive"
+fi
+# A commit may have been released at api, core and full. Which one to start is
+# not something a rollback may infer -- not from the current deployment, not
+# from the newest directory, and certainly not by defaulting to api.
+if [ -n "${TARGET_COMMIT}" ] && [ -z "${TARGET_STAGE}" ]; then
+    usage >&2
+    die "${EXIT_USAGE}" \
+        "--to-commit requires --stage api|core|full; a commit may exist at several stages and rollback never guesses which"
+fi
+if [ "${USE_PREVIOUS}" -eq 1 ] && [ -n "${TARGET_STAGE}" ]; then
+    die "${EXIT_USAGE}" "--stage cannot be combined with --previous; the previous release records its own stage"
+fi
+# Argument validation happens here, before any host gate. A typo in --stage
+# should be a usage error, not something an operator discovers only after the
+# script has started complaining about environment-file permissions.
+if [ -n "${TARGET_STAGE}" ]; then
+    case "${TARGET_STAGE}" in
+        api|core|full) ;;
+        *) die "${EXIT_USAGE}" "--stage must be api, core or full (got '${TARGET_STAGE}')" ;;
+    esac
+fi
+if [ -n "${TARGET_COMMIT}" ]; then
+    validate_full_sha "${TARGET_COMMIT}"
 fi
 
 ENV_DIR="${RADIO_ENV_DIR:-/etc/radio-broadcast-analysis}"
@@ -137,33 +168,50 @@ log "API publish host: ${RADIO_API_PUBLISH_HOST}"
 require_free_space "${DATA_ROOT}" "${DATA_FREE_MIB}"
 
 stage "5/11 Resolving the rollback target"
+# The target identity is COMMIT + STAGE. --previous reads both from state, and
+# falls back to the previous symlink's validated identity -- not its basename,
+# which is now merely the stage.
 if [ "${USE_PREVIOUS}" -eq 1 ]; then
     TARGET_COMMIT="$(read_state_field "${STATE_FILE}" previous_commit)"
-    [ -n "${TARGET_COMMIT}" ] || TARGET_COMMIT="$(read_release_target "${RELEASE_ROOT}/previous")"
-    [ -n "${TARGET_COMMIT}" ] || die "${EXIT_PRECONDITION}" "no previous release is recorded"
+    TARGET_STAGE="$(read_state_field "${STATE_FILE}" previous_stage)"
+    if [ -z "${TARGET_COMMIT}" ] || [ -z "${TARGET_STAGE}" ]; then
+        PREVIOUS_IDENTITY="$(read_release_identity "${RELEASE_ROOT}/previous" "${RELEASE_ROOT}" 2>/dev/null || true)"
+        if [ -n "${PREVIOUS_IDENTITY}" ]; then
+            TARGET_COMMIT="$(release_identity_commit "${PREVIOUS_IDENTITY}")"
+            TARGET_STAGE="$(release_identity_stage "${PREVIOUS_IDENTITY}")"
+        fi
+    fi
+    [ -n "${TARGET_COMMIT}" ] && [ -n "${TARGET_STAGE}" ] \
+        || die "${EXIT_PRECONDITION}" "no complete previous release identity (commit and stage) is recorded"
 fi
 validate_full_sha "${TARGET_COMMIT}"
+case "${TARGET_STAGE}" in
+    api|core|full) ;;
+    *) die "${EXIT_USAGE}" "--stage must be api, core or full (got '${TARGET_STAGE}')" ;;
+esac
 
 CURRENT_COMMIT="$(read_state_field "${STATE_FILE}" current_commit)"
-if [ "${TARGET_COMMIT}" = "${CURRENT_COMMIT}" ]; then
-    die "${EXIT_USAGE}" "release ${TARGET_COMMIT} is already current"
+CURRENT_STAGE="$(read_state_field "${STATE_FILE}" current_stage)"
+[ -n "${CURRENT_STAGE}" ] || CURRENT_STAGE="$(read_state_field "${STATE_FILE}" stage)"
+# Identity is commit AND stage, so X/core -> X/api is a legitimate rollback even
+# though the commit is unchanged.
+if [ "${TARGET_COMMIT}" = "${CURRENT_COMMIT}" ] && [ "${TARGET_STAGE}" = "${CURRENT_STAGE}" ]; then
+    die "${EXIT_USAGE}" "release ${TARGET_COMMIT} at stage ${TARGET_STAGE} is already current"
 fi
-log "rolling back from ${CURRENT_COMMIT:-unknown} to ${TARGET_COMMIT}"
+log "rolling back from ${CURRENT_COMMIT:-unknown}/${CURRENT_STAGE:-unknown} to ${TARGET_COMMIT}/${TARGET_STAGE}"
 
 stage "6/11 Validating the target release manifest"
-TARGET_DIR="${RELEASE_ROOT}/${TARGET_COMMIT}"
-# The TARGET release's own manifest decides which services to start -- not
-# state.json, which describes the release being rolled AWAY from. Rolling a full
-# deployment back to an api release must start an api service set; taking the
-# stage from current state would start workers against code that never shipped
-# with them, and an invalid stage is a hard failure rather than a quiet default
-# to api.
-STAGE_NAME="$(validate_release_manifest "${TARGET_DIR}" "${TARGET_COMMIT}")" \
-    || die "${EXIT_PRECONDITION}" "release ${TARGET_COMMIT} did not pass manifest validation"
-log "target manifest valid; its recorded stage is ${STAGE_NAME}"
-
-CURRENT_STAGE="$(read_state_field "${STATE_FILE}" stage)"
-log "rolling back stage ${CURRENT_STAGE:-unknown} -> ${STAGE_NAME}"
+TARGET_DIR="$(release_path "${RELEASE_ROOT}" "${TARGET_COMMIT}" "${TARGET_STAGE}")"
+# The TARGET release's own manifest is validated against the full requested
+# identity. Its stage is not inferred from state.json, which describes the
+# release being rolled AWAY from: rolling a full deployment back to an api
+# release must start an api service set, and starting workers against code that
+# never shipped with them is exactly the failure this prevents.
+validate_release_manifest "${TARGET_DIR}" "${TARGET_COMMIT}" "${TARGET_STAGE}" >/dev/null \
+    || die "${EXIT_PRECONDITION}" \
+       "release ${TARGET_COMMIT} at stage ${TARGET_STAGE} did not pass manifest validation"
+STAGE_NAME="${TARGET_STAGE}"
+log "target manifest valid: ${TARGET_COMMIT} at stage ${STAGE_NAME}"
 
 stage "7/11 Validating target images"
 export RADIO_API_IMAGE="radio-api:${TARGET_COMMIT}"
@@ -247,14 +295,19 @@ bash "${TARGET_DIR}/scripts/smoke-test.sh" --stage "${STAGE_NAME}" "http://127.0
     || die "${EXIT_ROLLBACK}" "smoke test failed after rollback"
 
 # Symlinks and state move only now, after the target proved healthy.
-[ -n "${CURRENT_COMMIT}" ] && point_symlink_atomic "${RELEASE_ROOT}/previous" "${RELEASE_ROOT}/${CURRENT_COMMIT}"
+if [ -n "${CURRENT_COMMIT}" ] && [ -n "${CURRENT_STAGE}" ]; then
+    point_symlink_atomic "${RELEASE_ROOT}/previous" \
+        "$(release_path "${RELEASE_ROOT}" "${CURRENT_COMMIT}" "${CURRENT_STAGE}")"
+fi
 point_symlink_atomic "${RELEASE_ROOT}/current" "${TARGET_DIR}"
 
 write_state_atomic "${DEPLOY_ROOT}/state.json" "$(cat <<EOF
 {
   "schema_version": 1,
   "current_commit": "${TARGET_COMMIT}",
+  "current_stage": "${STAGE_NAME}",
   "previous_commit": "${CURRENT_COMMIT}",
+  "previous_stage": "${CURRENT_STAGE}",
   "deployed_at": "$(date -u +%Y-%m-%dT%H:%M:%SZ)",
   "deployed_by": "$(id -un)",
   "stage": "${STAGE_NAME}",

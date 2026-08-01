@@ -211,10 +211,10 @@ require_free_space "${DATA_ROOT}" "${DATA_FREE_MIB}"
 # ---------------------------------------------------------------------------
 stage "11/16 Creating the immutable release"
 if [ "${DRY_RUN}" -eq 1 ]; then
-    log "dry run: would create ${RELEASE_ROOT}/${COMMIT} via git archive"
-    RELEASE_DIR="${RELEASE_ROOT}/${COMMIT}"
+    log "dry run: would create $(release_path "${RELEASE_ROOT}" "${COMMIT}" "${STAGE}") via git archive"
+    RELEASE_DIR="$(release_path "${RELEASE_ROOT}" "${COMMIT}" "${STAGE}")"
 else
-    RELEASE_DIR="$(create_release "${REPO_DIR}" "${COMMIT}" "${RELEASE_ROOT}")"
+    RELEASE_DIR="$(create_release "${REPO_DIR}" "${COMMIT}" "${STAGE}" "${RELEASE_ROOT}")"
     write_release_manifest "${RELEASE_DIR}" "${COMMIT}" "${STAGE}"
     log "release at ${RELEASE_DIR}"
 
@@ -280,7 +280,23 @@ fi
 
 DEPLOY_LOG="${DEPLOY_ROOT}/logs/deploy-${COMMIT}-$(date -u +%Y%m%dT%H%M%SZ).log"
 STATE_FILE="${DEPLOY_ROOT}/state.json"
-PREVIOUS_COMMIT="$(read_release_target "${RELEASE_ROOT}/current" 2>/dev/null || true)"
+# The previous deployment identity is COMMIT + STAGE. Reading only the commit
+# would make `api X -> core X` look like "no previous release", which would send
+# a failed promotion down the first-deployment cleanup path -- tearing the stack
+# down instead of restoring the api release that was serving perfectly well.
+PREVIOUS_IDENTITY="$(read_release_identity "${RELEASE_ROOT}/current" "${RELEASE_ROOT}" 2>/dev/null || true)"
+PREVIOUS_COMMIT=""
+PREVIOUS_STAGE=""
+if [ -n "${PREVIOUS_IDENTITY}" ]; then
+    PREVIOUS_COMMIT="$(release_identity_commit "${PREVIOUS_IDENTITY}")"
+    PREVIOUS_STAGE="$(release_identity_stage "${PREVIOUS_IDENTITY}")"
+    log "previous deployment identity: ${PREVIOUS_COMMIT} at stage ${PREVIOUS_STAGE}"
+    if [ "${PREVIOUS_COMMIT}" = "${COMMIT}" ]; then
+        log "same-commit stage change: ${PREVIOUS_STAGE} -> ${STAGE}"
+    fi
+else
+    log "no previous release is recorded; this is a first deployment"
+fi
 
 # Persistent-state tracking. "no container changed" is NOT the same as "nothing
 # changed": a backup may exist and migrations may have been applied before a
@@ -306,20 +322,22 @@ RECOVERY_RESULT="not-attempted"
 # building a fresh one during an incident produces an artifact nobody has seen.
 # Never restores SQLite -- see the header.
 restore_previous_release() {
-    local target_dir="${RELEASE_ROOT}/${PREVIOUS_COMMIT}"
-    local prev_stage
+    local target_dir prev_stage="${PREVIOUS_STAGE}"
     local prev_profiles=() prev_services=()
 
-    # The PREVIOUS release's own manifest decides which services to start, not
-    # the stage this failed deployment was attempting and not the stage recorded
-    # in state.json. Recovering a failed full deployment back to an api release
-    # must start an api service set; using the attempted stage would start
-    # workers against code that never shipped with them.
-    prev_stage="$(validate_release_manifest "${target_dir}" "${PREVIOUS_COMMIT}")" || {
-        fail "previous release ${PREVIOUS_COMMIT} did not pass manifest validation"
+    target_dir="$(release_path "${RELEASE_ROOT}" "${PREVIOUS_COMMIT}" "${prev_stage}")"
+
+    # The PREVIOUS release's own manifest is validated against the full previous
+    # identity -- commit AND stage. Recovering a failed full deployment back to
+    # an api release must start an api service set; using the attempted stage
+    # would start workers against code that never shipped with them. And when
+    # the commit is unchanged (api X -> core X), the stage is the ONLY thing
+    # distinguishing what to restore from what just failed.
+    validate_release_manifest "${target_dir}" "${PREVIOUS_COMMIT}" "${prev_stage}" >/dev/null || {
+        fail "previous release ${PREVIOUS_COMMIT} at stage ${prev_stage} did not pass manifest validation"
         return 1
     }
-    log "previous release manifest is valid; its recorded stage is ${prev_stage}"
+    log "previous release manifest is valid: ${PREVIOUS_COMMIT} at stage ${prev_stage}"
 
     export RADIO_API_IMAGE="radio-api:${PREVIOUS_COMMIT}"
     export RADIO_PIPELINE_IMAGE="radio-pipeline:${PREVIOUS_COMMIT}"
@@ -367,7 +385,9 @@ write_failure_report() {
   "schema_version": 1,
   "outcome": "failed",
   "attempted_commit": "${COMMIT}",
+  "attempted_stage": "${STAGE}",
   "previous_commit": "${PREVIOUS_COMMIT}",
+  "previous_stage": "${PREVIOUS_STAGE}",
   "stage": "${STAGE}",
   "exit_code": ${code},
   "failure_phase": "${FAILURE_PHASE}",
@@ -425,13 +445,17 @@ on_failure() {
     fail "deployment failed in phase '${FAILURE_PHASE}', AFTER containers began changing"
     report_persistent_state
 
-    if [ -z "${PREVIOUS_COMMIT}" ]; then
+    # A previous deployment IDENTITY, not merely a previous commit. `api X ->
+    # core X` has the same commit on both sides, and treating that as "nothing
+    # to go back to" would tear the stack down instead of restoring the api
+    # release that was serving perfectly well.
+    if [ -z "${PREVIOUS_COMMIT}" ] || [ -z "${PREVIOUS_STAGE}" ]; then
         # First deployment on this host. There is no previous release to return
         # to, so leaving half-started services running would present a broken
         # stack as if it were deployed. Remove what this run started -- and
         # nothing else. No -v: the database and spool are bind mounts and must
         # survive for investigation.
-        warn "first deployment on this host: no previous release exists to restore"
+        warn "first deployment on this host: no previous release identity exists to restore"
         log "stopping and removing the services this deployment started"
         compose "${PROFILES[@]}" down --remove-orphans 2>&1 | tee -a "${DEPLOY_LOG}" \
             || warn "could not fully remove the failed services; inspect 'docker compose ps' by hand"
@@ -439,18 +463,18 @@ on_failure() {
         log "release directory, database backup and deploy log are preserved for investigation"
         log "current/previous symlinks were not moved and no deployment state was recorded"
     else
-        warn "attempting automatic recovery to ${PREVIOUS_COMMIT} (code and images only)"
+        warn "attempting automatic recovery to ${PREVIOUS_COMMIT} at stage ${PREVIOUS_STAGE} (code and images only)"
         # Subshell: wait_for_health calls die() on a container that can never
         # become healthy, and that exit must end the recovery attempt, not this
         # handler -- the outcome still has to be recorded below.
         if ( restore_previous_release ); then
-            RECOVERY_RESULT="recovered-to-${PREVIOUS_COMMIT}"
-            log "automatic recovery succeeded; ${PREVIOUS_COMMIT} is serving again"
+            RECOVERY_RESULT="recovered-to-${PREVIOUS_COMMIT}/${PREVIOUS_STAGE}"
+            log "automatic recovery succeeded; ${PREVIOUS_COMMIT} at stage ${PREVIOUS_STAGE} is serving again"
             warn "the database was NOT rolled back and still carries any migration this deployment applied"
         else
             RECOVERY_RESULT="recovery-failed"
             fail "automatic recovery FAILED; the host is not serving a verified release"
-            fail "recover by hand with: scripts/rollback-compose.sh --to-commit ${PREVIOUS_COMMIT}"
+            fail "recover by hand with: scripts/rollback-compose.sh --to-commit ${PREVIOUS_COMMIT} --stage ${PREVIOUS_STAGE}"
         fi
     fi
 
@@ -467,9 +491,20 @@ FAILURE_PHASE="build"
 # api-stage deploy was building the pipeline image -- minutes of ARM CPU spent
 # producing an artifact the stage will not start, and one more thing that can
 # fail a deployment for a reason unrelated to what was being deployed.
-log "building only: ${BUILD_SERVICES[*]}"
-compose "${PROFILES[@]}" build "${BUILD_SERVICES[@]}" 2>&1 | tee -a "${DEPLOY_LOG}" \
-    || die "${EXIT_BUILD}" "image build failed"
+#
+# Only the images that are actually MISSING. Promoting api X -> core X must not
+# rebuild radio-api:X: it exists, it is byte-identical because the commit is
+# identical, and rebuilding it would burn ARM CPU to mint a new image id for the
+# same source -- making the deployment history look like the API changed when it
+# did not. Nothing is ever pulled.
+read -r -a MISSING_BUILDS <<<"$(missing_stage_build_services "${STAGE}" "${COMMIT}")"
+if [ "${#MISSING_BUILDS[@]}" -eq 0 ]; then
+    log "every ${STAGE}-stage image already exists for ${COMMIT}; nothing to build"
+else
+    log "building only: ${MISSING_BUILDS[*]} (of ${BUILD_SERVICES[*]})"
+    compose "${PROFILES[@]}" build "${MISSING_BUILDS[@]}" 2>&1 | tee -a "${DEPLOY_LOG}" \
+        || die "${EXIT_BUILD}" "image build failed"
+fi
 
 # Build succeeding is not the same as the images existing under the exact tags
 # the stage will start.
@@ -557,16 +592,27 @@ bash "${RELEASE_DIR}/scripts/smoke-test.sh" --stage "${STAGE}" "http://127.0.0.1
 
 # ---------------------------------------------------------------------------
 stage "Recording deployment state"
-[ -n "${PREVIOUS_COMMIT}" ] && point_symlink_atomic "${RELEASE_ROOT}/previous" "${RELEASE_ROOT}/${PREVIOUS_COMMIT}"
+# Both pointers address a stage-specific release, so `previous` after
+# `api X -> core X` is releases/X/api while `current` is releases/X/core. The
+# two are NOT collapsed just because the commit matches -- the stage is the only
+# thing that distinguishes them, and losing it would leave nothing to roll back
+# to.
+if [ -n "${PREVIOUS_COMMIT}" ] && [ -n "${PREVIOUS_STAGE}" ]; then
+    point_symlink_atomic "${RELEASE_ROOT}/previous" \
+        "$(release_path "${RELEASE_ROOT}" "${PREVIOUS_COMMIT}" "${PREVIOUS_STAGE}")"
+fi
 point_symlink_atomic "${RELEASE_ROOT}/current" "${RELEASE_DIR}"
 
 write_state_atomic "${STATE_FILE}" "$(cat <<EOF
 {
   "schema_version": 1,
   "current_commit": "${COMMIT}",
+  "current_stage": "${STAGE}",
   "previous_commit": "${PREVIOUS_COMMIT}",
+  "previous_stage": "${PREVIOUS_STAGE}",
   "deployed_at": "$(date -u +%Y-%m-%dT%H:%M:%SZ)",
   "deployed_by": "$(id -un)",
+  "_comment_stage": "legacy alias of current_stage, kept for older tooling; current_stage is authoritative",
   "stage": "${STAGE}",
   "compose_project": "${COMPOSE_PROJECT_NAME}",
   "release_path": "${RELEASE_DIR}",

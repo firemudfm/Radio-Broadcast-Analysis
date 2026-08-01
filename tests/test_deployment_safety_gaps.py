@@ -283,8 +283,8 @@ def _release_root(tmp_path: Path) -> Path:
 
 def test_an_existing_empty_release_directory_is_rejected(tmp_path: Path) -> None:
     root = _release_root(tmp_path)
-    (root / SHA).mkdir()
-    result = run_snippet(f'create_release "{REPO_ROOT.as_posix()}" "{SHA}" "{root.as_posix()}"')
+    (root / SHA / "api").mkdir(parents=True)
+    result = run_snippet(f'create_release "{REPO_ROOT.as_posix()}" "{SHA}" api "{root.as_posix()}"')
     assert result.returncode == EXIT_PRECONDITION
     assert "unverified release directory" in result.stderr
 
@@ -292,11 +292,11 @@ def test_an_existing_empty_release_directory_is_rejected(tmp_path: Path) -> None
 def test_an_existing_modified_release_directory_is_rejected(tmp_path: Path) -> None:
     """A directory edited in place must never deploy as the reviewed commit."""
     root = _release_root(tmp_path)
-    release = root / SHA
-    release.mkdir()
+    release = root / SHA / "api"
+    release.mkdir(parents=True)
     (release / "compose.yaml").write_text("services: {}\n")
     (release / "VERSION").write_text("9.9.9\n")
-    result = run_snippet(f'create_release "{REPO_ROOT.as_posix()}" "{SHA}" "{root.as_posix()}"')
+    result = run_snippet(f'create_release "{REPO_ROOT.as_posix()}" "{SHA}" api "{root.as_posix()}"')
     assert result.returncode == EXIT_PRECONDITION
     assert "unverified release directory" in result.stderr
 
@@ -304,24 +304,24 @@ def test_an_existing_modified_release_directory_is_rejected(tmp_path: Path) -> N
 def test_a_correct_manifest_does_not_launder_an_altered_release(tmp_path: Path) -> None:
     """The manifest lives inside the directory whose integrity is in doubt."""
     root = _release_root(tmp_path)
-    release = root / SHA
-    release.mkdir()
+    release = root / SHA / "api"
+    release.mkdir(parents=True)
     (release / ".release-manifest.json").write_text(
         json.dumps({"schema_version": 1, "commit": SHA, "stage": "api", "source": "git archive"})
     )
     (release / "compose.yaml").write_text("services: {tampered: {}}\n")
-    result = run_snippet(f'create_release "{REPO_ROOT.as_posix()}" "{SHA}" "{root.as_posix()}"')
+    result = run_snippet(f'create_release "{REPO_ROOT.as_posix()}" "{SHA}" api "{root.as_posix()}"')
     assert result.returncode == EXIT_PRECONDITION, "a manifest must not be treated as proof"
 
 
 def test_redeploying_the_current_release_is_refused_clearly(tmp_path: Path) -> None:
     root = _release_root(tmp_path)
-    (root / SHA).mkdir()
+    (root / SHA / "api").mkdir(parents=True)
     result = run_snippet(
         f'''
         printf '%s' "{SHA}" > "{(root / 'current.txt').as_posix()}"
-        read_release_target() {{ case "$1" in *current) printf '%s' "{SHA}" ;; esac; }}
-        create_release "{REPO_ROOT.as_posix()}" "{SHA}" "{root.as_posix()}"
+        read_release_identity() {{ case "$1" in *current) printf '%s	%s' "{SHA}" api ;; esac; }}
+        create_release "{REPO_ROOT.as_posix()}" "{SHA}" api "{root.as_posix()}"
         '''
     )
     assert result.returncode == EXIT_PRECONDITION
@@ -330,11 +330,11 @@ def test_redeploying_the_current_release_is_refused_clearly(tmp_path: Path) -> N
 
 def test_redeploying_the_previous_release_points_at_rollback(tmp_path: Path) -> None:
     root = _release_root(tmp_path)
-    (root / SHA).mkdir()
+    (root / SHA / "api").mkdir(parents=True)
     result = run_snippet(
         f'''
-        read_release_target() {{ case "$1" in *previous) printf '%s' "{SHA}" ;; esac; }}
-        create_release "{REPO_ROOT.as_posix()}" "{SHA}" "{root.as_posix()}"
+        read_release_identity() {{ case "$1" in *previous) printf '%s	%s' "{SHA}" api ;; esac; }}
+        create_release "{REPO_ROOT.as_posix()}" "{SHA}" api "{root.as_posix()}"
         '''
     )
     assert result.returncode == EXIT_PRECONDITION
@@ -361,10 +361,10 @@ def test_a_fresh_release_is_still_created_from_git_archive(tmp_path: Path) -> No
     ).stdout.strip()
     root = _release_root(tmp_path)
     result = run_snippet(
-        f'create_release "{REPO_ROOT.as_posix()}" "{head}" "{root.as_posix()}"'
+        f'create_release "{REPO_ROOT.as_posix()}" "{head}" api "{root.as_posix()}"'
     )
     assert result.returncode == EXIT_OK, result.stderr
-    release = root / head
+    release = root / head / "api"
     assert (release / "compose.yaml").is_file()
     assert (release / "VERSION").is_file()
     assert not (release / ".git").exists(), "a release must never carry a .git directory"

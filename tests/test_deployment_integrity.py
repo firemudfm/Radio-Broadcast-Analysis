@@ -308,7 +308,10 @@ def test_deploy_builds_only_the_stage_build_services() -> None:
     code = _script_body(
         SCRIPTS / "deploy-compose.sh", "14/16 Building images", "15/16 Backing up"
     )
-    assert 'build "${BUILD_SERVICES[@]}"' in code, "build must be restricted to the stage"
+    # Narrower still than the stage's build set: only the images that are
+    # actually missing, so promoting api X -> core X reuses radio-api:X.
+    assert 'build "${MISSING_BUILDS[@]}"' in code, "build must be restricted to missing images"
+    assert "missing_stage_build_services" in code
     assert 'compose "${PROFILES[@]}" build 2>&1' not in code, "unrestricted build returned"
 
 
@@ -359,7 +362,8 @@ def make_release(
     manifest: bool = True,
     raw: str | None = None,
 ) -> Path:
-    release = root / sha
+    # Release identity is commit + stage: <root>/<sha>/<stage>.
+    release = root / sha / stage
     (release / "scripts").mkdir(parents=True, exist_ok=True)
     for name in ("VERSION", "compose.yaml", "compose.prod.yaml"):
         (release / name).write_text("x\n", encoding="utf-8")
@@ -374,14 +378,16 @@ def make_release(
     return release
 
 
-def validate(release: Path, expected: str):
-    return run_snippet(f'validate_release_manifest "{release.as_posix()}" "{expected}"')
+def validate(release: Path, expected: str, stage: str = "api"):
+    return run_snippet(
+        f'validate_release_manifest "{release.as_posix()}" "{expected}" "{stage}"'
+    )
 
 
 @pytest.mark.parametrize("stage", ["api", "core", "full"])
 def test_a_valid_manifest_yields_its_stage(tmp_path: Path, stage: str) -> None:
     release = make_release(tmp_path, SHA, stage=stage)
-    result = validate(release, SHA)
+    result = validate(release, SHA, stage)
     assert result.returncode == EXIT_OK, result.stderr
     assert result.stdout == stage
 
@@ -405,21 +411,23 @@ def test_a_commit_mismatch_is_rejected(tmp_path: Path) -> None:
 
 
 def test_a_directory_name_mismatch_is_rejected(tmp_path: Path) -> None:
-    """A correct-looking manifest copied into the wrong directory."""
+    """A correct-looking release tree moved under the wrong commit directory."""
     release = make_release(tmp_path, OTHER_SHA, commit=OTHER_SHA)
-    moved = tmp_path / "renamed"
-    release.rename(moved)
-    result = run_snippet(f'validate_release_manifest "{moved.as_posix()}" "{OTHER_SHA}"')
-    assert "does not match its release directory" in result.stderr
+    other_parent = tmp_path / SHA
+    other_parent.mkdir(parents=True, exist_ok=True)
+    release.rename(other_parent / "api")
+    result = validate(other_parent / "api", OTHER_SHA, "api")
+    assert result.returncode != 0
+    assert "does not match the requested commit" in result.stderr
 
 
 def test_an_invalid_stage_is_a_hard_failure(tmp_path: Path) -> None:
     """Silently defaulting to api would start the wrong service set."""
     release = make_release(tmp_path, SHA, stage="everything")
-    result = validate(release, SHA)
-    assert result.returncode != 0
-    assert "refusing to guess" in result.stderr
-    assert result.stdout.strip() != "api"
+    for requested in ("api", "core", "full"):
+        result = validate(release, SHA, requested)
+        assert result.returncode != 0, requested
+        assert result.stdout.strip() == "", "an invalid stage must yield nothing"
 
 
 def test_a_short_or_uppercase_commit_is_rejected(tmp_path: Path) -> None:
@@ -434,7 +442,7 @@ def test_an_unsupported_schema_version_is_rejected(tmp_path: Path) -> None:
 
 def test_a_foreign_source_is_rejected(tmp_path: Path) -> None:
     release = make_release(tmp_path, SHA, source="rsync from a laptop")
-    assert "not a git-archive release" in validate(release, SHA).stderr
+    assert "not exactly" in validate(release, SHA).stderr
 
 
 @pytest.mark.skipif(os.name == "nt", reason="POSIX symlink semantics are not available")
@@ -451,11 +459,11 @@ def test_a_symlinked_manifest_is_rejected(tmp_path: Path) -> None:
 
 @pytest.mark.skipif(os.name == "nt", reason="POSIX symlink semantics are not available")
 def test_a_symlinked_release_directory_is_rejected(tmp_path: Path) -> None:
-    real = make_release(tmp_path / "real", SHA)
-    link_root = tmp_path / "links"
-    link_root.mkdir()
-    (link_root / SHA).symlink_to(real, target_is_directory=True)
-    result = run_snippet(f'validate_release_manifest "{(link_root / SHA).as_posix()}" "{SHA}"')
+    real = make_release(tmp_path / "real", SHA)  # .../real/<sha>/api
+    link_commit_dir = tmp_path / "links" / SHA
+    link_commit_dir.mkdir(parents=True)
+    (link_commit_dir / "api").symlink_to(real, target_is_directory=True)
+    result = validate(link_commit_dir / "api", SHA, "api")
     assert result.returncode != 0
     assert "symlink" in result.stderr
 
@@ -480,11 +488,15 @@ def test_rollback_takes_its_stage_from_the_target_not_the_current_state(
     """
     release = make_release(tmp_path, SHA, stage=target_stage)
     state = tmp_path / "state.json"
-    state.write_text(json.dumps({"stage": current_stage, "current_commit": OTHER_SHA}))
+    state.write_text(json.dumps({
+        "current_commit": OTHER_SHA,
+        "current_stage": current_stage,
+        "stage": current_stage,
+    }))
     result = run_snippet(
         f'''
-        resolved="$(validate_release_manifest "{release.as_posix()}" "{SHA}")"
-        current="$(read_state_field "{state.as_posix()}" stage)"
+        resolved="$(validate_release_manifest "{release.as_posix()}" "{SHA}" "{target_stage}")"
+        current="$(read_state_field "{state.as_posix()}" current_stage)"
         printf 'target=%s current=%s services=%s\\n' \\
             "${{resolved}}" "${{current}}" "$(stage_plan "${{resolved}}" runtime_services)"
         '''
@@ -493,6 +505,10 @@ def test_rollback_takes_its_stage_from_the_target_not_the_current_state(
     assert f"target={target_stage}" in result.stdout
     assert f"current={current_stage}" in result.stdout
     assert APPROVED_PLAN[target_stage]["runtime_services"] in result.stdout
+    # The service set is the TARGET's, never the one still recorded as current.
+    if current_stage != target_stage:
+        assert result.stdout.split("services=")[1].strip() != \
+            APPROVED_PLAN[current_stage]["runtime_services"]
 
 
 def test_rollback_does_not_read_its_stage_from_deployment_state() -> None:

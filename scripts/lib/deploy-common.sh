@@ -62,12 +62,26 @@ require_commands() {
 # A 40-hex commit id and nothing else. A branch name, a tag, or a short sha
 # would all let the deployed content change under a reviewed approval -- the
 # entire point of exact-commit deployment.
+#
+# Matched with shell globbing rather than `grep -E '^...$'`. grep anchors per
+# LINE, so a value whose first line is 40 hex characters and whose second line
+# is anything at all passed -- and the commit is used as a filesystem path
+# component. `*[!0-9a-f]*` rejects a newline like any other character.
+is_full_sha() {
+    local value="${1:-}"
+    [ "${#value}" -eq 40 ] || return 1
+    case "${value}" in
+        *[!0-9a-f]*) return 1 ;;
+    esac
+    return 0
+}
+
 validate_full_sha() {
     local value="${1:-}"
     if [ -z "${value}" ]; then
         die "${EXIT_USAGE}" "--commit is required (full 40-character commit sha)"
     fi
-    if ! printf '%s' "${value}" | grep -qE '^[0-9a-f]{40}$'; then
+    if ! is_full_sha "${value}"; then
         die "${EXIT_USAGE}" \
             "--commit must be a full 40-character lower-case sha, got '${value}'. Branch names, tags and short shas are refused on purpose."
     fi
@@ -355,6 +369,35 @@ require_stage_images() {
     log "all ${stage}-stage images present for ${commit}"
 }
 
+# build_service_for_repo <image-repo>
+#
+# The source is identical across stages, so images stay tagged by commit alone
+# -- there is no radio-api:<sha>-core. One build service represents each image.
+build_service_for_repo() {
+    case "$1" in
+        radio-api)      printf 'api' ;;
+        radio-pipeline) printf 'planner' ;;
+        radio-llm)      printf 'llm' ;;
+        *) die "${EXIT_USAGE}" "no build service is defined for image ${1}" ;;
+    esac
+}
+
+# missing_stage_build_services <stage> <commit>
+#
+# The build services whose image is NOT already present. Promoting api -> core
+# on the same commit must not rebuild radio-api:<sha>: it already exists, it is
+# byte-identical because the commit is identical, and rebuilding it would burn
+# minutes of ARM CPU to produce a new image id for the same source -- which also
+# makes the deployment history look like the API changed when it did not.
+missing_stage_build_services() {
+    local stage="$1" commit="$2" repo
+    for repo in $(stage_plan "${stage}" image_repos); do
+        if ! docker image inspect "${repo}:${commit}" >/dev/null 2>&1; then
+            printf '%s ' "$(build_service_for_repo "${repo}")"
+        fi
+    done
+}
+
 # stage_image_ids <stage> <commit>
 #
 # Emits `<repo>=<image-id>` per required image, so deployment state records what
@@ -389,23 +432,47 @@ json_image_field() {
 
 # --- release manifest ---------------------------------------------------------
 
-# validate_release_manifest <release-dir> <expected-sha>
+# validate_release_manifest <release-dir> <expected-sha> <expected-stage>
 #
 # Echoes the validated stage on success; fails closed otherwise.
 #
 # This is what makes the exact-commit guarantee cover the MATERIALISED release
-# rather than the directory name. It is also where rollback learns which
-# services to start: taking that from the current deployment state would start
-# the OLD release with the NEW stage's service set, so rolling back a full
-# deployment to an api release would leave workers running against code that
-# never shipped with them.
+# rather than the directory name. Identity is commit AND stage, and every one of
+# the three places it is recorded -- the commit directory name, the stage
+# directory name, and the manifest -- must agree with what the caller asked for.
+# Two agreeing sources with a third that disagrees is not a quorum; it is a
+# release nobody can describe.
 validate_release_manifest() {
-    local dir="$1" expected="$2"
+    local dir="$1" expected="$2" expected_stage="$3"
     local manifest="${dir}/.release-manifest.json"
     local payload schema commit stage source required
+    local dir_stage commit_dir dir_commit
+
+    case "${expected_stage}" in
+        api|core|full) ;;
+        *)
+            fail "expected stage '${expected_stage}' is not api, core or full"
+            return 1
+            ;;
+    esac
 
     if [ -L "${dir}" ]; then
         fail "release path ${dir} is a symlink; refusing to follow it"
+        return 1
+    fi
+    commit_dir="$(dirname "${dir}")"
+    if [ -L "${commit_dir}" ]; then
+        fail "release commit directory ${commit_dir} is a symlink; refusing to follow it"
+        return 1
+    fi
+    dir_stage="$(basename "${dir}")"
+    dir_commit="$(basename "${commit_dir}")"
+    if [ "${dir_stage}" != "${expected_stage}" ]; then
+        fail "release directory stage '${dir_stage}' does not match the requested stage '${expected_stage}'"
+        return 1
+    fi
+    if [ "${dir_commit}" != "${expected}" ]; then
+        fail "release commit directory '${dir_commit}' does not match the requested commit ${expected}"
         return 1
     fi
     if [ ! -d "${dir}" ]; then
@@ -444,16 +511,12 @@ print("\t".join(str(document.get(name, "")) for name in fields))
         fail "unsupported manifest schema_version '${schema}' in ${dir}"
         return 1
     fi
-    if ! printf '%s' "${commit}" | grep -qE '^[0-9a-f]{40}$'; then
+    if ! is_full_sha "${commit}"; then
         fail "manifest commit '${commit}' is not a full lower-case 40-character sha"
         return 1
     fi
     if [ "${commit}" != "${expected}" ]; then
         fail "manifest commit ${commit} does not match the requested target ${expected}"
-        return 1
-    fi
-    if [ "${commit}" != "$(basename "${dir}")" ]; then
-        fail "manifest commit ${commit} does not match its release directory $(basename "${dir}")"
         return 1
     fi
     case "${stage}" in
@@ -463,8 +526,15 @@ print("\t".join(str(document.get(name, "")) for name in fields))
             return 1
             ;;
     esac
-    if [ -n "${source}" ] && [ "${source}" != "git archive" ]; then
-        fail "manifest source '${source}' is not a git-archive release"
+    if [ "${stage}" != "${expected_stage}" ]; then
+        fail "manifest stage '${stage}' does not match the requested stage '${expected_stage}'"
+        return 1
+    fi
+    # Required, not merely "not contradictory". An absent source used to pass,
+    # so a hand-made directory with a plausible manifest and no provenance was
+    # indistinguishable from one this deployment archived itself.
+    if [ "${source}" != "git archive" ]; then
+        fail "manifest source '${source:-<absent>}' is not exactly 'git archive'"
         return 1
     fi
 
@@ -637,16 +707,78 @@ wait_for_health() {
     done
 }
 
+# --- release identity ---------------------------------------------------------
+#
+# A release is identified by COMMIT + STAGE, not by commit alone:
+#
+#   /var/lib/radio/releases/<sha>/api
+#   /var/lib/radio/releases/<sha>/core
+#   /var/lib/radio/releases/<sha>/full
+#
+# Identity used to be the commit alone, which made the same reviewed commit
+# undeployable at a second stage: having shipped X at `api`, widening to `core`
+# hit the fail-closed check on the existing directory, and the only way out was
+# to produce a different Git commit purely to change deployment scope. That
+# breaks the guarantee the whole model exists for -- that what runs is exactly
+# what was reviewed.
+#
+# Each stage directory is its own immutable release, materialised by its own
+# `git archive` of the same commit. Never copied from a sibling: a copy would
+# make the second release's contents depend on whatever happened to the first
+# one after it was created.
+
+# release_path <release-root> <commit> <stage>
+#
+# Echoes <root>/<commit>/<stage>. Both components are validated before they are
+# allowed anywhere near the filesystem: they are path components, so a branch
+# name, a traversal, a newline or a shell metacharacter reaching this would be a
+# very bad day. validate_full_sha permits only 40 lower-case hex characters and
+# the stage is a closed set, which between them exclude every such character.
+release_path() {
+    local root="$1" commit="$2" stage="$3"
+    [ -n "${root}" ] || die "${EXIT_USAGE}" "release_path: release root is required"
+    validate_full_sha "${commit}"
+    case "${stage}" in
+        api|core|full) ;;
+        *) die "${EXIT_USAGE}" "release stage must be api, core or full (got '${stage}')" ;;
+    esac
+    printf '%s/%s/%s' "${root}" "${commit}" "${stage}"
+}
+
+# require_below_root <release-root> <path>
+#
+# The resolved path must stay under the release root, and no component from the
+# root down may be a symlink -- otherwise a planted link turns "write the
+# release here" into "write it anywhere on the host".
+require_below_root() {
+    local root="$1" path="$2" current
+    case "${path}" in
+        "${root}"/*) ;;
+        *) fail "${path} is not below the release root ${root}"; return 1 ;;
+    esac
+    current="${path}"
+    while [ "${current}" != "${root}" ] && [ "${current}" != "/" ]; do
+        if [ -L "${current}" ]; then
+            fail "release path component ${current} is a symlink"
+            return 1
+        fi
+        current="$(dirname "${current}")"
+    done
+    return 0
+}
+
 # --- release packaging --------------------------------------------------------
 
-# create_release <repo> <sha> <release-root>
+# create_release <repo> <commit> <stage> <release-root>
 #
 # Echoes the final release path. Uses git archive against an explicit commit:
 # no checkout, no pull, no reset, and nothing from the working tree.
 create_release() {
-    local repo="$1" sha="$2" root="$3"
-    local final="${root}/${sha}"
+    local repo="$1" sha="$2" stage="$3" root="$4"
+    local final commit_dir
     local staging
+    final="$(release_path "${root}" "${sha}" "${stage}")"
+    commit_dir="${root}/${sha}"
 
     # Fail closed. Reusing a directory because its NAME matches the approved sha
     # would make the exact-commit guarantee cover the directory name and nothing
@@ -657,24 +789,34 @@ create_release() {
     #
     # Never delete it automatically: it may be the running release, and it is
     # evidence of whatever went wrong.
+    # A SIBLING stage must never block this one -- that was the promotion
+    # blocker. Only the exact commit+stage already existing is a refusal.
     if [ -d "${final}" ]; then
-        local current_target previous_target
-        current_target="$(read_release_target "${root}/current" 2>/dev/null || true)"
-        previous_target="$(read_release_target "${root}/previous" 2>/dev/null || true)"
-        if [ "${current_target}" = "${sha}" ]; then
+        local current_id previous_id
+        current_id="$(read_release_identity "${root}/current" 2>/dev/null || true)"
+        previous_id="$(read_release_identity "${root}/previous" 2>/dev/null || true)"
+        if [ "${current_id}" = "${sha}"$'\t'"${stage}" ]; then
             die "${EXIT_PRECONDITION}" \
-                "commit ${sha} is already the current release; nothing to deploy"
+                "commit ${sha} is already the current release at stage ${stage}; nothing to deploy"
         fi
-        if [ "${previous_target}" = "${sha}" ]; then
+        if [ "${previous_id}" = "${sha}"$'\t'"${stage}" ]; then
             die "${EXIT_PRECONDITION}" \
-                "commit ${sha} is the previous release; use scripts/rollback-compose.sh --to-commit ${sha} instead of redeploying it"
+                "commit ${sha} at stage ${stage} is the previous release; use scripts/rollback-compose.sh --to-commit ${sha} --stage ${stage} instead of redeploying it"
         fi
         die "${EXIT_PRECONDITION}" \
-            "an unverified release directory already exists at ${final}. Its contents cannot be trusted to match ${sha}. Inspect it, then remove it explicitly before deploying."
+            "an unverified release directory already exists at ${final}. Its contents cannot be trusted to match ${sha} at stage ${stage}. Inspect it, then remove it explicitly before deploying."
     fi
 
-    staging="$(mktemp -d "${root}/.staging-${sha}.XXXXXX")" \
-        || die "${EXIT_PRECONDITION}" "cannot create staging directory under ${root}"
+    mkdir -p "${commit_dir}" \
+        || die "${EXIT_PRECONDITION}" "cannot create ${commit_dir}"
+    require_below_root "${root}" "${final}" \
+        || die "${EXIT_PRECONDITION}" "refusing to write a release outside ${root}"
+
+    # Staged inside the commit directory so the final move is a rename within
+    # one filesystem, and so a half-extracted tree is never visible at the
+    # stage path even for an instant.
+    staging="$(mktemp -d "${commit_dir}/.staging-${stage}.XXXXXX")" \
+        || die "${EXIT_PRECONDITION}" "cannot create staging directory under ${commit_dir}"
 
     if ! git -C "${repo}" archive --format=tar "${sha}" | tar -x -C "${staging}"; then
         rm -rf "${staging}"
@@ -708,7 +850,7 @@ create_release() {
         # what is there matches ${sha}, so it does not proceed as if it did.
         rm -rf "${staging}"
         die "${EXIT_PRECONDITION}" \
-            "could not place release at ${final}; another process may be deploying the same commit. Refusing to continue against a directory this deployment did not create."
+            "could not place release at ${final}; another process may be deploying the same commit and stage. Refusing to continue against a directory this deployment did not create."
     fi
 
     printf '%s' "${final}"
@@ -764,14 +906,41 @@ PY
 
 # --- symlinks -----------------------------------------------------------------
 
-# read_release_target <symlink>
+# read_release_identity <symlink> [release-root]
 #
-# Echoes the commit sha a release symlink points at, or nothing.
-read_release_target() {
-    local link="$1" resolved
+# Echoes "<commit>\t<stage>" for a release pointer, or nothing.
+#
+# Deliberately NOT basename: a pointer now resolves to <sha>/<stage>, so the
+# basename is merely the stage. Reading it as the identity would report the
+# current release as "core", and every comparison against a commit would
+# silently be false.
+#
+# When a release root is given, a target that resolves outside it is refused --
+# a `current` symlink is a thing an attacker or a mistake can repoint, and every
+# later step trusts what it says.
+read_release_identity() {
+    local link="$1" root="${2:-}" resolved commit stage
     resolved="$(readlink -f "${link}" 2>/dev/null || true)"
-    [ -n "${resolved}" ] && basename "${resolved}"
+    [ -n "${resolved}" ] || return 0
+    if [ -n "${root}" ]; then
+        case "${resolved}/" in
+            "${root}"/*) ;;
+            *) fail "release pointer ${link} resolves outside ${root}"; return 1 ;;
+        esac
+    fi
+    stage="$(basename "${resolved}")"
+    commit="$(basename "$(dirname "${resolved}")")"
+    case "${stage}" in
+        api|core|full) ;;
+        *) return 0 ;;
+    esac
+    is_full_sha "${commit}" || return 0
+    printf '%s\t%s' "${commit}" "${stage}"
 }
+
+# release_identity_commit / release_identity_stage <identity>
+release_identity_commit() { printf '%s' "${1%%$'\t'*}"; }
+release_identity_stage()  { printf '%s' "${1##*$'\t'}"; }
 
 # point_symlink_atomic <link> <target>
 point_symlink_atomic() {

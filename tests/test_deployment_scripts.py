@@ -113,12 +113,13 @@ def test_git_archive_produces_the_expected_release(tmp_path: Path) -> None:
     releases.mkdir()
 
     result = run_snippet(
-        f'create_release "{repo.as_posix()}" "{sha}" "{releases.as_posix()}"'
+        f'create_release "{repo.as_posix()}" "{sha}" api "{releases.as_posix()}"'
     )
     assert result.returncode == EXIT_OK, result.stderr
 
-    release = releases / sha
-    assert release.is_dir(), "release directory should be named after the commit"
+    # Release identity is commit + stage: <root>/<sha>/<stage>.
+    release = releases / sha / "api"
+    assert release.is_dir(), "release directory should be <commit>/<stage>"
     assert (release / "VERSION").is_file()
     assert (release / "compose.yaml").is_file()
     # git archive cannot include .git, but assert it so a future change to how

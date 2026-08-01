@@ -285,6 +285,40 @@ failure.
 8. Run `scripts/smoke-test.sh` against loopback.
 9. Only then move `current` / `previous` and write `state.json`.
 
+### Release identity is commit + stage
+
+```
+/var/lib/radio/releases/<sha>/api
+/var/lib/radio/releases/<sha>/core
+/var/lib/radio/releases/<sha>/full
+```
+
+Identity used to be the commit alone, which made the same reviewed commit
+undeployable at a second stage: having shipped X at `api`, widening to `core`
+hit the fail-closed check on the existing `releases/X` directory, and the only
+way out was to cut a **different Git commit purely to change deployment scope**.
+That breaks the guarantee the whole model exists for — that what runs is exactly
+what was reviewed.
+
+So the same commit can now be promoted:
+
+```bash
+sudo scripts/deploy-compose.sh --commit <sha> --stage api
+sudo scripts/deploy-compose.sh --commit <sha> --stage core   # same commit
+sudo scripts/deploy-compose.sh --commit <sha> --stage full   # same commit
+```
+
+Each stage directory is its own immutable release, materialised by its own
+`git archive` of that commit. Never copied from a sibling — a copy would make
+the second release's contents depend on whatever happened to the first one
+after it was created. A sibling stage never blocks another; the **exact** same
+commit *and* stage is still refused, and never overwritten.
+
+Images stay tagged by commit alone (`radio-api:<sha>`), because the source is
+identical across stages. Promotion therefore reuses what already exists and
+builds only what is missing: `api → core` builds the pipeline image and reuses
+the API image; `core → full` adds only the LLM image.
+
 ### The stage plan
 
 One table, in `scripts/lib/deploy-common.sh`, read by the deploy, its automatic
@@ -433,8 +467,19 @@ the same deployment lock this process already holds.
 
 Either way the outcome is written to
 `/var/lib/radio/deploy/history/failed-<sha>-<timestamp>.json`, including
+`attempted_commit`, `attempted_stage`, `previous_commit`, `previous_stage`,
 `recovery` and `database_restored: false`. A failed deployment never writes
 success state and never moves a symlink.
+
+"No previous release" means no previous **identity** — commit *and* stage.
+A failed `api X → core X` has the same commit on both sides, and treating that
+as a first deployment would tear the stack down instead of restoring `X/api`.
+
+`state.json` records `current_commit`, `current_stage`, `previous_commit` and
+`previous_stage`. After promoting `api X → core X` they are `X/core` and
+`X/api` — not collapsed just because the commits match. The legacy top-level
+`stage` field remains as an alias of `current_stage`; **`current_stage` is
+authoritative.**
 
 `current` and `previous` never move until the new release is healthy.
 
@@ -526,23 +571,32 @@ integrity is in question — and it is written exactly once, never rewritten.
 Otherwise the exact-commit guarantee would cover the directory *name* and
 nothing else.
 
-### The target manifest decides the rollback stage
+### The rollback target is a commit AND a stage
 
-Rolling back reads `.release-manifest.json` **from the target release** and
-validates it strictly: valid JSON, `schema_version` 1, a full lower-case 40-hex
-commit that matches both the requested target and the directory name, a stage of
-exactly `api`/`core`/`full`, a recorded source of `git archive` when present, a
-manifest that is a regular file rather than a symlink, a release directory that
-is not a symlink, and the required release files present as regular files.
+```bash
+sudo scripts/rollback-compose.sh --previous
+sudo scripts/rollback-compose.sh --to-commit <sha> --stage core
+```
 
-The stage comes from that manifest, never from `state.json` — which describes
-the release being rolled *away from*. Rolling a `full` deployment back to an
-`api` release must start an `api` service set; taking the stage from current
-state would start workers against code that never shipped with them. An invalid
-or missing stage is a hard failure, never a quiet default to `api`.
+`--stage` is **required** with `--to-commit`. One commit may have been released
+at `api`, `core` and `full`, so guessing which — defaulting to `api`, or picking
+the newest directory by mtime, or inheriting the stage currently deployed —
+would start the wrong service set during an incident. `--previous` reads
+`previous_commit` **and** `previous_stage` from state, falling back to the
+`previous` symlink's validated identity.
 
-Automatic recovery validates the previous release's manifest the same way and
-uses the stage recorded there.
+The target release's `.release-manifest.json` is then validated against that
+full identity: valid JSON, `schema_version` exactly 1, a full lower-case 40-hex
+commit matching the request, the commit directory name matching it, a stage
+matching the request, the stage directory name matching it, `source` **exactly**
+`git archive` (absent or empty is now a failure, not a pass), a manifest that is
+a regular file and not a symlink, a release directory and commit directory that
+are not symlinks, and the required release files present as regular files.
+
+Automatic recovery uses the complete previous identity the same way. That
+matters most when the commit is unchanged: a failed `api X → core X` must
+restore `X/api`, and anything keyed on the commit alone would conclude there was
+no previous release and tear the stack down instead.
 
 ---
 
