@@ -76,12 +76,59 @@ anything else as `InvalidMessage` (permanent — recorded and deleted, not retri
   "analysis_job_id": "uuid", "mention_id": "uuid", "conversation_id": "uuid",
   "station_id": "string", "language": "hi",
   "transcript_reference": {"backend": "sqlite", "transcript_id": "uuid"},
-  "matched_keywords": [{"keyword_id": "uuid", "canonical_value": "NVIDIA",
-                        "matched_text": "एनवीडिया", "start_ms": 32000, "end_ms": 33300}],
+  "matched_keywords": [{"keyword_id": "uuid", "campaign_ids": ["uuid"],
+                        "canonical_value": "NVIDIA", "matched_text": "एनवीडिया",
+                        "match_level": "alias", "start_char": 44, "end_char": 52,
+                        "start_ms": 32000, "end_ms": 33300, "confidence": 0.95}],
   "campaign_ids": ["uuid"],
   "trace_id": "uuid", "created_at": "ISO-8601 UTC"
 }
 ```
+
+### `matched_keywords` is evidence, not a pointer
+
+`MatchedKeywordRef` must carry everything the result writer persists into
+`mention_keywords`, because the analysis worker cannot recompute any of it: it
+never sees the audio, the per-segment transcript, or the station's keyword
+index.
+
+The first implementation carried only `keyword_id`, `canonical_value`,
+`matched_text`, `start_ms` and `end_ms`. The consumer filled the rest with
+constants — `match_level="exact"`, `confidence=1.0`, `start_char=0`, and *every*
+conversation campaign on *every* keyword. Those constants were not defaults,
+they were fabrications, and they landed in the permanent audit trail: an alias
+hit was recorded as `exact`, a candidate was recorded as `confirmed`, and
+per-keyword attribution was lost.
+
+`campaign_ids`, `match_level`, `start_char`, `end_char` and `confidence` are
+therefore part of the record. They were added **additively** to
+`radio.analysis.v1`, each with a documented default, so a message serialised
+before they existed still parses rather than becoming a poison message. The
+schema string is deliberately unchanged: optional additive fields do not
+justify a v2 contract, and a v2 would strand every message already queued.
+
+**Two campaign lists, two meanings.** `AnalysisJobV1.campaign_ids` is every
+campaign the physical conversation belongs to. `MatchedKeywordRef.campaign_ids`
+is only the campaigns owning that specific keyword. The second is a subset of
+the first, and collapsing them is the defect described above.
+
+**Coordinates.** `start_char`/`end_char` index into the conversation's assembled
+`transcript_text`; `start_ms`/`end_ms` are measured from the start of the
+conversation. The matcher works in per-segment coordinates, so
+`ConversationAssembler` rebases both when the conversation closes. This matches
+the convention the legacy transcript API already uses
+(`app/services/conversation.py` slices the assembled transcript by these
+offsets), so the frontend highlight contract is unchanged.
+
+Legacy-message fallbacks — and *only* legacy messages reach them:
+
+| Absent field | Fallback | Why |
+|---|---|---|
+| `campaign_ids` | job-level `campaign_ids` | all the old message ever carried |
+| `match_level` | `exact` | the old consumer's behaviour |
+| `start_char` | `0` | the old consumer's behaviour |
+| `end_char` | `start_char + len(matched_text)` | the old consumer's behaviour |
+| `confidence` | `1.0` | the old consumer's behaviour |
 
 ### Size discipline
 

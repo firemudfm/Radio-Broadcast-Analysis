@@ -14,12 +14,13 @@ Rules enforced here, not by convention elsewhere:
 from __future__ import annotations
 
 import json
+from collections.abc import Sequence
 from datetime import UTC, datetime
 from typing import Any, Literal
 
 from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
 
-from .enums import AudioContentClass
+from .enums import AudioContentClass, MatchLevel
 from .errors import InvalidMessageError, MessageTooLargeError, UnsupportedSchemaError
 from .ids import IdentifierError, validate_station_id, validate_uuid
 
@@ -168,7 +169,34 @@ class TranscriptionJobV1(MessageModel):
 
 
 class MatchedKeywordRef(MessageModel):
-    """A confirmed keyword hit, carried by reference plus its evidence span."""
+    """A keyword hit, carried with the evidence needed to reproduce it.
+
+    This is an **evidence-preserving** record, not a pointer. Everything the
+    result writer persists into ``mention_keywords`` has to survive the queue
+    hop, because the analysis worker has no way to recompute it: it never sees
+    the audio, the per-segment transcript, or the station's keyword index.
+
+    Anything omitted here is not "defaulted downstream", it is *fabricated*
+    downstream -- an alias hit becomes ``exact``, a candidate becomes
+    ``confirmed``, and a real confidence becomes ``1.0``. That lands in the
+    permanent audit trail, so the fields below are load-bearing.
+
+    Ownership: ``campaign_ids`` here is the set of campaigns that registered
+    **this specific keyword** on this station. It is deliberately narrower than
+    :attr:`AnalysisJobV1.campaign_ids`, which covers the whole conversation.
+
+    Coordinates (see :class:`app.services.conversation_assembler.ClosedConversation`):
+
+    * ``start_char``/``end_char`` index into the conversation's assembled
+      ``transcript_text``, matching the convention the legacy transcript API
+      already uses (``app/services/conversation.py``).
+    * ``start_ms``/``end_ms`` are relative to the start of the conversation.
+
+    Every field added in this record is optional with a documented default, so
+    a ``radio.analysis.v1`` message serialised before they existed still
+    parses. The schema string is unchanged on purpose: additive optional
+    fields do not warrant a v2 contract.
+    """
 
     keyword_id: str
     canonical_value: str = Field(min_length=1, max_length=200)
@@ -176,16 +204,74 @@ class MatchedKeywordRef(MessageModel):
     start_ms: int = Field(ge=0)
     end_ms: int = Field(ge=0)
 
+    # --- additive v1 fields ---------------------------------------------------
+    #
+    # Defaults exist ONLY so a message queued before this change still parses.
+    # The producer always populates them; see
+    # `app/workers/transcription.py::_commit_conversation`.
+
+    #: Campaigns owning THIS keyword. Empty only in a pre-change message, where
+    #: the consumer falls back to the job-level campaign list.
+    campaign_ids: list[str] = Field(default_factory=list, max_length=MAX_CAMPAIGN_IDS)
+    #: How the hit was made. ``exact`` is the legacy-message fallback, never a
+    #: substitute for a real level.
+    match_level: MatchLevel = "exact"
+    start_char: int = Field(default=0, ge=0)
+    #: ``None`` in a legacy message; the consumer derives it from the matched
+    #: text length in that case only.
+    end_char: int | None = Field(default=None, ge=0)
+    confidence: float = Field(default=1.0, ge=0.0, le=1.0)
+
     @field_validator("keyword_id")
     @classmethod
     def validate_keyword_id(cls, value: str) -> str:
         return validate_uuid(value, field="keyword_id")
 
+    @field_validator("campaign_ids")
+    @classmethod
+    def validate_campaign_ids(cls, values: list[str]) -> list[str]:
+        """Validate and de-duplicate while preserving order.
+
+        Order-preserving rather than sorted so a producer's attribution order
+        survives the hop and two identical payloads serialise identically.
+        """
+        cleaned: list[str] = []
+        for value in values:
+            campaign_id = validate_uuid(value, field="campaign_id")
+            if campaign_id not in cleaned:
+                cleaned.append(campaign_id)
+        return cleaned
+
     @model_validator(mode="after")
     def validate_span(self) -> MatchedKeywordRef:
         if self.end_ms < self.start_ms:
             raise ValueError("end_ms must not precede start_ms")
+        if self.end_char is not None and self.end_char < self.start_char:
+            raise ValueError("end_char must not precede start_char")
         return self
+
+    @property
+    def resolved_end_char(self) -> int:
+        """``end_char``, or the legacy-message approximation from text length.
+
+        Only a pre-change message can reach the fallback branch: the producer
+        always sets ``end_char``.
+        """
+        if self.end_char is not None:
+            return self.end_char
+        return self.start_char + len(self.matched_text)
+
+    def resolved_campaign_ids(self, job_campaign_ids: Sequence[str]) -> tuple[str, ...]:
+        """Owning campaigns, falling back to the job's list for old messages.
+
+        The fallback is deliberately the *old* broadening behaviour, because
+        for a message serialised before per-match ownership existed that is the
+        only information available -- and it is what the message meant when it
+        was written.
+        """
+        if self.campaign_ids:
+            return tuple(self.campaign_ids)
+        return tuple(job_campaign_ids)
 
 
 class TranscriptReference(MessageModel):

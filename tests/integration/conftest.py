@@ -8,6 +8,8 @@ under test is production wiring.
 """
 from __future__ import annotations
 
+import json
+
 import pytest
 
 from app.config import Settings
@@ -90,3 +92,33 @@ def llm_client():
         return FakeLlmClient(responses=[payload])
 
     return build
+
+
+@pytest.fixture
+def analysis_worker(settings: Settings, database: Database, queues: dict):
+    """A real AnalysisWorker with only the LLM and S3 substituted.
+
+    The consumer-side reconstruction is the code under test, so everything
+    between `parse_analysis_job` and the persisted row stays production code.
+    """
+    from app.pipeline.factory import ANALYSIS_QUEUE as _ANALYSIS_QUEUE
+    from app.services.llm_analysis import ConversationAnalyzer
+    from app.workers.analysis import AnalysisWorker
+
+    payload = json.dumps(
+        {
+            "content_type": "advertisement",
+            "language": "hi",
+            "relevant": True,
+            "summary": "An advertisement.",
+            "sentiment": "positive",
+            "confidence": 0.8,
+        }
+    )
+    return AnalysisWorker(
+        settings,
+        database,
+        queue=queues[_ANALYSIS_QUEUE],
+        analyzer=ConversationAnalyzer(settings, client=FakeLlmClient(responses=[payload])),
+        s3_client=None,
+    )
