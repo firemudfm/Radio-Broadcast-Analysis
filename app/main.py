@@ -51,8 +51,13 @@ def _load_bundled_overlay(store: CatalogStore) -> None:
 def _import_legacy_stations(settings, store: CatalogStore, station_service) -> None:
     """Register already-running pipeline stations (hertz879) as pinned active
     managed stations without touching their systemd units."""
+    pinned = list(settings.RADIO_LEGACY_PINNED_STATION_IDS)
+    if not pinned:
+        # Listing stations reaches S3. With nothing pinned there is nothing to
+        # import, so do not pay for -- or depend on -- that call.
+        return
     known = {station["id"]: station for station in station_service.list_stations()}
-    for station_id in settings.RADIO_LEGACY_PINNED_STATION_IDS:
+    for station_id in pinned:
         record = known.get(station_id)
         if record is None:
             continue
@@ -96,7 +101,18 @@ async def lifespan(app: FastAPI):
     catalog_store = CatalogStore(database)
     catalog_store.migrate()
     _load_bundled_overlay(catalog_store)
-    _import_legacy_stations(settings, catalog_store, station_service)
+    try:
+        _import_legacy_stations(settings, catalog_store, station_service)
+    except Exception:  # noqa: BLE001 - an optional import must not block start-up
+        # This warms a cache from S3. If S3 is unreachable, or credentials have
+        # not been attached yet, the process used to die in lifespan and the
+        # container never became healthy -- which also made rollback fail,
+        # because rollback waits on the same health gate. Every route that
+        # needs S3 still surfaces its own error to the caller, and /readyz
+        # still reports real readiness, so nothing is masked.
+        logging.getLogger(__name__).exception(
+            "Legacy station import failed at start-up; continuing without it"
+        )
     radio_browser_client = RadioBrowserClient(
         user_agent=settings.RADIO_BROWSER_USER_AGENT,
         request_timeout_seconds=settings.RADIO_BROWSER_REQUEST_TIMEOUT_SECONDS,
