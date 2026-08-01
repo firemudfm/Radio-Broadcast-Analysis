@@ -53,6 +53,17 @@ done
 
 command -v docker >/dev/null 2>&1 || { echo "docker is required" >&2; exit 65; }
 
+# Docker daemons on Windows do not understand MSYS/Git-Bash paths such as
+# /c/Users/... or /tmp/... . cygpath -m converts to a forward-slash Windows path
+# the daemon accepts. On Linux and macOS this is a pass-through.
+hostpath() {
+    if command -v cygpath >/dev/null 2>&1; then
+        cygpath -m "$1"
+    else
+        printf '%s' "$1"
+    fi
+}
+
 cleanup() {
     local code=$?
     if [ "${code}" -ne 0 ] && [ -n "${WORKDIR}" ]; then
@@ -104,7 +115,7 @@ services:
   api:
     image: radio-api:smoke-${PROJECT}
     build:
-      context: ${REPO_ROOT}
+      context: $(hostpath "${REPO_ROOT}")
       dockerfile: docker/api.Dockerfile
       args:
         RADIO_UID: "\${RADIO_CONTAINER_UID:-10001}"
@@ -114,11 +125,11 @@ services:
     security_opt: [no-new-privileges:true]
     cap_drop: [ALL]
     tmpfs: ["/tmp:rw,noexec,nosuid,size=32m"]
-    env_file: ["${WORKDIR}/smoke.env"]
+    env_file: ["$(hostpath "${WORKDIR}")/smoke.env"]
     ports: ["127.0.0.1:${PORT}:8788"]
     volumes:
-      - "${WORKDIR}/database:/var/lib/radio/database:rw"
-      - "${WORKDIR}/logs:/var/lib/radio/logs:rw"
+      - "$(hostpath "${WORKDIR}")/database:/var/lib/radio/database:rw"
+      - "$(hostpath "${WORKDIR}")/logs:/var/lib/radio/logs:rw"
     healthcheck:
       test: ["CMD", "python", "/app/healthchecks/api.py"]
       interval: 5s
@@ -165,7 +176,43 @@ check() {
 printf '==> Verifying the API contract\n'
 check "/healthz" "${BASE}/healthz"
 check "/readyz"  "${BASE}/readyz"
-check "/api/v1/brand-signal/campaigns" "${BASE}/api/v1/brand-signal/campaigns"
+
+# The published route table, not a data query. Every campaign and mention
+# endpoint reads from S3, and this container is deliberately pointed at a bucket
+# that does not exist with no credentials attached -- so asserting one of them
+# returns rows would really only assert that the smoke test had been handed AWS
+# access, which is exactly what it must never need. /openapi.json is rendered
+# from the assembled application, so it proves both routers mounted and that the
+# contract the frontend depends on is still published.
+#
+# The expected routes are inlined into the Python program rather than passed in
+# as an argument or an environment value. MSYS/Git-Bash rewrites anything that
+# starts with `/` into a Windows path when it calls a native binary, which
+# silently turned /api/v1/... into C:/code/Git/api/v1/... and failed the check
+# for entirely the wrong reason. A `-c` program does not look like a path, so it
+# crosses that boundary untouched.
+if openapi="$(curl -fsS --max-time 10 "${BASE}/openapi.json" 2>/dev/null)"; then
+    missing="$(printf '%s' "${openapi}" | python3 -c '
+import json, sys
+expected = [
+    "/api/v1/brand-signal/campaigns",
+    "/api/v1/brand-signal/stations",
+    "/api/v1/brand-signal/mentions",
+    "/api/v1/radio-catalog/stations",
+]
+paths = set(json.load(sys.stdin).get("paths") or {})
+print(" ".join(p for p in expected if p not in paths))
+' 2>/dev/null || echo 'openapi-unparseable')"
+    if [ -z "${missing}" ]; then
+        printf '    PASS  /openapi.json publishes every expected route\n'
+    else
+        printf '    FAIL  /openapi.json is missing: %s\n' "${missing}" >&2
+        fail=1
+    fi
+else
+    printf '    FAIL  /openapi.json (%s)\n' "${BASE}/openapi.json" >&2
+    fail=1
+fi
 
 # auth_mode must stay `none` for the pilot; a change here breaks the frontend.
 mode="$(curl -fsS --max-time 10 "${BASE}/healthz" 2>/dev/null \
