@@ -35,8 +35,8 @@ from __future__ import annotations
 import logging
 import uuid
 from collections import deque
-from collections.abc import Iterable
-from dataclasses import dataclass, field
+from collections.abc import Iterable, Sequence
+from dataclasses import dataclass, field, replace
 from datetime import UTC, datetime, timedelta
 
 from ..config import Settings
@@ -349,8 +349,15 @@ class ConversationAssembler:
 
         station.state = "closing"
         segments = tuple(station.segments)
-        matches = tuple(_deduplicate_matches(station.matches))
         conversation_id = station.conversation_id or new_id()
+        started_at = segments[0].started_at
+        ended_at = segments[-1].ended_at
+
+        # Matches arrive in per-segment coordinates because the matcher scans
+        # one segment's transcript at a time. Rebase them onto the assembled
+        # conversation BEFORE de-duplicating, so the dedupe ordering and every
+        # downstream consumer see the same coordinate space.
+        matches = tuple(_deduplicate_matches(_rebase_matches(segments, started_at)))
 
         if not matches:
             logger.debug(
@@ -362,8 +369,6 @@ class ConversationAssembler:
             self._reset(station)
             return None
 
-        started_at = segments[0].started_at
-        ended_at = segments[-1].ended_at
         closed = ClosedConversation(
             conversation_id=conversation_id,
             station_id=station.station_id,
@@ -463,6 +468,58 @@ class ConversationAssembler:
 
 
 # --- helpers ------------------------------------------------------------------
+
+
+def _rebase_matches(
+    segments: Sequence[TranscribedSegment], conversation_started_at: datetime
+) -> list[KeywordMatch]:
+    """Re-express per-segment match coordinates in conversation coordinates.
+
+    The matcher scans one segment's transcript at a time, so a match's
+    ``start_char`` indexes into *that segment's* text and its ``start_ms`` is
+    measured from *that segment's* start. The conversation, however, publishes
+    a single assembled ``transcript_text`` and a single evidence clip, and both
+    the legacy transcript API (``app/services/conversation.py``) and the S3
+    transcript document slice that assembled text by these offsets.
+
+    Left un-rebased, a keyword in the second segment highlights arbitrary text
+    from the first -- which is what this function exists to prevent.
+
+    The character base is computed with **exactly** the join used to build
+    ``transcript_text`` (``" ".join(text.strip() for ... if text.strip())``):
+    blank segments contribute nothing and must not advance the base, and a
+    segment's own leading whitespace is trimmed away, so match offsets shift
+    left by that amount.
+
+    Matches are rebuilt immutably; no ``KeywordMatch`` is mutated, and the
+    matching decision itself is untouched. ``None`` timings stay ``None``
+    rather than becoming a fabricated zero.
+    """
+    rebased: list[KeywordMatch] = []
+    char_base = 0
+    for segment in segments:
+        stripped = segment.text.strip()
+        if not stripped:
+            # Excluded from the join, so it must not advance the base.
+            continue
+        left_trim = len(segment.text) - len(segment.text.lstrip())
+        offset_ms = max(
+            0,
+            int((segment.started_at - conversation_started_at).total_seconds() * 1000),
+        )
+        for match in segment.matches:
+            rebased.append(
+                replace(
+                    match,
+                    start_char=char_base + max(0, match.start_char - left_trim),
+                    end_char=char_base + max(0, match.end_char - left_trim),
+                    start_ms=None if match.start_ms is None else match.start_ms + offset_ms,
+                    end_ms=None if match.end_ms is None else match.end_ms + offset_ms,
+                )
+            )
+        # +1 for the single space the join inserts between segments.
+        char_base += len(stripped) + 1
+    return rebased
 
 
 def _deduplicate_matches(matches: Iterable[KeywordMatch]) -> list[KeywordMatch]:

@@ -159,18 +159,25 @@ class AnalysisWorker(BaseWorker):
                 detail=f"conversation_id={job.conversation_id}",
             )
 
+        # Reconstruct from what the producer actually sent. Every value below
+        # comes off the wire; the only fallbacks live inside MatchedKeywordRef
+        # and apply solely to messages queued before those fields existed.
+        #
+        # Nothing here may default to exact/1.0/0: that is how an alias hit
+        # became `exact` and a candidate became `confirmed` in the permanent
+        # record.
         matches = tuple(
             KeywordMatch(
                 keyword_id=item.keyword_id,
-                campaign_ids=tuple(job.campaign_ids),
+                campaign_ids=item.resolved_campaign_ids(job.campaign_ids),
                 canonical_value=item.canonical_value,
                 matched_text=item.matched_text,
-                match_level="exact",
-                start_char=0,
-                end_char=len(item.matched_text),
+                match_level=item.match_level,
+                start_char=item.start_char,
+                end_char=item.resolved_end_char,
                 start_ms=item.start_ms,
                 end_ms=item.end_ms,
-                confidence=1.0,
+                confidence=item.confidence,
             )
             for item in job.matched_keywords
         )

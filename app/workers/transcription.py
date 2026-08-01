@@ -237,13 +237,30 @@ class TranscriptionWorker(BaseWorker):
             transcript_reference=TranscriptReference(
                 transcript_id=closed.segments[-1].transcript_id
             ),
+            # Carry the real evidence, not a summary. The analysis worker never
+            # sees the audio, the per-segment transcript or the station's
+            # keyword index, so anything dropped here is fabricated downstream
+            # and lands in the permanent mention_keywords audit trail.
+            #
+            # campaign_ids is per-match ownership and is intentionally narrower
+            # than the job-level campaign_ids below, which covers the whole
+            # conversation.
             matched_keywords=[
                 MatchedKeywordRef(
                     keyword_id=item.keyword_id,
+                    campaign_ids=list(item.campaign_ids),
                     canonical_value=item.canonical_value[:200],
                     matched_text=item.matched_text[:300],
+                    match_level=item.match_level,
+                    start_char=item.start_char,
+                    end_char=item.end_char,
+                    # The wire contract types these as non-optional ints and the
+                    # mention_keywords columns are NOT NULL, so an untimed match
+                    # coerces to 0 here. That coercion already existed; it is not
+                    # new information loss.
                     start_ms=item.start_ms or 0,
                     end_ms=item.end_ms or 0,
+                    confidence=item.confidence,
                 )
                 for item in closed.matches
             ],
