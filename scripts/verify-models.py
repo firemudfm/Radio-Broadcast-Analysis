@@ -105,6 +105,16 @@ def main() -> int:
         default=True,
         help="treat an absent VAD model as acceptable (it is optional)",
     )
+    parser.add_argument(
+        "--require-present",
+        action="store_true",
+        help=(
+            "require every SELECTED model to be present, including optional "
+            "ones. Deployment uses this: 'optional' means the classifier may "
+            "degrade to energy-only signals if the file is unavailable, not "
+            "that a deployment may silently ship without a model the lock pins."
+        ),
+    )
     args = parser.parse_args()
 
     try:
@@ -126,12 +136,33 @@ def main() -> int:
     problems: list[str] = []
     for name, model in sorted(models.items()):
         found = verify_model(name, model, args.root, quick=args.quick)
-        if found and model.get("role") == "vad" and args.allow_missing_optional:
+        if (
+            found
+            and model.get("role") == "vad"
+            and args.allow_missing_optional
+            and not args.require_present
+        ):
             # The classifier degrades to energy-only signals without it, so an
-            # absent VAD is a documented quality trade-off, not a failure.
+            # absent VAD is a documented quality trade-off -- but only where the
+            # caller has said it will accept that. A deployment passes
+            # --require-present, because reporting a model the lock pins as
+            # VERIFIED when it is not on disk is how a host silently runs
+            # without it.
             print(f"  {name}: optional and unavailable -- {found[0]}")
             continue
         problems.extend(found)
+
+        # Say plainly what was and was not checked. models.lock.json pins no
+        # upstream digest for the VAD file, so verification here is presence and
+        # exact size. Calling that "verified" without qualification would claim
+        # a cryptographic check that never happened.
+        if not found and model.get("role") == "vad":
+            digests = [f.get("sha256") for f in model.get("files", [])]
+            if not any(digests):
+                print(
+                    f"  {name}: presence and exact size only "
+                    "(no sha256 is pinned upstream for this artefact)"
+                )
 
     if problems:
         print("\nFAILED:", file=sys.stderr)

@@ -30,3 +30,7 @@ prod-config.tmp.yaml
 # Models are fetched with scripts/download-models.py, never committed
 *.onnx
 models/
+
+# Real Compose CLI environment (deploy/compose/compose.env.example is the template)
+/deploy/compose/compose.env
+compose.env

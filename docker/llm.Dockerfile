@@ -71,8 +71,23 @@ RUN apt-get update \
     && apt-get install -y --no-install-recommends libgomp1 curl \
     && rm -rf /var/lib/apt/lists/*
 
-RUN groupadd --gid 10001 radio \
-    && useradd --uid 10001 --gid radio --no-create-home --shell /usr/sbin/nologin radio
+# Runtime identity is a BUILD ARGUMENT, not a constant. See docker/api.Dockerfile
+# for the full rationale: the production host's `radio` account is uid 992, not
+# 10001, and bind mounts must be writable without a recursive chown.
+ARG RADIO_UID=10001
+ARG RADIO_GID=10001
+
+RUN set -eu; \
+    for value in "${RADIO_UID}" "${RADIO_GID}"; do \
+        case "${value}" in \
+            ''|*[!0-9]*) echo "RADIO_UID/RADIO_GID must be numeric, got '${value}'" >&2; exit 1 ;; \
+        esac; \
+        [ "${value}" -ge 1 ] || { echo "RADIO_UID/RADIO_GID must not be 0 (root)" >&2; exit 1; }; \
+        [ "${value}" -le 65533 ] || { echo "RADIO_UID/RADIO_GID above 65533 is reserved" >&2; exit 1; }; \
+    done; \
+    groupadd --gid "${RADIO_GID}" radio; \
+    useradd --uid "${RADIO_UID}" --gid "${RADIO_GID}" \
+        --no-create-home --shell /usr/sbin/nologin radio
 
 COPY --from=builder /out/bin/llama-server /usr/local/bin/llama-server
 COPY --from=builder /out/lib/ /usr/local/lib/

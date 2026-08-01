@@ -1,0 +1,348 @@
+#!/usr/bin/env bash
+# Bring an Amazon Linux 2023 aarch64 host up to the pinned toolchain.
+#
+#   scripts/ensure-host-prerequisites.sh [--dry-run] [--lock PATH]
+#
+# IDEMPOTENT BY CONSTRUCTION. Every action is guarded by a check, so the normal
+# case -- a host that is already correct -- performs no installation at all.
+# That matters because this runs on every deployment: a script that reinstalls
+# or upgrades packages each time turns "deploy a reviewed commit" into "also
+# apply whatever the mirrors changed since yesterday", which is unreviewed
+# change arriving through the back door.
+#
+# What it deliberately never does:
+#   * never formats, partitions or mounts a block device -- a deployment that
+#     can reformat a data volume is one bug away from destroying every
+#     transcript on the host;
+#   * never uses --allowerasing, --skip-broken, --nogpgcheck or --disablerepo;
+#   * never installs full `curl`, because on AL2023 that erases curl-minimal;
+#   * never upgrades a package it did not install;
+#   * never adds the radio account to the docker group -- membership there is
+#     equivalent to root, and the runtime user must not have it;
+#   * never opens a Docker TCP listener;
+#   * never runs `docker system prune`.
+set -euo pipefail
+
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+# shellcheck source=scripts/lib/deploy-common.sh
+source "${SCRIPT_DIR}/lib/deploy-common.sh"
+
+LOCK_FILE="${RADIO_TOOLCHAIN_LOCK:-${SCRIPT_DIR}/../deploy/toolchain.lock.json}"
+DATA_ROOT="${RADIO_DATA_ROOT:-/var/lib/radio}"
+SKIP_MOUNT_CHECK="${RADIO_SKIP_MOUNT_CHECK:-0}"
+DRY_RUN=0
+
+INSTALLED=()
+ALREADY_PRESENT=()
+
+usage() {
+    cat <<'USAGE'
+Ensure the pinned host toolchain is present. Installs only what is missing.
+
+Usage:
+  scripts/ensure-host-prerequisites.sh [options]
+
+Options:
+  --lock PATH   Toolchain lock (default deploy/toolchain.lock.json).
+  --dry-run     Report what is missing; install nothing.
+  -h, --help    Show this help.
+
+Never formats or mounts a disk. Never erases a package. Never upgrades a
+package it did not install.
+USAGE
+}
+
+while [ $# -gt 0 ]; do
+    case "$1" in
+        --lock)    LOCK_FILE="${2:-}"; shift 2 ;;
+        --dry-run) DRY_RUN=1; shift ;;
+        -h|--help) usage; exit "${EXIT_OK}" ;;
+        *)         usage >&2; die "${EXIT_USAGE}" "unknown argument: $1" ;;
+    esac
+done
+
+require_commands python3
+[ -f "${LOCK_FILE}" ] || die "${EXIT_PRECONDITION}" "toolchain lock not found: ${LOCK_FILE}"
+
+# lock_query <python-expression-over-`d`>
+lock_query() {
+    python3 -c '
+import json, sys
+with open(sys.argv[1], encoding="utf-8") as handle:
+    d = json.load(handle)
+print(eval(sys.argv[2], {"d": d}))  # noqa: S307 - fixed expressions from this file
+' "${LOCK_FILE}" "$1"
+}
+
+# ---------------------------------------------------------------------------
+stage "1/5  Validating the host"
+ARCH="$(uname -m)"
+[ "${ARCH}" = "aarch64" ] || die "${EXIT_PRECONDITION}" \
+    "this toolchain is pinned for aarch64; host reports ${ARCH}"
+log "architecture ${ARCH}"
+
+# The data volume must be a real mount BEFORE anything is installed. Docker's
+# data-root lives on it, and starting Docker with the volume unmounted would
+# silently fill the root filesystem with images.
+if [ "${SKIP_MOUNT_CHECK}" != "1" ]; then
+    require_mountpoint "${DATA_ROOT}"
+    log "${DATA_ROOT} is a mount point"
+else
+    warn "mount check skipped (RADIO_SKIP_MOUNT_CHECK=1); non-production validation only"
+fi
+
+# version_at_least <have> <want> -- dotted numeric comparison.
+#
+# Compared field by field as integers, never as strings: "3.3.4624.0" sorts
+# BEFORE "3.3.2746.0" lexically, so a string comparison would reject the newer
+# agent that is actually running in production.
+version_at_least() {
+    local have="$1" want="$2" i
+    local -a h w
+    IFS='.' read -r -a h <<<"${have}"
+    IFS='.' read -r -a w <<<"${want}"
+    for i in 0 1 2 3; do
+        local hv="${h[i]:-0}" wv="${w[i]:-0}"
+        case "${hv}${wv}" in
+            *[!0-9]*) return 2 ;;   # malformed: caller decides
+        esac
+        if [ "${hv}" -gt "${wv}" ]; then return 0; fi
+        if [ "${hv}" -lt "${wv}" ]; then return 1; fi
+    done
+    return 0
+}
+
+# ---------------------------------------------------------------------------
+stage "2a/5 Checking the SSM Agent"
+MIN_SSM_AGENT="$(lock_query 'd["minimum_versions"]["ssm_agent"]')"
+SSM_AGENT_VERSION="${RADIO_SSM_AGENT_VERSION:-}"
+if [ -z "${SSM_AGENT_VERSION}" ]; then
+    SSM_AGENT_VERSION="$(rpm -q --queryformat '%{VERSION}' amazon-ssm-agent 2>/dev/null || true)"
+fi
+if [ -z "${SSM_AGENT_VERSION}" ]; then
+    warn "amazon-ssm-agent version could not be determined; skipping the version gate"
+    warn "this host is not managed by Systems Manager, or the agent is not an rpm"
+else
+    log "amazon-ssm-agent ${SSM_AGENT_VERSION} (minimum ${MIN_SSM_AGENT})"
+    # A malformed version is a refusal, not a shrug: the deployment document
+    # relies on ENV_VAR parameter interpolation, and an agent that does not
+    # support it silently falls back to substituting the parameter into the
+    # command text -- the exact behaviour the document is written to avoid.
+    if ! version_at_least "${SSM_AGENT_VERSION}" "${MIN_SSM_AGENT}"; then
+        case $? in
+            2)
+                fail "amazon-ssm-agent version '${SSM_AGENT_VERSION}' is not a dotted numeric version"
+                ;;
+            *)
+                fail "amazon-ssm-agent ${SSM_AGENT_VERSION} is older than the required ${MIN_SSM_AGENT}"
+                fail "older agents ignore interpolationType: ENV_VAR and fall back to raw string substitution"
+                ;;
+        esac
+        remediation "sudo dnf update amazon-ssm-agent && sudo systemctl restart amazon-ssm-agent"
+        die "${EXIT_PRECONDITION}" "unsupported SSM Agent version"
+    fi
+fi
+
+# ---------------------------------------------------------------------------
+stage "2/5  Checking packages"
+REQUIRED_PACKAGES="$(lock_query 'chr(32).join(d["packages"]["required"])')"
+FORBIDDEN_PACKAGES="$(lock_query 'chr(32).join(d["packages"]["forbidden"])')"
+
+MISSING=()
+for package in ${REQUIRED_PACKAGES}; do
+    if rpm -q "${package}" >/dev/null 2>&1; then
+        ALREADY_PRESENT+=("${package}")
+    else
+        MISSING+=("${package}")
+    fi
+done
+log "${#ALREADY_PRESENT[@]} package(s) already present"
+
+for package in ${FORBIDDEN_PACKAGES}; do
+    for candidate in "${MISSING[@]}"; do
+        [ "${candidate}" = "${package}" ] && die "${EXIT_PRECONDITION}" \
+            "${package} is on the forbidden list; installing it would erase curl-minimal"
+    done
+done
+
+if [ "${#MISSING[@]}" -eq 0 ]; then
+    log "no package needs installing"
+elif [ "${DRY_RUN}" -eq 1 ]; then
+    log "dry run: would install ${MISSING[*]}"
+else
+    log "installing ${#MISSING[@]} missing package(s): ${MISSING[*]}"
+    # Named packages only, from the enabled official repositories, with GPG
+    # checking left on. No --allowerasing, no --skip-broken, no --nogpgcheck.
+    dnf install -y "${MISSING[@]}" \
+        || die "${EXIT_PRECONDITION}" "package installation failed"
+    for package in "${MISSING[@]}"; do
+        rpm -q "${package}" >/dev/null 2>&1 \
+            || die "${EXIT_PRECONDITION}" "${package} still absent after installation"
+        INSTALLED+=("${package}")
+    done
+    log "installed: ${INSTALLED[*]}"
+fi
+
+# ---------------------------------------------------------------------------
+stage "3/5  Checking the Docker daemon"
+DOCKER_CONFIG="$(lock_query 'd["docker_daemon"]["config_path"]')"
+EXPECTED_DATA_ROOT="$(lock_query 'd["docker_daemon"]["expected"]["data-root"]')"
+
+if [ ! -f "${DOCKER_CONFIG}" ]; then
+    if [ "${DRY_RUN}" -eq 1 ]; then
+        log "dry run: would create ${DOCKER_CONFIG}"
+    else
+        log "creating ${DOCKER_CONFIG}"
+        mkdir -p "$(dirname "${DOCKER_CONFIG}")"
+        python3 -c '
+import json, sys
+with open(sys.argv[1], encoding="utf-8") as handle:
+    expected = json.load(handle)["docker_daemon"]["expected"]
+with open(sys.argv[2], "w", encoding="utf-8") as handle:
+    json.dump(expected, handle, indent=2, sort_keys=True)
+    handle.write("\n")
+' "${LOCK_FILE}" "${DOCKER_CONFIG}"
+        chmod 0644 "${DOCKER_CONFIG}"
+    fi
+else
+    # An existing configuration is never edited. Anything that disagrees with
+    # the lock is reported: quietly rewriting data-root would orphan every
+    # existing image and container, and quietly rewriting the log driver would
+    # change how every container's logs are stored for no deployment reason.
+    DAEMON_DIFF="$(python3 -c '
+import json, sys
+try:
+    with open(sys.argv[1], encoding="utf-8") as handle:
+        actual = json.load(handle)
+except Exception as error:
+    print(f"unreadable: {type(error).__name__}")
+    raise SystemExit(0)
+with open(sys.argv[2], encoding="utf-8") as handle:
+    expected = json.load(handle)["docker_daemon"]["expected"]
+
+problems = []
+for key, want in expected.items():
+    have = actual.get(key)
+    if have != want:
+        problems.append(f"{key}: have {have!r}, expected {want!r}")
+
+# A TCP listener exposes the Docker API, which is root on the host. It is a
+# refusal regardless of what else matches.
+for entry in actual.get("hosts", []) or []:
+    if str(entry).startswith("tcp://"):
+        problems.append(f"hosts: unexpected TCP listener {entry!r}")
+
+print("; ".join(problems))
+' "${DOCKER_CONFIG}" "${LOCK_FILE}")"
+    if [ -n "${DAEMON_DIFF}" ]; then
+        fail "${DOCKER_CONFIG} does not match the approved baseline: ${DAEMON_DIFF}"
+        remediation "review ${DOCKER_CONFIG} by hand; this script never edits an existing daemon configuration"
+        die "${EXIT_PRECONDITION}" "conflicting Docker daemon configuration"
+    fi
+    log "${DOCKER_CONFIG} matches the approved baseline"
+fi
+
+# Without this, Docker can start before the data volume is mounted and write its
+# entire image store to the root filesystem, which then fills.
+MOUNT_REQUIREMENT="$(lock_query 'd["docker_daemon"]["systemd_mount_requirement"]')"
+if systemctl cat docker 2>/dev/null | grep -qF "${MOUNT_REQUIREMENT}"; then
+    log "systemd unit carries ${MOUNT_REQUIREMENT}"
+else
+    warn "docker.service does not declare ${MOUNT_REQUIREMENT}"
+    remediation "sudo systemctl edit docker  # add [Unit] ${MOUNT_REQUIREMENT}"
+fi
+
+if [ "${DRY_RUN}" -eq 0 ]; then
+    if ! systemctl is-enabled docker >/dev/null 2>&1; then
+        log "enabling docker"
+        systemctl enable docker
+    fi
+    if ! systemctl is-active docker >/dev/null 2>&1; then
+        log "starting docker"
+        systemctl start docker
+    fi
+    require_commands docker
+    RUNTIME_DATA_ROOT="$(docker info --format '{{.DockerRootDir}}' 2>/dev/null || echo '')"
+    if [ "${RUNTIME_DATA_ROOT}" != "${EXPECTED_DATA_ROOT}" ]; then
+        die "${EXIT_PRECONDITION}" \
+            "Docker is running with root dir '${RUNTIME_DATA_ROOT}', expected '${EXPECTED_DATA_ROOT}'"
+    fi
+    log "docker active with root dir ${RUNTIME_DATA_ROOT}"
+else
+    log "dry run: not starting or inspecting the docker service"
+fi
+
+# ---------------------------------------------------------------------------
+stage "4/5  Checking the Docker Compose plugin"
+COMPOSE_VERSION="$(lock_query 'd["docker_compose"]["version"]')"
+COMPOSE_ASSET="$(lock_query 'd["docker_compose"]["linux_aarch64"]["asset"]')"
+COMPOSE_SHA="$(lock_query 'd["docker_compose"]["linux_aarch64"]["sha256"]')"
+COMPOSE_PATH="$(lock_query 'd["docker_compose"]["linux_aarch64"]["install_path"]')"
+
+compose_is_correct() {
+    [ -x "${COMPOSE_PATH}" ] || return 1
+    local actual
+    actual="$(sha256sum "${COMPOSE_PATH}" 2>/dev/null | awk '{print $1}')"
+    [ "${actual}" = "${COMPOSE_SHA}" ]
+}
+
+if compose_is_correct; then
+    log "docker compose ${COMPOSE_VERSION} already installed and matches the pinned digest"
+    ALREADY_PRESENT+=("docker-compose-plugin")
+elif [ "${DRY_RUN}" -eq 1 ]; then
+    log "dry run: would install docker compose ${COMPOSE_VERSION}"
+else
+    if [ -e "${COMPOSE_PATH}" ]; then
+        # Present but wrong. Not overwritten silently: an operator installed
+        # something here, and replacing it without a word hides whatever they
+        # were doing -- and whatever went wrong.
+        fail "${COMPOSE_PATH} exists but does not match the pinned ${COMPOSE_VERSION} digest"
+        remediation "inspect ${COMPOSE_PATH}, then remove it explicitly to allow a pinned reinstall"
+        die "${EXIT_PRECONDITION}" "unverifiable docker compose binary"
+    fi
+    require_commands curl sha256sum
+    url="https://github.com/docker/compose/releases/download/${COMPOSE_VERSION}/${COMPOSE_ASSET}"
+    temp="$(mktemp)"
+    log "downloading docker compose ${COMPOSE_VERSION}"
+    curl -fsSL --proto '=https' --tlsv1.2 -o "${temp}" "${url}" \
+        || { rm -f "${temp}"; die "${EXIT_PRECONDITION}" "could not download ${url}"; }
+    actual="$(sha256sum "${temp}" | awk '{print $1}')"
+    if [ "${actual}" != "${COMPOSE_SHA}" ]; then
+        rm -f "${temp}"
+        die "${EXIT_PRECONDITION}" \
+            "docker compose checksum mismatch: expected ${COMPOSE_SHA}, got ${actual}"
+    fi
+    log "checksum verified"
+    mkdir -p "$(dirname "${COMPOSE_PATH}")"
+    chmod 0755 "${temp}"
+    mv -f "${temp}" "${COMPOSE_PATH}"
+    INSTALLED+=("docker-compose-plugin")
+    log "installed docker compose ${COMPOSE_VERSION}"
+fi
+
+# Installing the right file is not the same as the CLI using it. Docker searches
+# several plugin directories, so a second copy elsewhere -- left by a package, or
+# by an earlier manual install -- can win, and then an unrelated Docker upgrade
+# changes which Compose runs with nothing having been deployed.
+if [ "${DRY_RUN}" -eq 0 ] && command -v docker >/dev/null 2>&1; then
+    ACTIVE_COMPOSE="$(docker compose version --short 2>/dev/null || true)"
+    EXPECTED_SHORT="${COMPOSE_VERSION#v}"
+    if [ -z "${ACTIVE_COMPOSE}" ]; then
+        die "${EXIT_PRECONDITION}" "the docker CLI does not resolve a compose plugin"
+    fi
+    if [ "${ACTIVE_COMPOSE#v}" != "${EXPECTED_SHORT}" ]; then
+        fail "docker compose resolves to ${ACTIVE_COMPOSE}, expected ${EXPECTED_SHORT}"
+        remediation "find / -name docker-compose -path '*cli-plugins*' 2>/dev/null  # remove the duplicate"
+        die "${EXIT_PRECONDITION}" "an unexpected compose plugin is active"
+    fi
+    log "docker compose resolves to ${ACTIVE_COMPOSE} from the pinned plugin"
+fi
+
+# ---------------------------------------------------------------------------
+stage "5/5  Summary"
+log "already present: ${#ALREADY_PRESENT[@]}"
+log "installed now:   ${#INSTALLED[@]}${INSTALLED:+ (${INSTALLED[*]})}"
+if [ "${DRY_RUN}" -eq 1 ]; then
+    log "dry run: nothing was installed or started"
+fi
+exit "${EXIT_OK}"

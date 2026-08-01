@@ -129,6 +129,23 @@ backup: ## Take a consistent SQLite backup
 smoke: ## Run the smoke test against a running stack
 	bash scripts/smoke-test.sh
 
+.PHONY: container-smoke
+container-smoke: ## Build and smoke-test the API container in isolation
+	bash scripts/container-smoke-test.sh
+
+.PHONY: deploy-dry-run
+deploy-dry-run: ## Validate a deployment without building or starting anything
+	@test -n "$(COMMIT)" || { echo "usage: make deploy-dry-run COMMIT=<40-hex-sha>"; exit 64; }
+	bash scripts/deploy-compose.sh --commit "$(COMMIT)" --stage $(or $(STAGE),api) --dry-run
+
+.PHONY: rollback-dry-run
+rollback-dry-run: ## Validate a rollback without changing containers
+	bash scripts/rollback-compose.sh --previous --dry-run
+
+.PHONY: migrate-check
+migrate-check: ## Report the schema version of a local database
+	$(PYTHON) -m app.cli.migrate_database --check-only
+
 .PHONY: secret-scan
 secret-scan: ## Fail if a credential looks committed
 	bash scripts/secret-scan.sh

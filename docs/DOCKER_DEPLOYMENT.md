@@ -71,17 +71,46 @@ docker compose version
 ```bash
 sudo install -d -m 0750 /etc/radio-broadcast-analysis
 sudo install -d -m 0755 /var/lib/radio
-sudo install -d -m 0700 -o 10001 -g 10001 /var/lib/radio/spool
-sudo install -d -m 0750 -o 10001 -g 10001 \
+RADIO_UID="$(id -u radio)"; RADIO_GID="$(id -g radio)"
+
+sudo install -d -m 0700 -o "$RADIO_UID" -g "$RADIO_GID" /var/lib/radio/spool
+sudo install -d -m 0750 -o "$RADIO_UID" -g "$RADIO_GID" \
     /var/lib/radio/database /var/lib/radio/evidence \
     /var/lib/radio/logs /var/lib/radio/backups
-sudo install -d -m 0755 -o 10001 -g 10001 /var/lib/radio/models
+sudo install -d -m 0755 -o "$RADIO_UID" -g "$RADIO_GID" /var/lib/radio/models
+sudo install -d -m 0750 -o "$RADIO_UID" -g "$RADIO_GID"     /var/lib/radio/releases /var/lib/radio/deploy
 ```
 
-uid/gid **10001** is fixed in all three Dockerfiles. Host directories must be
-owned by it, otherwise a non-root container cannot write to a bind mount and
-the failure surfaces as a confusing permission error at first segment write
-rather than at start-up.
+**The container uid/gid is a build argument, not a constant.** `10001` is only
+the default for local development; this host's `radio` account is **992**, and
+the images are built with that so bind mounts are writable without a recursive
+`chown` of the data volume.
+
+**Leave it unset and let the deployment detect it.** `compose.env.example`
+ships `RADIO_CONTAINER_UID=` and `RADIO_CONTAINER_GID=` empty on purpose:
+
+```
+RADIO_CONTAINER_UID=
+RADIO_CONTAINER_GID=
+```
+
+`scripts/deploy-compose.sh` then reads `id -u radio` / `id -g radio` from the
+host and builds the images with those. On this host that resolves to 992:992.
+
+The template previously pinned `10001` while documenting a 992 host, so an
+operator who copied the default got images that could not write to their own
+data directories. A public template must not carry one host's account numbers.
+
+Pin explicit values only to deliberately override the host account; the
+deployment warns when a pinned value disagrees with the real one. Building
+Compose directly, without the deployment script, falls back to the generic
+`10001:10001` baked into the Dockerfiles.
+
+Ownership is **verified, never repaired**: the deployment refuses to continue
+when a directory is owned by the wrong uid and prints the exact `chown` for the
+operator to run. It never applies one itself, because a recursive `chown`
+across a spool full of evidence during a deploy is not something a script
+should decide to do.
 
 `spool/` is `0700` because it holds raw broadcast audio.
 
@@ -140,8 +169,8 @@ Models are never baked into an image and never downloaded at container
 start-up. See [MODEL_MANAGEMENT.md](MODEL_MANAGEMENT.md).
 
 ```bash
-sudo -u '#10001' python3 scripts/download-models.py --root /var/lib/radio/models
-sudo -u '#10001' python3 scripts/verify-models.py  --root /var/lib/radio/models
+sudo -u radio python3 scripts/download-models.py --root /var/lib/radio/models
+sudo -u radio python3 scripts/verify-models.py  --root /var/lib/radio/models
 ```
 
 Roughly 1.1 GB. Do this before the first `up`, or the transcription worker
@@ -183,6 +212,494 @@ scripts/smoke-test.sh http://127.0.0.1:8788
 
 Expected on a correct deployment: `/healthz` ok, `/readyz` ready, all four
 components `ok`, spool `ok`, `auth_mode: none`.
+
+---
+
+## 6a. Deploying a release (exact-commit)
+
+`scripts/deploy-compose.sh` deploys **one reviewed commit**, never a branch.
+
+```bash
+sudo scripts/deploy-compose.sh --commit <40-hex-sha> --stage api
+```
+
+### Why exact commits
+
+A branch name would let the deployed content change between approval and
+execution. The script refuses anything that is not a full 40-character sha —
+short shas, tags and branch names included — and it **never runs `git pull`,
+`git fetch`, `git reset` or `git checkout`**. Whoever approves the commit is
+responsible for it being present locally; the deployment step itself is offline
+and auditable.
+
+### Release layout
+
+```
+/var/lib/radio/releases/
+    <full-git-sha>/            immutable, created with `git archive`
+    current  -> <full-git-sha>
+    previous -> <full-git-sha>
+
+/var/lib/radio/deploy/
+    state.json                 non-secret deployment state, written atomically
+    history/                   one snapshot per deployment
+    logs/
+
+/var/lock/radio-compose-deploy.lock
+```
+
+A release contains no `.git`, no env file, no model, no database and no audio.
+`git archive` cannot include them, and the script asserts their absence anyway.
+
+### Stages
+
+| Stage | Starts | Needs models |
+|---|---|---|
+| `api` (default) | api | no |
+| `core` | api, planner | no |
+| `full` | api, planner, listener, transcription, analysis, cleanup, llm | **yes** |
+
+`full` is never the default: it starts live capture. It verifies models with
+`scripts/verify-models.py` before starting anything and refuses if they are
+absent — it never downloads them.
+
+Deploy `api` first on a new host, confirm `/readyz`, then widen.
+
+### The deployment lock
+
+An exclusive `flock` on `/var/lock/radio-compose-deploy.lock` serialises
+deployments and rollbacks. Two concurrent runs would race on the release
+symlinks and the database backup. The lock is released on exit, including on
+failure.
+
+### Order of operations
+
+1. Every validation gate (commit, clean source, mount, ownership, env files,
+   permissions, placeholder secret, static credentials, exposure policy, disk).
+2. Immutable release via `git archive`, then a secret scan inside it.
+3. `docker compose config` from the release.
+4. Build images tagged with the exact sha.
+5. **SQLite backup** (`sqlite3 .backup`, verified) if a database exists.
+6. **Migration** in a one-shot container with `--network none`.
+7. Start services, wait for container health.
+8. Run `scripts/smoke-test.sh` against loopback.
+9. Only then move `current` / `previous` and write `state.json`.
+
+### Release identity is commit + stage
+
+```
+/var/lib/radio/releases/<sha>/api
+/var/lib/radio/releases/<sha>/core
+/var/lib/radio/releases/<sha>/full
+```
+
+Identity used to be the commit alone, which made the same reviewed commit
+undeployable at a second stage: having shipped X at `api`, widening to `core`
+hit the fail-closed check on the existing `releases/X` directory, and the only
+way out was to cut a **different Git commit purely to change deployment scope**.
+That breaks the guarantee the whole model exists for — that what runs is exactly
+what was reviewed.
+
+So the same commit can now be promoted:
+
+```bash
+sudo scripts/deploy-compose.sh --commit <sha> --stage api
+sudo scripts/deploy-compose.sh --commit <sha> --stage core   # same commit
+sudo scripts/deploy-compose.sh --commit <sha> --stage full   # same commit
+```
+
+Each stage directory is its own immutable release, materialised by its own
+`git archive` of that commit. Never copied from a sibling — a copy would make
+the second release's contents depend on whatever happened to the first one
+after it was created. A sibling stage never blocks another; the **exact** same
+commit *and* stage is still refused, and never overwritten.
+
+Images stay tagged by commit alone (`radio-api:<sha>`), because the source is
+identical across stages. Promotion therefore reuses what already exists and
+builds only what is missing: `api → core` builds the pipeline image and reuses
+the API image; `core → full` adds only the LLM image.
+
+### The stage plan
+
+One table, in `scripts/lib/deploy-common.sh`, read by the deploy, its automatic
+recovery path, the rollback and the tests. Three independent copies is how
+"rollback started the wrong service set" happens, and that is discovered in
+production.
+
+| stage | profiles | services started | services **built** | images required |
+|---|---|---|---|---|
+| `api` | core | api | api | `radio-api:<sha>` |
+| `core` | core | api, planner | api, planner | + `radio-pipeline:<sha>` |
+| `full` | core, pipeline, llm | api, planner, listener, transcription-worker, analysis-worker, cleanup-worker, llm | api, planner, llm | + `radio-llm:<sha>` |
+
+The build set is deliberately narrower than the runtime set — one service per
+image, with `planner` representing the pipeline image. An unrestricted
+`compose build` builds every service in an active profile, so an api-stage
+deploy was spending minutes of ARM CPU producing a pipeline image it would
+never start, and giving the deployment one more unrelated way to fail.
+
+After building, every image the stage requires is verified to exist under its
+exact SHA tag, and the tag **and image id** of each are recorded in
+`state.json`. Images a stage does not use are recorded as `null` — not omitted,
+and never populated as though they had been verified.
+
+### Nothing is built or pulled at start
+
+`up` runs with `--no-build --pull never`, in the deploy, in automatic recovery
+and in standalone rollback.
+
+Every service declares both `image:` and `build:`. Compose's default when a tag
+is missing is to **build it** — so a rollback to a release whose image had been
+pruned would quietly produce a brand-new, unreviewed image from whatever the
+release directory contains, and report success. Rollback would have created an
+artifact instead of restoring one.
+
+Because of that, recovery and rollback verify **every** image the target stage
+needs *before* touching a running container, and report all missing images at
+once. A missing image cannot be repaired at that point, and discovering it
+half-way through leaves the host running neither release.
+
+### Exact service reconciliation
+
+A successful deployment leaves exactly the stage's services running.
+
+`--remove-orphans` is not enough: it only removes services Compose no longer
+knows about, and a service that is still *defined* but sits in a profile this
+stage does not activate is not an orphan. Narrowing `full` → `api` left the
+listener, all three workers and the LLM running against newly deployed code.
+
+So after the selected services are healthy, the excluded ones are stopped and
+removed — with every profile enabled, since a service in an inactive profile is
+otherwise invisible to Compose — and then verified absent. Never with `-v`: the
+database, spool and evidence are bind mounts.
+
+Order is load-bearing: **start → healthy → reconcile → smoke → move symlinks and
+write state.** Reconciliation failing fails the deployment, and the normal
+recovery path applies.
+
+### Startup order in shared_sqs mode
+
+Workers depend on the API with `condition: service_started`, **not**
+`service_healthy`. The latter was a deadlock: the API health check asks
+`/readyz`, and in `shared_sqs` mode `/readyz` is only ready once the planner,
+listener, transcription and analysis roles have written heartbeats — which the
+workers cannot do while waiting for the API to become healthy. The full stage
+could not start at all.
+
+The dependency is kept rather than dropped, because the API applies the schema
+migrations in its lifespan and a worker opening the database first would race
+that. What is needed is ordering, not readiness:
+
+1. the API container starts;
+2. the workers start;
+3. the workers write heartbeats;
+4. `/readyz` becomes ready;
+5. the deployment smoke test verifies complete readiness.
+
+`/readyz` itself was **not** weakened — it still requires every worker
+heartbeat, and the full-stage smoke test still asserts each component
+individually. The readiness contract is unchanged; only the startup edge is.
+
+### Stage-aware health and readiness
+
+The container health check asks `/healthz`, not `/readyz`, and requires the
+process to be serving valid JSON with a reachable database. It deliberately does
+**not** require every pipeline role: `/readyz` in `shared_sqs` mode needs
+planner, listener, transcription and analysis heartbeats, so using it as the
+container gate meant an `api`- or `core`-stage rollout on a shared-pipeline host
+could never report healthy — the workers it waits for are not part of that stage
+and are never going to start. The deployment would time out and roll back a
+release that was working perfectly.
+
+`/readyz` itself is unchanged. Full shared-pipeline readiness is asserted where
+it belongs — after the containers are up, by `smoke-test.sh --stage full`.
+
+| check | api | core | full |
+|---|---|---|---|
+| `/healthz`, database, `auth_mode`, `/openapi.json` routes | ✓ | ✓ | ✓ |
+| `/readyz` answers | ✓ | ✓ | ✓ |
+| `/readyz` 200 with `ready=true` | — | — | ✓ |
+| planner heartbeat | — | ✓ | ✓ |
+| listener, transcription, analysis heartbeats | — | — | ✓ |
+| queues configured | — | — | ✓ |
+| non-emergency spool | — | ✓ | ✓ |
+
+`api` explicitly does **not** claim the shared pipeline is ready; `core` reports
+it as PARTIAL. The deploy, recovery and rollback all pass their actual stage.
+
+### What the smoke test checks
+
+`scripts/smoke-test.sh` verifies `/healthz`, the database, `auth_mode`,
+`/readyz`, the per-worker pipeline components in `shared_sqs` mode, spool
+pressure, and the published route table in `/openapi.json`.
+
+It asserts the **route table**, not a data query. Every campaign and mention
+endpoint reads from S3, so asserting one returns rows would make a post-deploy
+smoke test fail during an S3 incident the deployment did not cause, and would
+make it depend on AWS reachability exactly when an operator needs a clear
+signal about the release. It reads no S3 object, makes no AWS call and creates
+nothing. (It previously requested `/api/v1/campaigns`, which has never existed —
+the prefix is `/api/v1/brand-signal` — so it returned 404 on every healthy
+deployment.)
+
+### Failure semantics
+
+The distinction matters and the script reports it explicitly:
+
+* **Failure before any container changed** — the running release is completely
+  untouched. This is *not* a rollback, and the script does not call it one. The
+  release directory is left in place for inspection.
+* **Failure after containers changed, first deployment (no previous release)** —
+  there is nothing to return to, so the services this run started are stopped
+  and removed rather than left presenting a broken stack as deployed. The
+  release directory, the database backup and the deploy log are preserved.
+  `down` is used **without** `-v`: the database and spool are bind mounts and
+  must survive for investigation.
+* **Failure after containers changed, with a previous release** — the previous
+  release is restored **automatically**, in-process, from its existing
+  immutable release directory and the already-built images. It never rebuilds
+  (a fresh image during an incident is an artifact nobody reviewed) and never
+  restores SQLite. If that recovery itself fails, the exact manual rollback
+  command is printed.
+
+Recovery is deliberately not a call to `rollback-compose.sh`: that script takes
+the same deployment lock this process already holds.
+
+Either way the outcome is written to
+`/var/lib/radio/deploy/history/failed-<sha>-<timestamp>.json`, including
+`attempted_commit`, `attempted_stage`, `previous_commit`, `previous_stage`,
+`recovery` and `database_restored: false`. A failed deployment never writes
+success state and never moves a symlink.
+
+"No previous release" means no previous **identity** — commit *and* stage.
+A failed `api X → core X` has the same commit on both sides, and treating that
+as a first deployment would tear the stack down instead of restoring `X/api`.
+
+`state.json` records `current_commit`, `current_stage`, `previous_commit` and
+`previous_stage`. After promoting `api X → core X` they are `X/core` and
+`X/api` — not collapsed just because the commits match. The legacy top-level
+`stage` field remains as an alias of `current_stage`; **`current_stage` is
+authoritative.**
+
+`current` and `previous` never move until the new release is healthy.
+
+### What a failure report says about the database
+
+"Nothing was touched" is only ever true of *running containers*. A failure can
+happen after a backup exists, or after some migrations in a run have already
+been applied. Reporting the coarse version tells an operator the database is
+untouched when it is not, and that is the sentence they act on.
+
+Every failure — including one before any container changed — writes
+`/var/lib/radio/deploy/history/failed-<sha>-<ts>.json` recording the attempted
+commit, stage, exit code, **failure phase** (`validation`, `build`, `backup`,
+`migration`, `start`, `health`, `reconcile`, `smoke`), `containers_touched`,
+`backup_created`, `backup_path`, `migration_started`, `migration_completed`,
+`database_restored: false`, the release path, the deploy log and the recovery
+status.
+
+`migration_started` and `migration_completed` are tracked separately on purpose:
+a run that started and did not finish may still have applied earlier migrations.
+Each individual migration remains transactional, so the schema is at a
+consistent version — check which one with `scripts/migrate-db.sh --check-only`.
+
+### The backup path contract
+
+`backup-sqlite.sh` prints human-readable progress and then exactly one machine
+readable line, last, after verification, compression and `chmod`:
+
+```
+BACKUP_PATH=/var/lib/radio/backups/radio-20260101T000000Z.db.gz
+```
+
+Callers parse only that line, and reject zero or more than one of them. Before
+this, the deploy scraped the first path out of the human output — the
+uncompressed `.db` that gzip had *already replaced* — so deployment state
+recorded a backup reference pointing at a file that did not exist. It also piped
+the backup through `awk '{print; exit}'`, which closed the pipe and SIGPIPE'd
+the backup script while it was still pruning and uploading.
+
+The emitted path is verified absolute, existing, a regular file, not a symlink,
+inside the backup root, and no broader than mode 0600.
+
+### Rollback enforces the same host gates
+
+A rollback changes the host as much as a deploy does, and it is the path taken
+under time pressure. It therefore runs the same non-secret controls: host
+UID/GID resolution (blank means auto-detect, never a silent `10001`), UID/GID
+validation, directory-ownership verification, env-file presence and permissions,
+placeholder-secret and static-credential rejection, `validate_publish_host`
+(`0.0.0.0` still requires `RADIO_ALLOW_DIRECT_HTTP=1`), mount-point and free
+space. Env-file contents are never printed.
+
+### The database is never rolled back
+
+Automatic recovery restores **code and images only**. A migration applied by
+the failed deployment is still applied afterwards, and the pre-migration backup
+is preserved but not restored. Reverting a SQLite file would discard every
+mention, transcript and analysis written since the backup, so it stays an
+explicit operator decision.
+
+### Health gate
+
+A selected service must report Docker health `healthy`. `starting` and
+`unhealthy` are waited on until the 300-second timeout. Three states fail
+immediately, because none of them can improve:
+
+* the service has **no container** — it never started;
+* the container is **not running** — its exit code is reported;
+* the container defines **no healthcheck** at all.
+
+That last one used to count as success. Every production service defines a
+healthcheck, so `none` means one was dropped or the wrong container is being
+inspected — and recording a deployment as verified on the basis of an unchecked
+container is how a broken stack gets signed off.
+
+### An existing release directory is never reused
+
+`create_release` refuses to proceed when `releases/<sha>` already exists:
+
+* it is the **current** release — the commit is already deployed;
+* it is the **previous** release — use `rollback-compose.sh --to-commit <sha>`;
+* otherwise — an unverified directory that must be inspected and explicitly
+  removed by an operator.
+
+It is never deleted automatically: it may be the running release, and it is
+evidence of whatever went wrong. A `.release-manifest.json` is **not** accepted
+as proof of a *new* deployment — it is a file inside the very directory whose
+integrity is in question — and it is written exactly once, never rewritten.
+Otherwise the exact-commit guarantee would cover the directory *name* and
+nothing else.
+
+### The rollback target is a commit AND a stage
+
+```bash
+sudo scripts/rollback-compose.sh --previous
+sudo scripts/rollback-compose.sh --to-commit <sha> --stage core
+```
+
+`--stage` is **required** with `--to-commit`. One commit may have been released
+at `api`, `core` and `full`, so guessing which — defaulting to `api`, or picking
+the newest directory by mtime, or inheriting the stage currently deployed —
+would start the wrong service set during an incident. `--previous` reads
+`previous_commit` **and** `previous_stage` from state, falling back to the
+`previous` symlink's validated identity.
+
+The target release's `.release-manifest.json` is then validated against that
+full identity: valid JSON, `schema_version` exactly 1, a full lower-case 40-hex
+commit matching the request, the commit directory name matching it, a stage
+matching the request, the stage directory name matching it, `source` **exactly**
+`git archive` (absent or empty is now a failure, not a pass), a manifest that is
+a regular file and not a symlink, a release directory and commit directory that
+are not symlinks, and the required release files present as regular files.
+
+Automatic recovery uses the complete previous identity the same way. That
+matters most when the commit is unchanged: a failed `api X → core X` must
+restore `X/api`, and anything keyed on the commit alone would conclude there was
+no previous release and tear the stack down instead.
+
+---
+
+## 6b. Rolling back
+
+```bash
+sudo scripts/rollback-compose.sh --previous
+sudo scripts/rollback-compose.sh --to-commit <40-hex-sha>
+sudo scripts/rollback-compose.sh --previous --dry-run
+```
+
+**Code and images roll back. The database does not.**
+
+That is deliberate. Restoring the SQLite file would discard every mention,
+transcript and analysis written since the backup, and the schema is
+forward-only by policy (ADR-004). A backup *is* taken before the rollback, so
+if older code turns out to be incompatible with the newer schema you can
+restore it — as a separate, explicit operator action, never as a side effect.
+
+Rollback never rebuilds: the target commit's images must still exist locally.
+
+---
+
+## 6c. Database migration on its own
+
+```bash
+sudo scripts/migrate-db.sh --image radio-api:<sha>
+sudo scripts/migrate-db.sh --image radio-api:<sha> --check-only
+```
+
+Runs `python -m app.cli.migrate_database` in a one-shot container with
+`--network none`, no published port and only the database and log directories
+mounted. It reuses the same `Database` class and `run_migrations` as normal
+start-up — a different entrypoint, not a second migration engine.
+
+`--database PATH` is a real escape hatch: given an explicit path, the CLI runs
+without the rest of the application configuration and falls back to the SQLite
+defaults, printing `configuration unavailable ... continuing`. Recovering a
+schema should not require a bucket name and an audio-token secret to be valid
+first. Without `--database` there is no way to know which file to migrate, so a
+broken configuration is still a usage error (exit 64).
+
+---
+
+## 6d. Spool cleanup on demand
+
+```bash
+sudo scripts/cleanup-spool.sh --image radio-pipeline:<sha> --dry-run
+sudo scripts/cleanup-spool.sh --image radio-pipeline:<sha>
+```
+
+A thin wrapper with no deletion policy of its own. Retention, watermarks and
+containment are enforced by `app/workers/cleanup.py`, which joins every
+candidate against SQLite job state. A `pending` segment or audio belonging to a
+confirmed mention is never deleted, at any watermark.
+
+---
+
+## 6e. Direct HTTP exposure (restricted pilot only)
+
+The API binds `127.0.0.1:8788` by default. To publish it directly, **both** are
+required in `compose.env`:
+
+```
+RADIO_API_PUBLISH_HOST=0.0.0.0
+RADIO_ALLOW_DIRECT_HTTP=1
+```
+
+Without the acknowledgement the deployment fails before anything is built.
+
+This is a **restricted-pilot option, not the recommended architecture.** The
+API runs with `auth_mode=none` and no TLS; nothing in this repository can
+restrict who reaches it, so that must be enforced by the host firewall or
+security group. A reverse proxy with TLS remains deferred work and is not part
+of this repository.
+
+---
+
+## 6f. Deployment state
+
+`/var/lib/radio/deploy/state.json`, written through a temporary file and
+renamed atomically:
+
+```json
+{
+  "schema_version": 1,
+  "current_commit": "…", "previous_commit": "…",
+  "deployed_at": "…", "deployed_by": "…", "stage": "api",
+  "compose_project": "radio-prod", "release_path": "…",
+  "api_image": "radio-api:…", "api_image_id": "sha256:…",
+  "migration": "ok", "backup_path": "…", "smoke_test": "pass"
+}
+```
+
+It holds no credential, no token, no environment-file content and no transcript.
+Logs are under `/var/lib/radio/deploy/logs/`.
+
+### Not yet automated
+
+There is deliberately **no** GitHub production deployment workflow and **no**
+deployment SSM document in this repository. The GitHub OIDC role remains
+smoke-only. These scripts are the reviewed foundation a fixed SSM document can
+call later; `AWS-RunShellScript` is not an acceptable transport for it.
 
 ---
 
@@ -248,7 +765,7 @@ remains readable throughout.
 | Symptom | Likely cause | Check |
 |---|---|---|
 | Worker exits immediately with `RADIO_PIPELINE_MODE is 'legacy'` | Mode not enabled | `application.env` |
-| Container cannot write the spool | Host dir not owned by 10001 | `ls -ln /var/lib/radio` |
+| Container cannot write the spool | Host dir not owned by the container uid | `ls -ln /var/lib/radio`, compare with `id -u radio` |
 | `model_verification_failed` | Models absent or truncated | `scripts/verify-models.py` |
 | LLM container exits 78 | GGUF missing | `ls -l /var/lib/radio/models/qwen/` |
 | `/readyz` 503, components `absent` | Workers not started | `docker compose ps` |

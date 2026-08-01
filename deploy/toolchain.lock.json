@@ -1,0 +1,133 @@
+{
+  "schema": "radio.toolchain.lock.v1",
+  "comment": [
+    "Pinned, non-secret deployment tooling for the Amazon Linux 2023 aarch64",
+    "production host. This exists so a replacement host prepares itself to the",
+    "same specification instead of to whatever the package mirrors happen to",
+    "hold that day.",
+    "",
+    "Every value here was taken from the VERIFIED live host baseline, not from a",
+    "sensible-looking default. A lock that disagrees with the running host is",
+    "worse than no lock: it makes a replacement host quietly different from the",
+    "one that was tested.",
+    "",
+    "Nothing secret belongs here: no account id, no instance id, no token, no",
+    "credential, no private key, no environment value."
+  ],
+  "docker_compose": {
+    "version": "v5.3.1",
+    "released": "2026-07-07",
+    "release_url": "https://github.com/docker/compose/releases/tag/v5.3.1",
+    "linux_aarch64": {
+      "asset": "docker-compose-linux-aarch64",
+      "sha256": "aa611e811d0ea25897839c404bfb5bf93ce706dc51c500a4457890f5d0606a86",
+      "checksum_asset": "docker-compose-linux-aarch64.sha256",
+      "install_path": "/usr/local/lib/docker/cli-plugins/docker-compose",
+      "install_path_comment": [
+        "The path the live host actually uses. /usr/libexec/docker/cli-plugins is",
+        "also on Docker's plugin search path, so installing there as well would",
+        "leave two plugins whose precedence depends on the Docker version -- and",
+        "an upgrade would then change the Compose in use without anything having",
+        "been deployed. One path only."
+      ]
+    },
+    "minimum_supported": "v2.24.0",
+    "minimum_reason": "compose.prod.yaml uses the !override tag, added in Compose 2.24."
+  },
+  "minimum_versions": {
+    "docker_engine": "24.0.0",
+    "python": "3.11",
+    "ssm_agent": "3.3.2746.0",
+    "ssm_agent_reason": [
+      "interpolationType: ENV_VAR on a document parameter. Older agents ignore",
+      "the declaration and fall back to raw string substitution of the parameter",
+      "into the command text -- which is exactly the behaviour the deployment",
+      "document is written to avoid. Verified in production: 3.3.4624.0."
+    ],
+    "ssm_agent_verified_in_production": "3.3.4624.0"
+  },
+  "packages": {
+    "comment": [
+      "Approved Amazon Linux 2023 packages, checked with rpm -q and installed",
+      "only when missing. curl-minimal is deliberately listed rather than curl:",
+      "AL2023 ships curl-minimal, and installing full curl requires an erase of",
+      "curl-minimal, which is exactly the kind of unrelated churn a deployment",
+      "must not perform."
+    ],
+    "required": [
+      "git",
+      "docker",
+      "python3.11",
+      "python3.11-pip",
+      "python3.11-devel",
+      "gcc",
+      "gcc-c++",
+      "make",
+      "cmake",
+      "ninja-build",
+      "jq",
+      "unzip",
+      "tar",
+      "rsync",
+      "openssl",
+      "sqlite",
+      "xfsprogs",
+      "nvme-cli",
+      "htop",
+      "tmux",
+      "curl-minimal",
+      "wget",
+      "libgomp",
+      "shadow-utils",
+      "findutils",
+      "which"
+    ],
+    "bootstrap": [
+      "git",
+      "tar"
+    ],
+    "bootstrap_comment": [
+      "The only packages the fixed SSM document may install itself, and only",
+      "when absent. Everything else is installed by the reviewed",
+      "ensure-host-prerequisites.sh inside the release being deployed."
+    ],
+    "forbidden": [
+      "curl"
+    ],
+    "forbidden_reason": "Installing full curl would erase curl-minimal.",
+    "dnf_forbidden_flags": [
+      "--allowerasing",
+      "--skip-broken",
+      "--nogpgcheck",
+      "--disablerepo"
+    ]
+  },
+  "docker_daemon": {
+    "config_path": "/etc/docker/daemon.json",
+    "expected": {
+      "data-root": "/var/lib/radio/docker",
+      "log-driver": "local",
+      "log-opts": {
+        "max-size": "50m",
+        "max-file": "3"
+      },
+      "live-restore": true
+    },
+    "expected_comment": [
+      "The live host baseline. `local` rather than `json-file`: it is the driver",
+      "already in use, and changing a running host's log driver rewrites how",
+      "every container's logs are stored for no deployment-related reason."
+    ],
+    "systemd_mount_requirement": "RequiresMountsFor=/var/lib/radio/docker",
+    "systemd_mount_reason": [
+      "Without it, Docker can start before the data volume is mounted and write",
+      "its entire image store to the root filesystem, which then fills."
+    ],
+    "rules": [
+      "Written only when /etc/docker/daemon.json is absent.",
+      "An existing file that disagrees is reported, never edited.",
+      "A `hosts` entry containing a TCP listener is a hard failure.",
+      "The radio account is never added to the docker group."
+    ]
+  }
+}

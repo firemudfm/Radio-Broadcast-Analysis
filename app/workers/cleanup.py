@@ -22,6 +22,7 @@ disk than delete evidence.
 from __future__ import annotations
 
 import contextlib
+import json
 import logging
 import sqlite3
 from datetime import UTC, datetime, timedelta
@@ -95,8 +96,14 @@ class CleanupWorker(BaseWorker):
 
     # -- sweeping --------------------------------------------------------------
 
-    def sweep(self, *, pressure: SpoolPressure = "ok") -> int:
-        """Delete expired segments whose job state proves they are safe."""
+    def deletable_segments(self, *, pressure: SpoolPressure = "ok") -> list:
+        """Segments whose job state proves deleting them is safe.
+
+        The single definition of "safe to delete", shared by :meth:`sweep` and
+        the ``--once --dry-run`` report. A second copy of these predicates --
+        in a shell ``find``, say -- would eventually drift and delete a segment
+        that was still queued for transcription.
+        """
         now = datetime.now(UTC)
         settings = self.settings
 
@@ -107,7 +114,7 @@ class CleanupWorker(BaseWorker):
             # disposition and job-status predicates below are unchanged.
             no_hit_cutoff = _iso(now)
 
-        candidates = self.database.read_all(
+        return self.database.read_all(
             """
             SELECT s.segment_id, s.storage_backend, s.storage_path, s.storage_bucket,
                    s.storage_key, s.sha256, s.size_bytes, s.disposition
@@ -130,6 +137,10 @@ class CleanupWorker(BaseWorker):
             """,
             (no_hit_cutoff, failed_cutoff, DELETE_BATCH),
         )
+
+    def sweep(self, *, pressure: SpoolPressure = "ok") -> int:
+        """Delete expired segments whose job state proves they are safe."""
+        candidates = self.deletable_segments(pressure=pressure)
 
         deleted = 0
         for row in candidates:
@@ -201,9 +212,56 @@ class CleanupWorker(BaseWorker):
 
 
 def main() -> None:
+    """Entry point. ``--once`` runs a single cycle instead of looping.
+
+    The one-shot mode exists so an operator can reclaim spool space on demand
+    without a shell script re-implementing the retention policy. Re-implementing
+    it in ``find -delete`` is precisely how a segment that is still queued for
+    transcription gets deleted -- the safety here comes from joining against
+    job state, which only this code does.
+    """
+    import argparse
+
+    parser = argparse.ArgumentParser(prog="python -m app.workers.cleanup")
+    parser.add_argument(
+        "--once", action="store_true", help="run one cleanup cycle and exit"
+    )
+    parser.add_argument(
+        "--dry-run",
+        action="store_true",
+        help="report what would be reclaimed without deleting anything",
+    )
+    args = parser.parse_args()
+
     settings, database = bootstrap("cleanup")
     try:
-        CleanupWorker(settings, database).run()
+        worker = CleanupWorker(settings, database)
+        if not args.once:
+            worker.run()
+            return
+
+        pressure = worker.pressure()
+        if args.dry_run:
+            candidates = worker.deletable_segments(pressure=pressure)
+            payload = {
+                "status": "PASS",
+                "dry_run": True,
+                "spool_pressure": pressure,
+                "spool_usage_percent": worker.usage_percent(),
+                "deletable_segments": len(candidates),
+                "reclaimable_bytes": sum(int(row["size_bytes"] or 0) for row in candidates),
+            }
+        else:
+            deleted = worker.sweep(pressure=pressure)
+            payload = {
+                "status": "PASS",
+                "dry_run": False,
+                "spool_pressure": pressure,
+                "spool_usage_percent": worker.usage_percent(),
+                "deleted_segments": deleted,
+                "reclaimed_bytes": worker.stats["reclaimed_bytes"],
+            }
+        print(json.dumps(payload, indent=2, sort_keys=True))
     finally:
         database.close()
 

@@ -1,0 +1,402 @@
+name: Deploy main to production
+
+# The ONLY path from source to production.
+#
+# main is the only deployment source. There is no staging branch, no deployment
+# branch and no release branch. A feature branch cannot trigger this, a pull
+# request cannot trigger this, a tag cannot trigger this, and there is no input
+# through which someone can type a different ref.
+#
+# What reaches AWS is one 40-character commit SHA, sent to one FIXED Systems
+# Manager document that accepts no shell command. There is no SSH, no EC2 key
+# and no static AWS credential anywhere in this file.
+
+on:
+  # A. Automatic: CI succeeded on a commit that is already on main.
+  #    workflow_run rather than `push`, so a commit that failed CI can never
+  #    deploy -- the gate is CI's verdict, not the fact that a push happened.
+  workflow_run:
+    workflows: ["CI"]
+    types: [completed]
+    branches: [main]
+
+  # B. Manual, for the first deployment and for re-running a known-good commit.
+  #    Deliberately NO inputs: no branch, no commit, no stage, no command. The
+  #    ref is whatever the operator selects in the UI, and the job refuses
+  #    anything that is not refs/heads/main.
+  workflow_dispatch:
+
+permissions:
+  id-token: write   # OIDC only. No static credential is ever created.
+  contents: read
+  checks: read      # to confirm EVERY protected check, not just CI
+
+concurrency:
+  group: radio-production-main-deploy
+  cancel-in-progress: false   # never interrupt a half-finished deployment
+
+jobs:
+  deploy:
+    name: Deploy exact main commit through SSM
+    runs-on: ubuntu-latest
+    timeout-minutes: 130   # a first install builds three images and fetches ~1.1 GiB of models
+    environment: production
+
+    steps:
+      - name: Resolve and validate the deployment commit
+        id: target
+        shell: bash
+        env:
+          EVENT_NAME: ${{ github.event_name }}
+          WORKFLOW_RUN_CONCLUSION: ${{ github.event.workflow_run.conclusion }}
+          WORKFLOW_RUN_EVENT: ${{ github.event.workflow_run.event }}
+          WORKFLOW_RUN_BRANCH: ${{ github.event.workflow_run.head_branch }}
+          WORKFLOW_RUN_SHA: ${{ github.event.workflow_run.head_sha }}
+          DISPATCH_REF: ${{ github.ref }}
+          DISPATCH_SHA: ${{ github.sha }}
+          AUTO_DEPLOY_ENABLED: ${{ vars.AUTO_DEPLOY_ENABLED }}
+        run: |
+          set -euo pipefail
+
+          # The enable gate. Absent or anything other than exactly "1" means
+          # skip. This exists so merging the PR that adds this workflow cannot
+          # deploy before the AWS deployment document exists -- the first run
+          # would fail against a document that is not there, and a failed
+          # production deployment is a bad way to learn the ordering.
+          if [[ "${AUTO_DEPLOY_ENABLED:-0}" != "1" ]]; then
+            echo "AUTO_DEPLOY_ENABLED is '${AUTO_DEPLOY_ENABLED:-<unset>}', not 1."
+            echo "Skipping deployment. This is the safe default."
+            echo "should_deploy=false" >> "${GITHUB_OUTPUT}"
+            exit 0
+          fi
+
+          case "${EVENT_NAME}" in
+            workflow_run)
+              # All three conditions are load-bearing. `conclusion` stops a
+              # failed CI run deploying; `event` stops a pull_request CI run
+              # deploying its merge commit, which is not what is on main; and
+              # `head_branch` stops a CI run from any other branch.
+              if [[ "${WORKFLOW_RUN_CONCLUSION}" != "success" ]]; then
+                echo "CI concluded '${WORKFLOW_RUN_CONCLUSION}', not success. Not deploying."
+                echo "should_deploy=false" >> "${GITHUB_OUTPUT}"
+                exit 0
+              fi
+              if [[ "${WORKFLOW_RUN_EVENT}" != "push" ]]; then
+                echo "CI was triggered by '${WORKFLOW_RUN_EVENT}', not push. Not deploying."
+                echo "should_deploy=false" >> "${GITHUB_OUTPUT}"
+                exit 0
+              fi
+              if [[ "${WORKFLOW_RUN_BRANCH}" != "main" ]]; then
+                echo "CI ran on '${WORKFLOW_RUN_BRANCH}', not main. Not deploying."
+                echo "should_deploy=false" >> "${GITHUB_OUTPUT}"
+                exit 0
+              fi
+              commit="${WORKFLOW_RUN_SHA}"
+              ;;
+            workflow_dispatch)
+              if [[ "${DISPATCH_REF}" != "refs/heads/main" ]]; then
+                echo "Manual dispatch ref is '${DISPATCH_REF}'. Only refs/heads/main may deploy." >&2
+                exit 1
+              fi
+              commit="${DISPATCH_SHA}"
+              ;;
+            *)
+              echo "Unsupported trigger '${EVENT_NAME}'." >&2
+              exit 1
+              ;;
+          esac
+
+          # Exactly 40 lower-case hex characters. Bash regex, anchored at both
+          # ends against the whole value -- this is the string that becomes an
+          # SSM parameter and then a path component on the host.
+          if [[ ! "${commit}" =~ ^[0-9a-f]{40}$ ]]; then
+            echo "Resolved commit '${commit}' is not a full lower-case sha." >&2
+            exit 1
+          fi
+
+          echo "Deploying commit: ${commit}"
+          echo "commit=${commit}" >> "${GITHUB_OUTPUT}"
+          echo "should_deploy=true" >> "${GITHUB_OUTPUT}"
+
+      - name: Require every protected check to have passed on this commit
+        if: steps.target.outputs.should_deploy == 'true'
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+          COMMIT_SHA: ${{ steps.target.outputs.commit }}
+        run: |
+          set -euo pipefail
+
+          # CI succeeding is NOT the same as every protected check succeeding.
+          # CodeQL runs as a separate workflow, so a workflow_run trigger from CI
+          # fires while "Analyze Python" may still be queued -- or already
+          # failed. Deploying then would ship a commit that the branch
+          # protection would have refused to merge.
+          required=(
+            "Lint (ruff)"
+            "Tests (Python 3.11)"
+            "Tests (Python 3.12)"
+            "Security (bandit + pip-audit)"
+            "Analyze Python"
+          )
+
+          # Bounded polling: CodeQL routinely finishes a few minutes after CI.
+          deadline=$(( SECONDS + 1800 ))
+          while :; do
+            runs="$(gh api --paginate \
+              "repos/${GITHUB_REPOSITORY}/commits/${COMMIT_SHA}/check-runs" \
+              --jq '.check_runs[] | "\(.name)\t\(.status)\t\(.conclusion)"' 2>/dev/null || true)"
+
+            pending=0
+            failed=0
+            missing=0
+            report=""
+            for name in "${required[@]}"; do
+              line="$(grep -F -m1 "${name}"$'\t' <<<"${runs}" || true)"
+              if [[ -z "${line}" ]]; then
+                report+=$'\n'"  ${name}: MISSING"
+                missing=1
+                continue
+              fi
+              status="$(cut -f2 <<<"${line}")"
+              conclusion="$(cut -f3 <<<"${line}")"
+              report+=$'\n'"  ${name}: ${status}/${conclusion}"
+              if [[ "${status}" != "completed" ]]; then
+                pending=1
+              elif [[ "${conclusion}" != "success" ]]; then
+                # skipped, cancelled, timed_out, neutral and failure are all
+                # refusals. A check that did not actually run has not passed.
+                failed=1
+              fi
+            done
+
+            if (( failed )); then
+              echo "A required check did not succeed:${report}" >&2
+              exit 1
+            fi
+            if (( pending || missing )) && (( SECONDS < deadline )); then
+              echo "Waiting for required checks:${report}"
+              sleep 30
+              continue
+            fi
+            if (( pending || missing )); then
+              echo "Required checks did not complete in time:${report}" >&2
+              exit 1
+            fi
+            echo "All required checks passed:${report}"
+            break
+          done
+
+      - name: Configure short-lived AWS credentials
+        if: steps.target.outputs.should_deploy == 'true'
+        # Pinned to the immutable commit already approved for the smoke workflow.
+        uses: aws-actions/configure-aws-credentials@e6de054238d6b7531b4efff3b6587d9aade6a06c
+        with:
+          role-to-assume: ${{ vars.AWS_ROLE_ARN }}
+          aws-region: ${{ vars.AWS_REGION }}
+          role-session-name: gha-radio-deploy-${{ github.run_id }}
+          role-duration-seconds: 7200
+          allowed-account-ids: ${{ vars.AWS_ACCOUNT_ID }}
+
+      - name: Verify assumed identity
+        if: steps.target.outputs.should_deploy == 'true'
+        shell: bash
+        run: |
+          set -euo pipefail
+          # Never printed: the OIDC token, the temporary credentials, or any
+          # environment value. Only the account id and the role ARN, both of
+          # which are already public in this repository's configuration.
+          identity="$(aws sts get-caller-identity)"
+          account="$(jq -r '.Account' <<<"${identity}")"
+          arn="$(jq -r '.Arn' <<<"${identity}")"
+          echo "AWS account: ${account}"
+          echo "Assumed role ARN: ${arn}"
+          if [[ "${account}" != "${{ vars.AWS_ACCOUNT_ID }}" ]]; then
+            echo "Unexpected AWS account." >&2
+            exit 1
+          fi
+          expected_prefix="arn:aws:sts::${{ vars.AWS_ACCOUNT_ID }}:assumed-role/GitHubActionsRadioDeployRole/"
+          if [[ "${arn}" != "${expected_prefix}"* ]]; then
+            echo "Unexpected assumed-role ARN." >&2
+            exit 1
+          fi
+
+      - name: Verify the target instance is online
+        if: steps.target.outputs.should_deploy == 'true'
+        shell: bash
+        run: |
+          set -euo pipefail
+          ping_status="$(
+            aws ssm describe-instance-information \
+              --filters "Key=InstanceIds,Values=${{ vars.EC2_INSTANCE_ID }}" \
+              --query 'InstanceInformationList[0].PingStatus' \
+              --output text
+          )"
+          echo "Systems Manager PingStatus: ${ping_status}"
+          if [[ "${ping_status}" != "Online" ]]; then
+            echo "Target instance is not online in Systems Manager." >&2
+            exit 1
+          fi
+
+      - name: Verify the pinned deployment document version
+        if: steps.target.outputs.should_deploy == 'true'
+        shell: bash
+        run: |
+          set -euo pipefail
+          expected="${{ vars.SSM_DEPLOY_DOCUMENT_VERSION }}"
+          if [[ -z "${expected}" ]]; then
+            echo "SSM_DEPLOY_DOCUMENT_VERSION is not set." >&2
+            exit 1
+          fi
+          # An explicit numeric version, never $LATEST or $DEFAULT. Those would
+          # let a change to the SSM document alter what production runs without
+          # anything in this repository changing -- the document is as much a
+          # part of the deployment as the code is.
+          if [[ ! "${expected}" =~ ^[0-9]+$ ]]; then
+            echo "SSM_DEPLOY_DOCUMENT_VERSION must be numeric, got '${expected}'." >&2
+            exit 1
+          fi
+          actual="$(
+            aws ssm describe-document \
+              --name "${{ vars.SSM_DEPLOY_DOCUMENT }}" \
+              --query 'Document.DocumentVersion' \
+              --output text
+          )"
+          echo "Document: ${{ vars.SSM_DEPLOY_DOCUMENT }}"
+          echo "Expected version: ${expected}"
+          echo "Live version:     ${actual}"
+          if [[ "${actual}" != "${expected}" ]]; then
+            echo "Document version drift. Review the document, then update the variable." >&2
+            exit 1
+          fi
+
+      - name: Send the fixed deployment document
+        id: send
+        if: steps.target.outputs.should_deploy == 'true'
+        shell: bash
+        env:
+          COMMIT_SHA: ${{ steps.target.outputs.commit }}
+        run: |
+          set -euo pipefail
+          command_id="$(
+            aws ssm send-command \
+              --document-name "${{ vars.SSM_DEPLOY_DOCUMENT }}" \
+              --document-version "${{ vars.SSM_DEPLOY_DOCUMENT_VERSION }}" \
+              --instance-ids "${{ vars.EC2_INSTANCE_ID }}" \
+              --parameters "CommitSha=${COMMIT_SHA}" \
+              --comment "Deploy main ${COMMIT_SHA} (run ${GITHUB_RUN_ID})" \
+              --timeout-seconds 6600 \
+              --max-concurrency "1" \
+              --max-errors "0" \
+              --query 'Command.CommandId' \
+              --output text
+          )"
+          if [[ -z "${command_id}" || "${command_id}" == "None" ]]; then
+            echo "Systems Manager did not return a command ID." >&2
+            exit 1
+          fi
+          echo "command_id=${command_id}" >> "${GITHUB_OUTPUT}"
+          echo "Submitted deployment command: ${command_id}"
+
+      - name: Wait for the deployment and report
+        if: steps.target.outputs.should_deploy == 'true'
+        shell: bash
+        run: |
+          set -euo pipefail
+          command_id="${{ steps.send.outputs.command_id }}"
+          instance_id="${{ vars.EC2_INSTANCE_ID }}"
+
+          # Polled rather than `aws ssm wait command-executed`, which gives up
+          # well before a first install finishes building three aarch64 images.
+          #
+          # A deliberate ladder, widest first, so nothing races anything:
+          #   role credentials     7200s
+          #   poll deadline        6700s  <- leaves 500s for the final
+          #                                  GetCommandInvocation, the summary
+          #                                  and failure reporting
+          #   SendCommand timeout  6600s
+          #   document execution   6300s
+          # Using 7200 for all four would mean the credentials expire at the
+          # exact moment the last call needs them.
+          deadline=$(( SECONDS + 6700 ))
+          status="Pending"
+          while (( SECONDS < deadline )); do
+            status="$(
+              aws ssm get-command-invocation \
+                --command-id "${command_id}" \
+                --instance-id "${instance_id}" \
+                --query 'Status' --output text 2>/dev/null || echo Pending
+            )"
+            case "${status}" in
+              Success|Failed|Cancelled|TimedOut|Undeliverable|Terminated) break ;;
+            esac
+            sleep 20
+          done
+
+          invocation="$(
+            aws ssm get-command-invocation \
+              --command-id "${command_id}" \
+              --instance-id "${instance_id}" \
+              --output json
+          )"
+          status="$(jq -r '.Status' <<<"${invocation}")"
+          response_code="$(jq -r '.ResponseCode' <<<"${invocation}")"
+          stdout="$(jq -r '.StandardOutputContent' <<<"${invocation}")"
+          stderr="$(jq -r '.StandardErrorContent' <<<"${invocation}")"
+
+          {
+            echo "### Production deployment"
+            echo
+            echo "| field | value |"
+            echo "|---|---|"
+            echo "| commit | \`${{ steps.target.outputs.commit }}\` |"
+            echo "| command id | \`${command_id}\` |"
+            echo "| status | ${status} |"
+            echo "| response code | ${response_code} |"
+          } >> "${GITHUB_STEP_SUMMARY}"
+
+          # The deployment scripts are written never to print an environment
+          # file, a secret or a token, so this output is safe to surface. It is
+          # still passed through a redaction pass: a future change to a script
+          # should not be the thing that leaks a value into a public log.
+          redact() {
+            sed -E \
+              -e 's/(RADIO_AUDIO_TOKEN_SECRET=)[^[:space:]]*/\1<redacted>/g' \
+              -e 's/(aws_secret_access_key[[:space:]]*=[[:space:]]*)[^[:space:]]*/\1<redacted>/Ig' \
+              -e 's/(AKIA|ASIA)[0-9A-Z]{16}/<redacted-key-id>/g' \
+              -e 's/(X-Amz-Signature=)[^&[:space:]]*/\1<redacted>/g'
+          }
+
+          echo "--- deployment stdout ---"
+          printf '%s\n' "${stdout}" | redact
+          if [[ -n "${stderr}" ]]; then
+            echo "--- deployment stderr ---"
+            printf '%s\n' "${stderr}" | redact
+          fi
+
+          if [[ "${status}" != "Success" || "${response_code}" != "0" ]]; then
+            echo "Deployment did not succeed." >&2
+            exit 1
+          fi
+
+          # The document writes the full build log to the host and returns only
+          # a concise result, so this marker is genuinely present rather than
+          # having been cut off: SSM truncates StandardOutputContent at 24,000
+          # characters, and a first install produces far more than that. If the
+          # document ever went back to streaming, this assertion would fail
+          # rather than silently pass on truncated output.
+          if ! grep -q '^MAIN_AUTO_DEPLOY_OK$' <<<"${stdout}"; then
+            echo "The deployment did not report its success marker." >&2
+            echo "Output length: ${#stdout} characters." >&2
+            exit 1
+          fi
+          printf '%s\n' "${stdout}" | grep -E '^(commit|deploy_log|deploy_exit_code)=' || true
+          echo "Deployment succeeded."
+
+      - name: Report skipped deployment
+        if: steps.target.outputs.should_deploy != 'true'
+        shell: bash
+        run: |
+          echo "No deployment was performed." >> "${GITHUB_STEP_SUMMARY}"
+          echo "Either AUTO_DEPLOY_ENABLED is not 1, or the trigger did not"     >> "${GITHUB_STEP_SUMMARY}"
+          echo "represent a successful CI push on main."                          >> "${GITHUB_STEP_SUMMARY}"

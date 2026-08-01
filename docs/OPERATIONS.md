@@ -201,7 +201,7 @@ Restore:
 ```bash
 docker compose --profile core --profile pipeline down
 gunzip -c /var/lib/radio/backups/radio-<stamp>.db.gz > /var/lib/radio/database/radio.db
-chown 10001:10001 /var/lib/radio/database/radio.db
+chown "$(id -u radio):$(id -g radio)" /var/lib/radio/database/radio.db
 docker compose --profile core --profile pipeline up -d
 ```
 
@@ -225,3 +225,13 @@ Things the system does not do, on purpose:
   missing or invented one.
 * **It does not transcribe with a translated transcript.** The original
   language is the evidence; translation is an additional field.
+* **It does not refuse to start because S3 is unreachable.** The API warms a
+  station cache from S3 during start-up. That step is allowed to fail and is
+  logged (`Legacy station import failed at start-up`); the process continues.
+  This is deliberate: `deploy-compose.sh` and `rollback-compose.sh` both wait
+  on the container health gate, so a process that died in `lifespan` would make
+  a deploy fail *and* remove the ability to roll back — during an S3 incident,
+  which is precisely when rollback matters. Nothing is masked: `/healthz`
+  reports `s3: error`, and every route that reads S3 still fails to its own
+  caller. If you see that warning, check credentials and the bucket; do not
+  treat a healthy container as proof S3 is fine.
