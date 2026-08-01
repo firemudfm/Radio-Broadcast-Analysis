@@ -272,6 +272,78 @@ acquire_deploy_lock() {
     log "acquired deployment lock ${lock_file}"
 }
 
+# --- container health ---------------------------------------------------------
+
+# wait_for_health <exit-code-on-timeout> <timeout-seconds> <service>...
+#
+# Requires the caller to have defined a `compose` function.
+#
+# Returns 0 when every service is healthy, 1 on timeout (the caller dumps logs
+# and decides what to do). Anything that can never become healthy is fatal
+# immediately -- waiting 300 seconds for a container that has already exited
+# just delays the same failure.
+#
+# "none" -- a running container with no healthcheck at all -- is FAILURE, not
+# success. Every production service defines one, so `none` means either the
+# healthcheck was dropped from a service definition or the wrong container is
+# being inspected. Treating it as healthy is how a stack with a silently
+# removed healthcheck sails through the deployment gate and the operator finds
+# out from users instead.
+wait_for_health() {
+    local fail_code="$1" timeout="$2"; shift 2
+    local services=("$@")
+    local deadline service cid running health exitcode pending
+    deadline=$(( $(date +%s) + timeout ))
+
+    while :; do
+        pending=0
+        for service in "${services[@]}"; do
+            cid="$(compose ps -q "${service}" 2>/dev/null || true)"
+            if [ -z "${cid}" ]; then
+                die "${fail_code}" \
+                    "service ${service} has no container; it never started"
+            fi
+
+            running="$(docker inspect --format '{{.State.Running}}' "${cid}" 2>/dev/null || echo unknown)"
+            exitcode="$(docker inspect --format '{{.State.ExitCode}}' "${cid}" 2>/dev/null || echo unknown)"
+            health="$(docker inspect \
+                --format '{{if .State.Health}}{{.State.Health.Status}}{{else}}none{{end}}' \
+                "${cid}" 2>/dev/null || echo unknown)"
+
+            if [ "${running}" != "true" ]; then
+                die "${fail_code}" \
+                    "service ${service} is not running (exit code ${exitcode}); it will not become healthy"
+            fi
+
+            case "${health}" in
+                healthy)
+                    ;;
+                starting|unhealthy)
+                    # unhealthy is not yet fatal: a container can report
+                    # unhealthy while a dependency is still coming up, and the
+                    # timeout is what bounds that.
+                    pending=1
+                    ;;
+                none)
+                    die "${fail_code}" \
+                        "service ${service} defines no healthcheck; refusing to record a deployment as verified on the basis of an unchecked container"
+                    ;;
+                *)
+                    die "${fail_code}" \
+                        "service ${service} reported an unrecognised health status '${health}'"
+                    ;;
+            esac
+            [ "${pending}" -eq 1 ] && break
+        done
+
+        [ "${pending}" -eq 0 ] && return 0
+        if [ "$(date +%s)" -ge "${deadline}" ]; then
+            return 1
+        fi
+        sleep 5
+    done
+}
+
 # --- release packaging --------------------------------------------------------
 
 # create_release <repo> <sha> <release-root>
@@ -283,10 +355,29 @@ create_release() {
     local final="${root}/${sha}"
     local staging
 
+    # Fail closed. Reusing a directory because its NAME matches the approved sha
+    # would make the exact-commit guarantee cover the directory name and nothing
+    # else: a half-extracted release from an interrupted deploy, or a directory
+    # someone edited in place to "just fix one thing", would be deployed as if
+    # it were the reviewed commit. A manifest proves nothing either -- it is a
+    # file inside the very directory whose integrity is in question.
+    #
+    # Never delete it automatically: it may be the running release, and it is
+    # evidence of whatever went wrong.
     if [ -d "${final}" ]; then
-        log "release ${sha} already exists at ${final}; reusing it" >&2
-        printf '%s' "${final}"
-        return 0
+        local current_target previous_target
+        current_target="$(read_release_target "${root}/current" 2>/dev/null || true)"
+        previous_target="$(read_release_target "${root}/previous" 2>/dev/null || true)"
+        if [ "${current_target}" = "${sha}" ]; then
+            die "${EXIT_PRECONDITION}" \
+                "commit ${sha} is already the current release; nothing to deploy"
+        fi
+        if [ "${previous_target}" = "${sha}" ]; then
+            die "${EXIT_PRECONDITION}" \
+                "commit ${sha} is the previous release; use scripts/rollback-compose.sh --to-commit ${sha} instead of redeploying it"
+        fi
+        die "${EXIT_PRECONDITION}" \
+            "an unverified release directory already exists at ${final}. Its contents cannot be trusted to match ${sha}. Inspect it, then remove it explicitly before deploying."
     fi
 
     staging="$(mktemp -d "${root}/.staging-${sha}.XXXXXX")" \
@@ -319,17 +410,28 @@ create_release() {
     done
 
     if ! mv -T "${staging}" "${final}" 2>/dev/null; then
-        # Another deployment won the race; its content is identical by construction.
+        # Something appeared at ${final} between the check above and now, or the
+        # rename failed outright. Either way this deployment cannot show that
+        # what is there matches ${sha}, so it does not proceed as if it did.
         rm -rf "${staging}"
-        [ -d "${final}" ] || die "${EXIT_PRECONDITION}" "could not place release at ${final}"
+        die "${EXIT_PRECONDITION}" \
+            "could not place release at ${final}; another process may be deploying the same commit. Refusing to continue against a directory this deployment did not create."
     fi
 
     printf '%s' "${final}"
 }
 
 # write_release_manifest <release-path> <sha> <stage>
+#
+# Written exactly once, when the release directory is first created. Rewriting
+# it would let a stale or tampered directory be re-stamped as freshly verified,
+# which is the failure create_release now refuses outright.
 write_release_manifest() {
     local release="$1" sha="$2" stage="$3"
+    if [ -e "${release}/.release-manifest.json" ]; then
+        die "${EXIT_PRECONDITION}" \
+            "release ${sha} already carries a manifest; refusing to rewrite it"
+    fi
     cat > "${release}/.release-manifest.json" <<EOF
 {
   "schema_version": 1,

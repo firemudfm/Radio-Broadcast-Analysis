@@ -167,22 +167,10 @@ compose "${PROFILES[@]}" up -d --remove-orphans "${SERVICES[@]}" \
     || die "${EXIT_ROLLBACK}" "compose up failed during rollback"
 
 log "waiting for container health"
-deadline=$(( $(date +%s) + 300 ))
-while :; do
-    unhealthy=0
-    for service in "${SERVICES[@]}"; do
-        cid="$(compose ps -q "${service}" 2>/dev/null || true)"
-        [ -n "${cid}" ] || { unhealthy=1; break; }
-        health="$(docker inspect --format '{{if .State.Health}}{{.State.Health.Status}}{{else}}none{{end}}' "${cid}" 2>/dev/null || echo starting)"
-        case "${health}" in healthy|none) ;; *) unhealthy=1; break ;; esac
-    done
-    [ "${unhealthy}" -eq 0 ] && break
-    if [ "$(date +%s)" -ge "${deadline}" ]; then
-        compose "${PROFILES[@]}" logs --tail=80 || true
-        die "${EXIT_ROLLBACK}" "rolled-back containers did not become healthy within 300s"
-    fi
-    sleep 5
-done
+if ! wait_for_health "${EXIT_ROLLBACK}" 300 "${SERVICES[@]}"; then
+    compose "${PROFILES[@]}" logs --tail=80 || true
+    die "${EXIT_ROLLBACK}" "rolled-back containers did not become healthy within 300s"
+fi
 
 bash "${TARGET_DIR}/scripts/smoke-test.sh" "http://127.0.0.1:8788" \
     || die "${EXIT_ROLLBACK}" "smoke test failed after rollback"

@@ -123,9 +123,44 @@ fi
 
 # --- existing API contract ---------------------------------------------------
 
-CAMPAIGNS_CODE="$(status_of "${BASE_URL}/api/v1/campaigns")"
-[ "${CAMPAIGNS_CODE}" = "200" ] && pass "/api/v1/campaigns: 200" \
-    || fail "/api/v1/campaigns: HTTP ${CAMPAIGNS_CODE}"
+# This used to request /api/v1/campaigns, which does not exist -- the real
+# prefix is /api/v1/brand-signal. It returned 404 on every healthy deployment.
+#
+# It is also the wrong *kind* of check. Every campaign and mention endpoint
+# reads from S3, so asserting one returns 200 makes the smoke test fail during
+# an S3 incident that the deployment did not cause, and makes it depend on AWS
+# reachability at exactly the moment an operator needs a clear signal about the
+# release. /openapi.json is rendered from the assembled application: it proves
+# both routers mounted and the frontend contract is published, with no S3 read,
+# no AWS call and nothing created.
+OPENAPI_CODE="$(status_of "${BASE_URL}/openapi.json")"
+if [ "${OPENAPI_CODE}" != "200" ]; then
+    fail "/openapi.json: HTTP ${OPENAPI_CODE}"
+else
+    OPENAPI_BODY="$(fetch "${BASE_URL}/openapi.json")"
+    # Routes are inlined into the program rather than passed as arguments:
+    # MSYS/Git-Bash rewrites an argument beginning with `/` into a Windows path.
+    MISSING="$(printf '%s' "${OPENAPI_BODY}" | python3 -c '
+import json, sys
+expected = [
+    "/api/v1/brand-signal/campaigns",
+    "/api/v1/brand-signal/mentions",
+    "/healthz",
+    "/readyz",
+]
+try:
+    paths = set(json.load(sys.stdin).get("paths") or {})
+except Exception:
+    print("invalid-json")
+    sys.exit(0)
+print(" ".join(p for p in expected if p not in paths))
+' 2>/dev/null || echo 'openapi-unreadable')"
+    if [ -z "${MISSING}" ]; then
+        pass "/openapi.json publishes the expected frontend routes"
+    else
+        fail "/openapi.json is missing: ${MISSING}"
+    fi
+fi
 
 echo
 if [ "${FAILURES}" -gt 0 ]; then

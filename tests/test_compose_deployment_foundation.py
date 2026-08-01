@@ -149,8 +149,12 @@ def test_compose_env_example_defaults_are_safe() -> None:
             values[key.strip()] = value.strip()
     assert values["RADIO_API_PUBLISH_HOST"] == "127.0.0.1"
     assert values["RADIO_ALLOW_DIRECT_HTTP"] == "0"
-    assert values["RADIO_CONTAINER_UID"] == "10001"
     assert values["COMPOSE_PROJECT_NAME"] == "radio-prod"
+    # Left empty so the deployment detects the host `radio` account. This
+    # previously pinned 10001 on a host whose radio account is 992, so a copied
+    # default produced images that could not write their own data directories.
+    assert values["RADIO_CONTAINER_UID"] == ""
+    assert values["RADIO_CONTAINER_GID"] == ""
 
 
 def test_compose_env_example_contains_no_secret_or_account_identifier() -> None:

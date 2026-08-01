@@ -20,6 +20,24 @@
 #     does not. Silently reverting a database loses everything written since
 #     the backup, and that is an operator decision.
 #
+# What actually happens when a deployment fails:
+#
+#   * BEFORE any container changed: nothing is touched. The running release is
+#     still running. The release directory is kept for inspection.
+#   * AFTER containers changed, with NO previous release (first deployment):
+#     the services this run started are stopped and removed, so a broken stack
+#     is not left presenting itself as deployed. The release directory, the
+#     database backup and the deploy log are preserved. No symlink is moved and
+#     no deployment state is written.
+#   * AFTER containers changed, WITH a previous release: the previous release
+#     is restored automatically, in-process, from the existing immutable
+#     release directory and the already-built images. It never rebuilds and
+#     never restores SQLite. If that recovery itself fails, the exact manual
+#     rollback command is printed.
+#
+# Either way the outcome is recorded in ${DEPLOY_ROOT}/history/failed-*.json,
+# including whether recovery succeeded.
+#
 # This script does not touch AWS, does not use AWS-RunShellScript, and is
 # intended to be invoked later by a separately reviewed fixed SSM document.
 set -euo pipefail
@@ -262,19 +280,126 @@ STATE_FILE="${DEPLOY_ROOT}/state.json"
 PREVIOUS_COMMIT="$(read_release_target "${RELEASE_ROOT}/current" 2>/dev/null || true)"
 CONTAINERS_TOUCHED=0
 
+RECOVERY_RESULT="not-attempted"
+
+# Restore the previous release in-process.
+#
+# Deliberately NOT a call to rollback-compose.sh: that script takes the same
+# deployment lock this process already holds, so invoking it here would either
+# deadlock or require dropping the lock mid-failure and letting another deploy
+# in while the host is half-changed.
+#
+# Never rebuilds. The previous images already exist and were already reviewed;
+# building a fresh one during an incident produces an artifact nobody has seen.
+# Never restores SQLite -- see the header.
+restore_previous_release() {
+    local target_dir="${RELEASE_ROOT}/${PREVIOUS_COMMIT}"
+    local prev_stage required
+    local prev_profiles=() prev_services=()
+
+    [ -d "${target_dir}" ] || { fail "previous release ${target_dir} is missing"; return 1; }
+    for required in compose.yaml compose.prod.yaml scripts/smoke-test.sh; do
+        [ -e "${target_dir}/${required}" ] \
+            || { fail "previous release lacks ${required}"; return 1; }
+    done
+
+    export RADIO_API_IMAGE="radio-api:${PREVIOUS_COMMIT}"
+    export RADIO_PIPELINE_IMAGE="radio-pipeline:${PREVIOUS_COMMIT}"
+    export RADIO_LLM_IMAGE="radio-llm:${PREVIOUS_COMMIT}"
+    docker image inspect "${RADIO_API_IMAGE}" >/dev/null 2>&1 || {
+        fail "image ${RADIO_API_IMAGE} is absent; recovery never rebuilds, so this must be finished by hand"
+        return 1
+    }
+
+    prev_stage="$(read_state_field "${STATE_FILE}" stage)"
+    case "${prev_stage:-api}" in
+        core) prev_profiles=(--profile core)
+              prev_services=(api planner) ;;
+        full) prev_profiles=(--profile core --profile pipeline --profile llm)
+              prev_services=(api planner listener transcription-worker analysis-worker cleanup-worker llm) ;;
+        *)    prev_profiles=(--profile core)
+              prev_services=(api) ;;
+    esac
+
+    # wait_for_health reads this array at call time.
+    COMPOSE_FILES=(-f "${target_dir}/compose.yaml" -f "${target_dir}/compose.prod.yaml")
+
+    log "restoring ${PREVIOUS_COMMIT} (stage ${prev_stage:-api}) without rebuilding"
+    compose "${prev_profiles[@]}" up -d --remove-orphans "${prev_services[@]}" 2>&1 \
+        | tee -a "${DEPLOY_LOG}" || { fail "compose up failed during recovery"; return 1; }
+
+    wait_for_health "${EXIT_ROLLBACK}" 300 "${prev_services[@]}" \
+        || { fail "recovered containers did not become healthy"; return 1; }
+
+    bash "${target_dir}/scripts/smoke-test.sh" "http://127.0.0.1:8788" 2>&1 \
+        | tee -a "${DEPLOY_LOG}" || { fail "smoke test failed after recovery"; return 1; }
+
+    return 0
+}
+
 on_failure() {
     local code=$?
     [ "${code}" -eq 0 ] && return 0
+    trap - EXIT  # never re-enter this handler
+
     if [ "${CONTAINERS_TOUCHED}" -eq 0 ]; then
         fail "deployment failed before any running service was changed; the current release is untouched"
         [ -n "${RELEASE_DIR:-}" ] && log "release ${RELEASE_DIR} left in place for inspection"
+        exit "${code}"
+    fi
+
+    fail "deployment failed AFTER containers began changing"
+    fail "the database was NOT restored; the pre-migration backup is preserved${BACKUP_PATH:+ at ${BACKUP_PATH}}"
+
+    if [ -z "${PREVIOUS_COMMIT}" ]; then
+        # First deployment on this host. There is no previous release to return
+        # to, so leaving half-started services running would present a broken
+        # stack as if it were deployed. Remove what this run started -- and
+        # nothing else. No -v: the database and spool are bind mounts and must
+        # survive for investigation.
+        warn "first deployment on this host: no previous release exists to restore"
+        log "stopping and removing the services this deployment started"
+        compose "${PROFILES[@]}" down --remove-orphans 2>&1 | tee -a "${DEPLOY_LOG}" \
+            || warn "could not fully remove the failed services; inspect 'docker compose ps' by hand"
+        RECOVERY_RESULT="first-deployment-cleaned-up"
+        log "release directory, database backup and deploy log are preserved for investigation"
+        log "current/previous symlinks were not moved and no deployment state was recorded"
     else
-        fail "deployment failed AFTER containers began changing"
-        fail "database was NOT restored; the pre-migration backup is preserved"
-        if [ -n "${PREVIOUS_COMMIT}" ]; then
-            fail "roll back with: scripts/rollback-compose.sh --to-commit ${PREVIOUS_COMMIT}"
+        warn "attempting automatic recovery to ${PREVIOUS_COMMIT} (code and images only)"
+        # Subshell: wait_for_health calls die() on a container that can never
+        # become healthy, and that exit must end the recovery attempt, not this
+        # handler -- the outcome still has to be recorded below.
+        if ( restore_previous_release ); then
+            RECOVERY_RESULT="recovered-to-${PREVIOUS_COMMIT}"
+            log "automatic recovery succeeded; ${PREVIOUS_COMMIT} is serving again"
+            warn "the database was NOT rolled back and still carries any migration this deployment applied"
+        else
+            RECOVERY_RESULT="recovery-failed"
+            fail "automatic recovery FAILED; the host is not serving a verified release"
+            fail "recover by hand with: scripts/rollback-compose.sh --to-commit ${PREVIOUS_COMMIT}"
         fi
     fi
+
+    write_state_atomic \
+        "${DEPLOY_ROOT}/history/failed-${COMMIT}-$(date -u +%Y%m%dT%H%M%SZ).json" \
+        "$(cat <<EOF
+{
+  "schema_version": 1,
+  "outcome": "failed",
+  "attempted_commit": "${COMMIT}",
+  "previous_commit": "${PREVIOUS_COMMIT}",
+  "stage": "${STAGE}",
+  "exit_code": ${code},
+  "failed_at": "$(date -u +%Y-%m-%dT%H:%M:%SZ)",
+  "containers_touched": true,
+  "recovery": "${RECOVERY_RESULT}",
+  "database_restored": false,
+  "backup_path": "${BACKUP_PATH:-}",
+  "deploy_log": "${DEPLOY_LOG}"
+}
+EOF
+)" || warn "could not record the failure report"
+
     exit "${code}"
 }
 trap on_failure EXIT
@@ -314,25 +439,10 @@ compose "${PROFILES[@]}" up -d --remove-orphans "${SERVICES[@]}" 2>&1 | tee -a "
     || die "${EXIT_HEALTH}" "compose up failed"
 
 log "waiting for container health"
-deadline=$(( $(date +%s) + 300 ))
-while :; do
-    unhealthy=0
-    for service in "${SERVICES[@]}"; do
-        cid="$(compose ps -q "${service}" 2>/dev/null || true)"
-        [ -n "${cid}" ] || { unhealthy=1; break; }
-        health="$(docker inspect --format '{{if .State.Health}}{{.State.Health.Status}}{{else}}none{{end}}' "${cid}" 2>/dev/null || echo starting)"
-        case "${health}" in
-            healthy|none) ;;
-            *) unhealthy=1; break ;;
-        esac
-    done
-    [ "${unhealthy}" -eq 0 ] && break
-    if [ "$(date +%s)" -ge "${deadline}" ]; then
-        compose "${PROFILES[@]}" logs --tail=80 2>&1 | tee -a "${DEPLOY_LOG}" || true
-        die "${EXIT_HEALTH}" "containers did not become healthy within 300s"
-    fi
-    sleep 5
-done
+if ! wait_for_health "${EXIT_HEALTH}" 300 "${SERVICES[@]}"; then
+    compose "${PROFILES[@]}" logs --tail=80 2>&1 | tee -a "${DEPLOY_LOG}" || true
+    die "${EXIT_HEALTH}" "containers did not become healthy within 300s"
+fi
 log "all selected services healthy"
 
 bash "${RELEASE_DIR}/scripts/smoke-test.sh" "http://127.0.0.1:8788" 2>&1 | tee -a "${DEPLOY_LOG}" \

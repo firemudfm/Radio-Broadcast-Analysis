@@ -86,18 +86,31 @@ the default for local development; this host's `radio` account is **992**, and
 the images are built with that so bind mounts are writable without a recursive
 `chown` of the data volume.
 
-Set it in `compose.env`:
+**Leave it unset and let the deployment detect it.** `compose.env.example`
+ships `RADIO_CONTAINER_UID=` and `RADIO_CONTAINER_GID=` empty on purpose:
 
 ```
-RADIO_CONTAINER_UID=992
-RADIO_CONTAINER_GID=992
+RADIO_CONTAINER_UID=
+RADIO_CONTAINER_GID=
 ```
 
-`scripts/deploy-compose.sh` reads `id -u radio` / `id -g radio` automatically
-and warns if `compose.env` disagrees. It **verifies** ownership and refuses to
-deploy when it is wrong, printing the exact `chown` to run — it never applies
-one itself, because a recursive `chown` across a spool full of evidence during
-a deploy is not something a script should decide to do.
+`scripts/deploy-compose.sh` then reads `id -u radio` / `id -g radio` from the
+host and builds the images with those. On this host that resolves to 992:992.
+
+The template previously pinned `10001` while documenting a 992 host, so an
+operator who copied the default got images that could not write to their own
+data directories. A public template must not carry one host's account numbers.
+
+Pin explicit values only to deliberately override the host account; the
+deployment warns when a pinned value disagrees with the real one. Building
+Compose directly, without the deployment script, falls back to the generic
+`10001:10001` baked into the Dockerfiles.
+
+Ownership is **verified, never repaired**: the deployment refuses to continue
+when a directory is owned by the wrong uid and prints the exact `chown` for the
+operator to run. It never applies one itself, because a recursive `chown`
+across a spool full of evidence during a deploy is not something a script
+should decide to do.
 
 `spool/` is `0700` because it holds raw broadcast audio.
 
@@ -272,18 +285,111 @@ failure.
 8. Run `scripts/smoke-test.sh` against loopback.
 9. Only then move `current` / `previous` and write `state.json`.
 
+### Startup order in shared_sqs mode
+
+Workers depend on the API with `condition: service_started`, **not**
+`service_healthy`. The latter was a deadlock: the API health check asks
+`/readyz`, and in `shared_sqs` mode `/readyz` is only ready once the planner,
+listener, transcription and analysis roles have written heartbeats — which the
+workers cannot do while waiting for the API to become healthy. The full stage
+could not start at all.
+
+The dependency is kept rather than dropped, because the API applies the schema
+migrations in its lifespan and a worker opening the database first would race
+that. What is needed is ordering, not readiness:
+
+1. the API container starts;
+2. the workers start;
+3. the workers write heartbeats;
+4. `/readyz` becomes ready;
+5. the deployment smoke test verifies complete readiness.
+
+`/readyz` itself was **not** weakened — it still requires every worker
+heartbeat, and the full-stage smoke test still asserts each component
+individually. The readiness contract is unchanged; only the startup edge is.
+
+### What the smoke test checks
+
+`scripts/smoke-test.sh` verifies `/healthz`, the database, `auth_mode`,
+`/readyz`, the per-worker pipeline components in `shared_sqs` mode, spool
+pressure, and the published route table in `/openapi.json`.
+
+It asserts the **route table**, not a data query. Every campaign and mention
+endpoint reads from S3, so asserting one returns rows would make a post-deploy
+smoke test fail during an S3 incident the deployment did not cause, and would
+make it depend on AWS reachability exactly when an operator needs a clear
+signal about the release. It reads no S3 object, makes no AWS call and creates
+nothing. (It previously requested `/api/v1/campaigns`, which has never existed —
+the prefix is `/api/v1/brand-signal` — so it returned 404 on every healthy
+deployment.)
+
 ### Failure semantics
 
 The distinction matters and the script reports it explicitly:
 
 * **Failure before any container changed** — the running release is completely
-  untouched. Only the failed temporary release directory is cleaned up. This is
-  *not* a rollback, and the script does not call it one.
-* **Failure after containers began changing** — the database is **not**
-  restored, the new backup is preserved, logs are kept, and the exact failed
-  health check is reported with the rollback command to run.
+  untouched. This is *not* a rollback, and the script does not call it one. The
+  release directory is left in place for inspection.
+* **Failure after containers changed, first deployment (no previous release)** —
+  there is nothing to return to, so the services this run started are stopped
+  and removed rather than left presenting a broken stack as deployed. The
+  release directory, the database backup and the deploy log are preserved.
+  `down` is used **without** `-v`: the database and spool are bind mounts and
+  must survive for investigation.
+* **Failure after containers changed, with a previous release** — the previous
+  release is restored **automatically**, in-process, from its existing
+  immutable release directory and the already-built images. It never rebuilds
+  (a fresh image during an incident is an artifact nobody reviewed) and never
+  restores SQLite. If that recovery itself fails, the exact manual rollback
+  command is printed.
+
+Recovery is deliberately not a call to `rollback-compose.sh`: that script takes
+the same deployment lock this process already holds.
+
+Either way the outcome is written to
+`/var/lib/radio/deploy/history/failed-<sha>-<timestamp>.json`, including
+`recovery` and `database_restored: false`. A failed deployment never writes
+success state and never moves a symlink.
 
 `current` and `previous` never move until the new release is healthy.
+
+### The database is never rolled back
+
+Automatic recovery restores **code and images only**. A migration applied by
+the failed deployment is still applied afterwards, and the pre-migration backup
+is preserved but not restored. Reverting a SQLite file would discard every
+mention, transcript and analysis written since the backup, so it stays an
+explicit operator decision.
+
+### Health gate
+
+A selected service must report Docker health `healthy`. `starting` and
+`unhealthy` are waited on until the 300-second timeout. Three states fail
+immediately, because none of them can improve:
+
+* the service has **no container** — it never started;
+* the container is **not running** — its exit code is reported;
+* the container defines **no healthcheck** at all.
+
+That last one used to count as success. Every production service defines a
+healthcheck, so `none` means one was dropped or the wrong container is being
+inspected — and recording a deployment as verified on the basis of an unchecked
+container is how a broken stack gets signed off.
+
+### An existing release directory is never reused
+
+`create_release` refuses to proceed when `releases/<sha>` already exists:
+
+* it is the **current** release — the commit is already deployed;
+* it is the **previous** release — use `rollback-compose.sh --to-commit <sha>`;
+* otherwise — an unverified directory that must be inspected and explicitly
+  removed by an operator.
+
+It is never deleted automatically: it may be the running release, and it is
+evidence of whatever went wrong. A `.release-manifest.json` is **not** accepted
+as proof — it is a file inside the very directory whose integrity is in
+question — and it is written exactly once, never rewritten. Otherwise the
+exact-commit guarantee would cover the directory *name* and nothing else.
 
 ---
 
