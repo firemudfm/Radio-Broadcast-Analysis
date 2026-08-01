@@ -272,6 +272,299 @@ acquire_deploy_lock() {
     log "acquired deployment lock ${lock_file}"
 }
 
+# --- stage plan ---------------------------------------------------------------
+#
+# THE single definition of what each stage means. deploy-compose.sh, its
+# automatic recovery path, rollback-compose.sh and the tests all read it from
+# here. Three independent copies of this mapping is how "rollback started the
+# wrong service set" happens, and that is discovered in production.
+#
+# `build_services` is deliberately narrower than `runtime_services`: one service
+# per image. planner is the representative build for the pipeline image, so an
+# api-stage deploy never builds a pipeline or LLM image it will not run.
+
+# stage_plan <stage> <field>
+#
+# Fields: profiles | runtime_services | build_services | image_repos
+#         | excluded_services
+stage_plan() {
+    local stage="$1" field="$2"
+    case "${stage}" in
+        api|core|full) ;;
+        *) die "${EXIT_USAGE}" "unknown stage '${stage}' (expected api, core or full)" ;;
+    esac
+    case "${stage}:${field}" in
+        api:profiles)           printf 'core' ;;
+        api:runtime_services)   printf 'api' ;;
+        api:build_services)     printf 'api' ;;
+        api:image_repos)        printf 'radio-api' ;;
+        api:excluded_services)  printf 'planner listener transcription-worker analysis-worker cleanup-worker llm' ;;
+
+        core:profiles)          printf 'core' ;;
+        core:runtime_services)  printf 'api planner' ;;
+        core:build_services)    printf 'api planner' ;;
+        core:image_repos)       printf 'radio-api radio-pipeline' ;;
+        core:excluded_services) printf 'listener transcription-worker analysis-worker cleanup-worker llm' ;;
+
+        full:profiles)          printf 'core pipeline llm' ;;
+        full:runtime_services)  printf 'api planner listener transcription-worker analysis-worker cleanup-worker llm' ;;
+        full:build_services)    printf 'api planner llm' ;;
+        full:image_repos)       printf 'radio-api radio-pipeline radio-llm' ;;
+        full:excluded_services) printf '' ;;
+
+        *) die "${EXIT_USAGE}" "unknown stage field '${field}'" ;;
+    esac
+}
+
+# stage_profile_args <stage> -- "--profile core --profile pipeline ..."
+stage_profile_args() {
+    local profile
+    for profile in $(stage_plan "$1" profiles); do
+        printf -- '--profile %s ' "${profile}"
+    done
+}
+
+# stage_required_images <stage> <commit> -- "radio-api:<sha> radio-pipeline:<sha>"
+stage_required_images() {
+    local repo
+    for repo in $(stage_plan "$1" image_repos); do
+        printf '%s:%s ' "${repo}" "$2"
+    done
+}
+
+# require_stage_images <stage> <commit>
+#
+# Every image the stage needs must already exist locally. Reports ALL missing
+# images rather than the first: an operator fixing them one round-trip at a
+# time during an incident is exactly the wrong shape of feedback.
+require_stage_images() {
+    local stage="$1" commit="$2" image
+    local missing=()
+    for image in $(stage_required_images "${stage}" "${commit}"); do
+        if ! docker image inspect "${image}" >/dev/null 2>&1; then
+            missing+=("${image}")
+        fi
+    done
+    if [ "${#missing[@]}" -gt 0 ]; then
+        fail "stage ${stage} requires ${#missing[@]} image(s) that are not present locally:"
+        for image in "${missing[@]}"; do
+            fail "  missing: ${image}"
+        done
+        return 1
+    fi
+    log "all ${stage}-stage images present for ${commit}"
+}
+
+# stage_image_ids <stage> <commit>
+#
+# Emits `<repo>=<image-id>` per required image, so deployment state records what
+# actually ran rather than only the API image.
+stage_image_ids() {
+    local stage="$1" commit="$2" repo id
+    for repo in $(stage_plan "${stage}" image_repos); do
+        id="$(docker image inspect --format '{{.Id}}' "${repo}:${commit}" 2>/dev/null || true)"
+        printf '%s=%s\n' "${repo}" "${id}"
+    done
+}
+
+# json_image_field <stage> <commit> <repo> <suffix>
+#
+# Emits a JSON value for an image field: the quoted tag/id when the stage needs
+# that image, otherwise literal null. A stage that never built an LLM image must
+# not report one as if it had been verified.
+json_image_field() {
+    local stage="$1" commit="$2" repo="$3" what="$4" value
+    case " $(stage_plan "${stage}" image_repos) " in
+        *" ${repo} "*) ;;
+        *) printf 'null'; return 0 ;;
+    esac
+    if [ "${what}" = "id" ]; then
+        value="$(docker image inspect --format '{{.Id}}' "${repo}:${commit}" 2>/dev/null || true)"
+        [ -n "${value}" ] || { printf 'null'; return 0; }
+    else
+        value="${repo}:${commit}"
+    fi
+    printf '"%s"' "${value}"
+}
+
+# --- release manifest ---------------------------------------------------------
+
+# validate_release_manifest <release-dir> <expected-sha>
+#
+# Echoes the validated stage on success; fails closed otherwise.
+#
+# This is what makes the exact-commit guarantee cover the MATERIALISED release
+# rather than the directory name. It is also where rollback learns which
+# services to start: taking that from the current deployment state would start
+# the OLD release with the NEW stage's service set, so rolling back a full
+# deployment to an api release would leave workers running against code that
+# never shipped with them.
+validate_release_manifest() {
+    local dir="$1" expected="$2"
+    local manifest="${dir}/.release-manifest.json"
+    local payload schema commit stage source required
+
+    if [ -L "${dir}" ]; then
+        fail "release path ${dir} is a symlink; refusing to follow it"
+        return 1
+    fi
+    if [ ! -d "${dir}" ]; then
+        fail "release directory ${dir} does not exist"
+        return 1
+    fi
+    if [ -L "${manifest}" ]; then
+        fail "release manifest in ${dir} is a symlink"
+        return 1
+    fi
+    if [ ! -f "${manifest}" ]; then
+        fail "release ${expected} has no .release-manifest.json; refusing to act on an unverified directory"
+        return 1
+    fi
+
+    payload="$(python3 -c '
+import json, sys
+try:
+    with open(sys.argv[1], encoding="utf-8") as handle:
+        document = json.load(handle)
+except Exception:
+    sys.exit(1)
+if not isinstance(document, dict):
+    sys.exit(1)
+fields = ("schema_version", "commit", "stage", "source")
+print("\t".join(str(document.get(name, "")) for name in fields))
+' "${manifest}" 2>/dev/null || true)"
+
+    if [ -z "${payload}" ]; then
+        fail "release manifest in ${dir} is not valid JSON"
+        return 1
+    fi
+    IFS=$'\t' read -r schema commit stage source <<<"${payload}"
+
+    if [ "${schema}" != "1" ]; then
+        fail "unsupported manifest schema_version '${schema}' in ${dir}"
+        return 1
+    fi
+    if ! printf '%s' "${commit}" | grep -qE '^[0-9a-f]{40}$'; then
+        fail "manifest commit '${commit}' is not a full lower-case 40-character sha"
+        return 1
+    fi
+    if [ "${commit}" != "${expected}" ]; then
+        fail "manifest commit ${commit} does not match the requested target ${expected}"
+        return 1
+    fi
+    if [ "${commit}" != "$(basename "${dir}")" ]; then
+        fail "manifest commit ${commit} does not match its release directory $(basename "${dir}")"
+        return 1
+    fi
+    case "${stage}" in
+        api|core|full) ;;
+        *)
+            fail "manifest stage '${stage}' is not api, core or full; refusing to guess"
+            return 1
+            ;;
+    esac
+    if [ -n "${source}" ] && [ "${source}" != "git archive" ]; then
+        fail "manifest source '${source}' is not a git-archive release"
+        return 1
+    fi
+
+    for required in VERSION compose.yaml compose.prod.yaml scripts/smoke-test.sh; do
+        if [ -L "${dir}/${required}" ]; then
+            fail "${required} in release ${expected} is a symlink"
+            return 1
+        fi
+        if [ ! -f "${dir}/${required}" ]; then
+            fail "release ${expected} is missing regular file ${required}"
+            return 1
+        fi
+    done
+
+    printf '%s' "${stage}"
+}
+
+# --- service reconciliation ---------------------------------------------------
+
+# reconcile_stage_services <stage>
+#
+# Requires the caller to have defined `compose`.
+#
+# --remove-orphans only removes containers Compose no longer knows about. A
+# service that is still DEFINED but belongs to a profile this stage does not
+# activate is not an orphan, so narrowing full -> api used to leave the
+# listener, the workers and the LLM running against the newly deployed code.
+#
+# Never passes -v: the database, spool and evidence are bind mounts, and an
+# anonymous-volume sweep during a stage change is not something a deploy should
+# decide to do.
+reconcile_stage_services() {
+    local stage="$1" excluded service cid running
+    local still=()
+    excluded="$(stage_plan "${stage}" excluded_services)"
+    if [ -z "${excluded}" ]; then
+        log "stage ${stage} excludes no service; nothing to reconcile"
+        return 0
+    fi
+
+    log "reconciling to the exact ${stage} service set"
+    # Every profile is enabled here on purpose: a service in a profile this
+    # stage does not activate is invisible to compose otherwise, and an
+    # invisible running container is the whole problem.
+    # shellcheck disable=SC2086
+    compose $(stage_profile_args full) stop ${excluded} >/dev/null 2>&1 || true
+    # shellcheck disable=SC2086
+    compose $(stage_profile_args full) rm --force --stop ${excluded} >/dev/null 2>&1 || true
+
+    for service in ${excluded}; do
+        # shellcheck disable=SC2086
+        cid="$(compose $(stage_profile_args full) ps -q "${service}" 2>/dev/null || true)"
+        [ -n "${cid}" ] || continue
+        running="$(docker inspect --format '{{.State.Running}}' "${cid}" 2>/dev/null || echo unknown)"
+        if [ "${running}" = "true" ]; then
+            still+=("${service}")
+        fi
+    done
+
+    if [ "${#still[@]}" -gt 0 ]; then
+        fail "services excluded from stage ${stage} are still running: ${still[*]}"
+        return 1
+    fi
+    log "excluded services absent or stopped: ${excluded}"
+}
+
+# --- backup path contract -----------------------------------------------------
+
+# parse_backup_path <output-file>
+#
+# backup-sqlite.sh prints human-readable progress AND exactly one machine
+# readable `BACKUP_PATH=<abs>` line, emitted last, after compression. Parsing
+# the human text was how a stale uncompressed `.db` path got recorded in
+# deployment state while the file on disk was `.db.gz` -- a backup reference
+# that points at nothing is worse than no reference, because it reads as one.
+parse_backup_path() {
+    local file="$1" count path
+    count="$(grep -c '^BACKUP_PATH=' "${file}" 2>/dev/null || true)"
+    count="${count:-0}"
+    if [ "${count}" != "1" ]; then
+        fail "expected exactly one BACKUP_PATH= line from the backup, found ${count}"
+        return 1
+    fi
+    path="$(grep '^BACKUP_PATH=' "${file}" | head -n 1)"
+    path="${path#BACKUP_PATH=}"
+    case "${path}" in
+        /*) ;;
+        *) fail "backup path is not absolute: '${path}'"; return 1 ;;
+    esac
+    if [ -L "${path}" ]; then
+        fail "backup path is a symlink: ${path}"
+        return 1
+    fi
+    if [ ! -f "${path}" ]; then
+        fail "backup path does not exist as a regular file: ${path}"
+        return 1
+    fi
+    printf '%s' "${path}"
+}
+
 # --- container health ---------------------------------------------------------
 
 # wait_for_health <exit-code-on-timeout> <timeout-seconds> <service>...

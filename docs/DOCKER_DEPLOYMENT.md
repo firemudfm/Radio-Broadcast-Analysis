@@ -285,6 +285,64 @@ failure.
 8. Run `scripts/smoke-test.sh` against loopback.
 9. Only then move `current` / `previous` and write `state.json`.
 
+### The stage plan
+
+One table, in `scripts/lib/deploy-common.sh`, read by the deploy, its automatic
+recovery path, the rollback and the tests. Three independent copies is how
+"rollback started the wrong service set" happens, and that is discovered in
+production.
+
+| stage | profiles | services started | services **built** | images required |
+|---|---|---|---|---|
+| `api` | core | api | api | `radio-api:<sha>` |
+| `core` | core | api, planner | api, planner | + `radio-pipeline:<sha>` |
+| `full` | core, pipeline, llm | api, planner, listener, transcription-worker, analysis-worker, cleanup-worker, llm | api, planner, llm | + `radio-llm:<sha>` |
+
+The build set is deliberately narrower than the runtime set — one service per
+image, with `planner` representing the pipeline image. An unrestricted
+`compose build` builds every service in an active profile, so an api-stage
+deploy was spending minutes of ARM CPU producing a pipeline image it would
+never start, and giving the deployment one more unrelated way to fail.
+
+After building, every image the stage requires is verified to exist under its
+exact SHA tag, and the tag **and image id** of each are recorded in
+`state.json`. Images a stage does not use are recorded as `null` — not omitted,
+and never populated as though they had been verified.
+
+### Nothing is built or pulled at start
+
+`up` runs with `--no-build --pull never`, in the deploy, in automatic recovery
+and in standalone rollback.
+
+Every service declares both `image:` and `build:`. Compose's default when a tag
+is missing is to **build it** — so a rollback to a release whose image had been
+pruned would quietly produce a brand-new, unreviewed image from whatever the
+release directory contains, and report success. Rollback would have created an
+artifact instead of restoring one.
+
+Because of that, recovery and rollback verify **every** image the target stage
+needs *before* touching a running container, and report all missing images at
+once. A missing image cannot be repaired at that point, and discovering it
+half-way through leaves the host running neither release.
+
+### Exact service reconciliation
+
+A successful deployment leaves exactly the stage's services running.
+
+`--remove-orphans` is not enough: it only removes services Compose no longer
+knows about, and a service that is still *defined* but sits in a profile this
+stage does not activate is not an orphan. Narrowing `full` → `api` left the
+listener, all three workers and the LLM running against newly deployed code.
+
+So after the selected services are healthy, the excluded ones are stopped and
+removed — with every profile enabled, since a service in an inactive profile is
+otherwise invisible to Compose — and then verified absent. Never with `-v`: the
+database, spool and evidence are bind mounts.
+
+Order is load-bearing: **start → healthy → reconcile → smoke → move symlinks and
+write state.** Reconciliation failing fails the deployment, and the normal
+recovery path applies.
+
 ### Startup order in shared_sqs mode
 
 Workers depend on the API with `condition: service_started`, **not**
@@ -307,6 +365,33 @@ that. What is needed is ordering, not readiness:
 `/readyz` itself was **not** weakened — it still requires every worker
 heartbeat, and the full-stage smoke test still asserts each component
 individually. The readiness contract is unchanged; only the startup edge is.
+
+### Stage-aware health and readiness
+
+The container health check asks `/healthz`, not `/readyz`, and requires the
+process to be serving valid JSON with a reachable database. It deliberately does
+**not** require every pipeline role: `/readyz` in `shared_sqs` mode needs
+planner, listener, transcription and analysis heartbeats, so using it as the
+container gate meant an `api`- or `core`-stage rollout on a shared-pipeline host
+could never report healthy — the workers it waits for are not part of that stage
+and are never going to start. The deployment would time out and roll back a
+release that was working perfectly.
+
+`/readyz` itself is unchanged. Full shared-pipeline readiness is asserted where
+it belongs — after the containers are up, by `smoke-test.sh --stage full`.
+
+| check | api | core | full |
+|---|---|---|---|
+| `/healthz`, database, `auth_mode`, `/openapi.json` routes | ✓ | ✓ | ✓ |
+| `/readyz` answers | ✓ | ✓ | ✓ |
+| `/readyz` 200 with `ready=true` | — | — | ✓ |
+| planner heartbeat | — | ✓ | ✓ |
+| listener, transcription, analysis heartbeats | — | — | ✓ |
+| queues configured | — | — | ✓ |
+| non-emergency spool | — | ✓ | ✓ |
+
+`api` explicitly does **not** claim the shared pipeline is ready; `core` reports
+it as PARTIAL. The deploy, recovery and rollback all pass their actual stage.
 
 ### What the smoke test checks
 
@@ -353,6 +438,55 @@ success state and never moves a symlink.
 
 `current` and `previous` never move until the new release is healthy.
 
+### What a failure report says about the database
+
+"Nothing was touched" is only ever true of *running containers*. A failure can
+happen after a backup exists, or after some migrations in a run have already
+been applied. Reporting the coarse version tells an operator the database is
+untouched when it is not, and that is the sentence they act on.
+
+Every failure — including one before any container changed — writes
+`/var/lib/radio/deploy/history/failed-<sha>-<ts>.json` recording the attempted
+commit, stage, exit code, **failure phase** (`validation`, `build`, `backup`,
+`migration`, `start`, `health`, `reconcile`, `smoke`), `containers_touched`,
+`backup_created`, `backup_path`, `migration_started`, `migration_completed`,
+`database_restored: false`, the release path, the deploy log and the recovery
+status.
+
+`migration_started` and `migration_completed` are tracked separately on purpose:
+a run that started and did not finish may still have applied earlier migrations.
+Each individual migration remains transactional, so the schema is at a
+consistent version — check which one with `scripts/migrate-db.sh --check-only`.
+
+### The backup path contract
+
+`backup-sqlite.sh` prints human-readable progress and then exactly one machine
+readable line, last, after verification, compression and `chmod`:
+
+```
+BACKUP_PATH=/var/lib/radio/backups/radio-20260101T000000Z.db.gz
+```
+
+Callers parse only that line, and reject zero or more than one of them. Before
+this, the deploy scraped the first path out of the human output — the
+uncompressed `.db` that gzip had *already replaced* — so deployment state
+recorded a backup reference pointing at a file that did not exist. It also piped
+the backup through `awk '{print; exit}'`, which closed the pipe and SIGPIPE'd
+the backup script while it was still pruning and uploading.
+
+The emitted path is verified absolute, existing, a regular file, not a symlink,
+inside the backup root, and no broader than mode 0600.
+
+### Rollback enforces the same host gates
+
+A rollback changes the host as much as a deploy does, and it is the path taken
+under time pressure. It therefore runs the same non-secret controls: host
+UID/GID resolution (blank means auto-detect, never a silent `10001`), UID/GID
+validation, directory-ownership verification, env-file presence and permissions,
+placeholder-secret and static-credential rejection, `validate_publish_host`
+(`0.0.0.0` still requires `RADIO_ALLOW_DIRECT_HTTP=1`), mount-point and free
+space. Env-file contents are never printed.
+
 ### The database is never rolled back
 
 Automatic recovery restores **code and images only**. A migration applied by
@@ -387,9 +521,28 @@ container is how a broken stack gets signed off.
 
 It is never deleted automatically: it may be the running release, and it is
 evidence of whatever went wrong. A `.release-manifest.json` is **not** accepted
-as proof — it is a file inside the very directory whose integrity is in
-question — and it is written exactly once, never rewritten. Otherwise the
-exact-commit guarantee would cover the directory *name* and nothing else.
+as proof of a *new* deployment — it is a file inside the very directory whose
+integrity is in question — and it is written exactly once, never rewritten.
+Otherwise the exact-commit guarantee would cover the directory *name* and
+nothing else.
+
+### The target manifest decides the rollback stage
+
+Rolling back reads `.release-manifest.json` **from the target release** and
+validates it strictly: valid JSON, `schema_version` 1, a full lower-case 40-hex
+commit that matches both the requested target and the directory name, a stage of
+exactly `api`/`core`/`full`, a recorded source of `git archive` when present, a
+manifest that is a regular file rather than a symlink, a release directory that
+is not a symlink, and the required release files present as regular files.
+
+The stage comes from that manifest, never from `state.json` — which describes
+the release being rolled *away from*. Rolling a `full` deployment back to an
+`api` release must start an `api` service set; taking the stage from current
+state would start workers against code that never shipped with them. An invalid
+or missing stage is a hard failure, never a quiet default to `api`.
+
+Automatic recovery validates the previous release's manifest the same way and
+uses the stage recorded there.
 
 ---
 

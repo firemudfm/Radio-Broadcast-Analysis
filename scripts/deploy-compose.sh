@@ -225,13 +225,16 @@ else
     fi
 fi
 
-# Profiles per stage. `full` is never the default: it starts live capture.
-case "${STAGE}" in
-    api)  PROFILES=(--profile core) ; SERVICES=(api) ;;
-    core) PROFILES=(--profile core) ; SERVICES=(api planner) ;;
-    full) PROFILES=(--profile core --profile pipeline --profile llm)
-          SERVICES=(api planner listener transcription-worker analysis-worker cleanup-worker llm) ;;
-esac
+# Profiles and services come from the shared stage plan in deploy-common.sh.
+# `full` is never the default: it starts live capture.
+#
+# BUILD_SERVICES is deliberately narrower than SERVICES -- one service per
+# image. An api-stage deploy must not build a pipeline or LLM image it will
+# never run.
+read -r -a PROFILES <<<"$(stage_profile_args "${STAGE}")"
+read -r -a SERVICES <<<"$(stage_plan "${STAGE}" runtime_services)"
+read -r -a BUILD_SERVICES <<<"$(stage_plan "${STAGE}" build_services)"
+log "stage ${STAGE}: starting [${SERVICES[*]}], building [${BUILD_SERVICES[*]}]"
 
 COMPOSE_FILES=(-f "${RELEASE_DIR}/compose.yaml" -f "${RELEASE_DIR}/compose.prod.yaml")
 compose() { docker compose --project-name "${COMPOSE_PROJECT_NAME}" "${COMPOSE_FILES[@]}" "$@"; }
@@ -278,7 +281,17 @@ fi
 DEPLOY_LOG="${DEPLOY_ROOT}/logs/deploy-${COMMIT}-$(date -u +%Y%m%dT%H%M%SZ).log"
 STATE_FILE="${DEPLOY_ROOT}/state.json"
 PREVIOUS_COMMIT="$(read_release_target "${RELEASE_ROOT}/current" 2>/dev/null || true)"
+
+# Persistent-state tracking. "no container changed" is NOT the same as "nothing
+# changed": a backup may exist and migrations may have been applied before a
+# later one failed. Reporting the coarse version of that would tell an operator
+# the database is untouched when it is not.
 CONTAINERS_TOUCHED=0
+BACKUP_CREATED=0
+BACKUP_PATH=""
+MIGRATION_STARTED=0
+MIGRATION_COMPLETED=0
+FAILURE_PHASE="validation"
 
 RECOVERY_RESULT="not-attempted"
 
@@ -294,47 +307,105 @@ RECOVERY_RESULT="not-attempted"
 # Never restores SQLite -- see the header.
 restore_previous_release() {
     local target_dir="${RELEASE_ROOT}/${PREVIOUS_COMMIT}"
-    local prev_stage required
+    local prev_stage
     local prev_profiles=() prev_services=()
 
-    [ -d "${target_dir}" ] || { fail "previous release ${target_dir} is missing"; return 1; }
-    for required in compose.yaml compose.prod.yaml scripts/smoke-test.sh; do
-        [ -e "${target_dir}/${required}" ] \
-            || { fail "previous release lacks ${required}"; return 1; }
-    done
+    # The PREVIOUS release's own manifest decides which services to start, not
+    # the stage this failed deployment was attempting and not the stage recorded
+    # in state.json. Recovering a failed full deployment back to an api release
+    # must start an api service set; using the attempted stage would start
+    # workers against code that never shipped with them.
+    prev_stage="$(validate_release_manifest "${target_dir}" "${PREVIOUS_COMMIT}")" || {
+        fail "previous release ${PREVIOUS_COMMIT} did not pass manifest validation"
+        return 1
+    }
+    log "previous release manifest is valid; its recorded stage is ${prev_stage}"
 
     export RADIO_API_IMAGE="radio-api:${PREVIOUS_COMMIT}"
     export RADIO_PIPELINE_IMAGE="radio-pipeline:${PREVIOUS_COMMIT}"
     export RADIO_LLM_IMAGE="radio-llm:${PREVIOUS_COMMIT}"
-    docker image inspect "${RADIO_API_IMAGE}" >/dev/null 2>&1 || {
-        fail "image ${RADIO_API_IMAGE} is absent; recovery never rebuilds, so this must be finished by hand"
+
+    # Every image that stage needs, checked BEFORE a single container is
+    # touched. Recovery never builds and never pulls, so a missing image cannot
+    # be repaired here -- discovering that half-way through would leave the host
+    # with neither release running.
+    require_stage_images "${prev_stage}" "${PREVIOUS_COMMIT}" || {
+        fail "recovery never rebuilds or pulls, so this must be finished by hand"
         return 1
     }
 
-    prev_stage="$(read_state_field "${STATE_FILE}" stage)"
-    case "${prev_stage:-api}" in
-        core) prev_profiles=(--profile core)
-              prev_services=(api planner) ;;
-        full) prev_profiles=(--profile core --profile pipeline --profile llm)
-              prev_services=(api planner listener transcription-worker analysis-worker cleanup-worker llm) ;;
-        *)    prev_profiles=(--profile core)
-              prev_services=(api) ;;
-    esac
+    read -r -a prev_profiles <<<"$(stage_profile_args "${prev_stage}")"
+    read -r -a prev_services <<<"$(stage_plan "${prev_stage}" runtime_services)"
 
-    # wait_for_health reads this array at call time.
+    # wait_for_health and reconcile_stage_services read this array at call time.
     COMPOSE_FILES=(-f "${target_dir}/compose.yaml" -f "${target_dir}/compose.prod.yaml")
 
-    log "restoring ${PREVIOUS_COMMIT} (stage ${prev_stage:-api}) without rebuilding"
-    compose "${prev_profiles[@]}" up -d --remove-orphans "${prev_services[@]}" 2>&1 \
+    log "restoring ${PREVIOUS_COMMIT} (stage ${prev_stage}) from existing artifacts"
+    compose "${prev_profiles[@]}" up -d --no-build --pull never --remove-orphans \
+        "${prev_services[@]}" 2>&1 \
         | tee -a "${DEPLOY_LOG}" || { fail "compose up failed during recovery"; return 1; }
 
     wait_for_health "${EXIT_ROLLBACK}" 300 "${prev_services[@]}" \
         || { fail "recovered containers did not become healthy"; return 1; }
 
-    bash "${target_dir}/scripts/smoke-test.sh" "http://127.0.0.1:8788" 2>&1 \
+    reconcile_stage_services "${prev_stage}" \
+        || { fail "could not reconcile to the ${prev_stage} service set during recovery"; return 1; }
+
+    bash "${target_dir}/scripts/smoke-test.sh" --stage "${prev_stage}" \
+        "http://127.0.0.1:8788" 2>&1 \
         | tee -a "${DEPLOY_LOG}" || { fail "smoke test failed after recovery"; return 1; }
 
     return 0
+}
+
+write_failure_report() {
+    local code="$1"
+    write_state_atomic \
+        "${DEPLOY_ROOT}/history/failed-${COMMIT}-$(date -u +%Y%m%dT%H%M%SZ).json" \
+        "$(cat <<EOF
+{
+  "schema_version": 1,
+  "outcome": "failed",
+  "attempted_commit": "${COMMIT}",
+  "previous_commit": "${PREVIOUS_COMMIT}",
+  "stage": "${STAGE}",
+  "exit_code": ${code},
+  "failure_phase": "${FAILURE_PHASE}",
+  "failed_at": "$(date -u +%Y-%m-%dT%H:%M:%SZ)",
+  "containers_touched": $([ "${CONTAINERS_TOUCHED}" -eq 1 ] && printf true || printf false),
+  "backup_created": $([ "${BACKUP_CREATED}" -eq 1 ] && printf true || printf false),
+  "backup_path": "${BACKUP_PATH}",
+  "migration_started": $([ "${MIGRATION_STARTED}" -eq 1 ] && printf true || printf false),
+  "migration_completed": $([ "${MIGRATION_COMPLETED}" -eq 1 ] && printf true || printf false),
+  "database_restored": false,
+  "release_path": "${RELEASE_DIR:-}",
+  "deploy_log": "${DEPLOY_LOG}",
+  "recovery": "${RECOVERY_RESULT}"
+}
+EOF
+)" || warn "could not record the failure report"
+}
+
+# Say exactly what changed. "Nothing was touched" is only true of RUNNING
+# CONTAINERS -- a backup may exist and migrations may already have been applied
+# when a later one failed. Reporting the coarse version of that tells an
+# operator the database is untouched when it is not, and that is the sentence
+# they act on.
+report_persistent_state() {
+    if [ "${BACKUP_CREATED}" -eq 1 ]; then
+        log "a database backup WAS created and is preserved at ${BACKUP_PATH}"
+    else
+        log "no database backup was created"
+    fi
+    if [ "${MIGRATION_COMPLETED}" -eq 1 ]; then
+        warn "migrations COMPLETED; the schema is already at the new version"
+    elif [ "${MIGRATION_STARTED}" -eq 1 ]; then
+        warn "migration STARTED and did not complete; earlier migrations in the run may already be applied"
+        warn "each migration is individually transactional, so the schema is at a consistent version -- check it with: scripts/migrate-db.sh --check-only"
+    else
+        log "no migration was started"
+    fi
+    fail "the database is NEVER restored automatically"
 }
 
 on_failure() {
@@ -343,13 +414,16 @@ on_failure() {
     trap - EXIT  # never re-enter this handler
 
     if [ "${CONTAINERS_TOUCHED}" -eq 0 ]; then
-        fail "deployment failed before any running service was changed; the current release is untouched"
+        fail "deployment failed in phase '${FAILURE_PHASE}' before any RUNNING CONTAINER was changed"
+        log "the current release is still serving and was not restarted"
         [ -n "${RELEASE_DIR:-}" ] && log "release ${RELEASE_DIR} left in place for inspection"
+        report_persistent_state
+        write_failure_report "${code}"
         exit "${code}"
     fi
 
-    fail "deployment failed AFTER containers began changing"
-    fail "the database was NOT restored; the pre-migration backup is preserved${BACKUP_PATH:+ at ${BACKUP_PATH}}"
+    fail "deployment failed in phase '${FAILURE_PHASE}', AFTER containers began changing"
+    report_persistent_state
 
     if [ -z "${PREVIOUS_COMMIT}" ]; then
         # First deployment on this host. There is no previous release to return
@@ -380,72 +454,105 @@ on_failure() {
         fi
     fi
 
-    write_state_atomic \
-        "${DEPLOY_ROOT}/history/failed-${COMMIT}-$(date -u +%Y%m%dT%H%M%SZ).json" \
-        "$(cat <<EOF
-{
-  "schema_version": 1,
-  "outcome": "failed",
-  "attempted_commit": "${COMMIT}",
-  "previous_commit": "${PREVIOUS_COMMIT}",
-  "stage": "${STAGE}",
-  "exit_code": ${code},
-  "failed_at": "$(date -u +%Y-%m-%dT%H:%M:%SZ)",
-  "containers_touched": true,
-  "recovery": "${RECOVERY_RESULT}",
-  "database_restored": false,
-  "backup_path": "${BACKUP_PATH:-}",
-  "deploy_log": "${DEPLOY_LOG}"
-}
-EOF
-)" || warn "could not record the failure report"
-
+    write_failure_report "${code}"
     exit "${code}"
 }
 trap on_failure EXIT
 
 # ---------------------------------------------------------------------------
 stage "14/16 Building images"
-compose "${PROFILES[@]}" build 2>&1 | tee -a "${DEPLOY_LOG}" \
+FAILURE_PHASE="build"
+# Only the representative build service for each image this stage needs. An
+# unrestricted `compose build` builds every service in an active profile, so an
+# api-stage deploy was building the pipeline image -- minutes of ARM CPU spent
+# producing an artifact the stage will not start, and one more thing that can
+# fail a deployment for a reason unrelated to what was being deployed.
+log "building only: ${BUILD_SERVICES[*]}"
+compose "${PROFILES[@]}" build "${BUILD_SERVICES[@]}" 2>&1 | tee -a "${DEPLOY_LOG}" \
     || die "${EXIT_BUILD}" "image build failed"
-API_IMAGE_ID="$(docker image inspect --format '{{.Id}}' "${RADIO_API_IMAGE}" 2>/dev/null || echo '')"
-log "api image ${RADIO_API_IMAGE} (${API_IMAGE_ID:0:19})"
+
+# Build succeeding is not the same as the images existing under the exact tags
+# the stage will start.
+require_stage_images "${STAGE}" "${COMMIT}" \
+    || die "${EXIT_BUILD}" "required images are missing after a build that reported success"
+while IFS='=' read -r image_repo image_id; do
+    [ -n "${image_repo}" ] || continue
+    log "image ${image_repo}:${COMMIT} (${image_id:0:19})"
+done <<<"$(stage_image_ids "${STAGE}" "${COMMIT}")"
 
 # ---------------------------------------------------------------------------
 stage "15/16 Backing up and migrating the database"
+FAILURE_PHASE="backup"
 DATABASE_FILE="${DATA_ROOT}/database/radio.db"
-BACKUP_PATH=""
 if [ -f "${DATABASE_FILE}" ]; then
-    BACKUP_PATH="$(RADIO_DATABASE_PATH="${DATABASE_FILE}" \
-        RADIO_HOST_BACKUPS="${DATA_ROOT}/backups" \
-        bash "${RELEASE_DIR}/scripts/backup-sqlite.sh" 2>&1 | tee -a "${DEPLOY_LOG}" \
-        | awk '/^    \// {print $1; exit}')" || die "${EXIT_MIGRATION}" "database backup failed"
-    log "backup taken before migration"
+    # Captured to a file rather than piped through awk. The old version ran
+    # `awk '{print; exit}'`, which closed the pipe and SIGPIPE'd the backup
+    # script mid-run -- while it was still pruning and uploading -- and recorded
+    # the pre-compression `.db` path that gzip had already replaced.
+    BACKUP_OUTPUT="$(mktemp)"
+    if ! RADIO_DATABASE_PATH="${DATABASE_FILE}" \
+         RADIO_HOST_BACKUPS="${DATA_ROOT}/backups" \
+         bash "${RELEASE_DIR}/scripts/backup-sqlite.sh" >"${BACKUP_OUTPUT}" 2>&1; then
+        cat "${BACKUP_OUTPUT}" >>"${DEPLOY_LOG}" 2>/dev/null || true
+        cat "${BACKUP_OUTPUT}" >&2 || true
+        rm -f "${BACKUP_OUTPUT}"
+        die "${EXIT_MIGRATION}" "database backup failed"
+    fi
+    # All human-readable output is preserved; only the marker line is parsed.
+    cat "${BACKUP_OUTPUT}" >>"${DEPLOY_LOG}" 2>/dev/null || true
+    BACKUP_PATH="$(parse_backup_path "${BACKUP_OUTPUT}")" || {
+        rm -f "${BACKUP_OUTPUT}"
+        die "${EXIT_MIGRATION}" "backup completed but did not report a usable path"
+    }
+    rm -f "${BACKUP_OUTPUT}"
+    BACKUP_CREATED=1
+    log "backup taken before migration: ${BACKUP_PATH}"
 else
     log "no existing database; skipping backup"
 fi
 
+FAILURE_PHASE="migration"
+MIGRATION_STARTED=1
 bash "${RELEASE_DIR}/scripts/migrate-db.sh" \
     --image "${RADIO_API_IMAGE}" \
     --data-root "${DATA_ROOT}" \
     --env-dir "${ENV_DIR}" \
     --uid "${RADIO_CONTAINER_UID}" --gid "${RADIO_CONTAINER_GID}" \
     2>&1 | tee -a "${DEPLOY_LOG}" || die "${EXIT_MIGRATION}" "database migration failed"
+MIGRATION_COMPLETED=1
 
 # ---------------------------------------------------------------------------
 stage "16/16 Starting services and verifying health"
+FAILURE_PHASE="start"
 CONTAINERS_TOUCHED=1
-compose "${PROFILES[@]}" up -d --remove-orphans "${SERVICES[@]}" 2>&1 | tee -a "${DEPLOY_LOG}" \
+# --no-build --pull never: this deployment has already built exactly the images
+# it needs and verified they exist. Every service declares both `image` and
+# `build`, and Compose's default behaviour when the tag is missing is to build
+# it -- which would silently produce an unreviewed image from whatever source
+# the release directory happens to hold, outside the build stage's gates.
+compose "${PROFILES[@]}" up -d --no-build --pull never --remove-orphans \
+    "${SERVICES[@]}" 2>&1 | tee -a "${DEPLOY_LOG}" \
     || die "${EXIT_HEALTH}" "compose up failed"
 
 log "waiting for container health"
+FAILURE_PHASE="health"
 if ! wait_for_health "${EXIT_HEALTH}" 300 "${SERVICES[@]}"; then
     compose "${PROFILES[@]}" logs --tail=80 2>&1 | tee -a "${DEPLOY_LOG}" || true
     die "${EXIT_HEALTH}" "containers did not become healthy within 300s"
 fi
 log "all selected services healthy"
 
-bash "${RELEASE_DIR}/scripts/smoke-test.sh" "http://127.0.0.1:8788" 2>&1 | tee -a "${DEPLOY_LOG}" \
+# Narrowing a stage (full -> api) leaves the excluded services running, because
+# --remove-orphans only removes services Compose no longer knows about, and a
+# service in an inactive profile is still defined. Reconcile before the smoke
+# test so the smoke test describes the service set that will actually persist.
+FAILURE_PHASE="reconcile"
+reconcile_stage_services "${STAGE}" \
+    || die "${EXIT_HEALTH}" "could not reconcile to the exact ${STAGE} service set"
+
+FAILURE_PHASE="smoke"
+bash "${RELEASE_DIR}/scripts/smoke-test.sh" --stage "${STAGE}" "http://127.0.0.1:8788" 2>&1 \
+    | tee -a "${DEPLOY_LOG}" \
     || die "${EXIT_SMOKE}" "smoke test failed against the new release"
 
 # ---------------------------------------------------------------------------
@@ -463,11 +570,16 @@ write_state_atomic "${STATE_FILE}" "$(cat <<EOF
   "stage": "${STAGE}",
   "compose_project": "${COMPOSE_PROJECT_NAME}",
   "release_path": "${RELEASE_DIR}",
-  "api_image": "${RADIO_API_IMAGE}",
-  "pipeline_image": "${RADIO_PIPELINE_IMAGE}",
-  "llm_image": "${RADIO_LLM_IMAGE}",
-  "api_image_id": "${API_IMAGE_ID}",
+  "runtime_services": "$(stage_plan "${STAGE}" runtime_services)",
+  "built_services": "$(stage_plan "${STAGE}" build_services)",
+  "api_image": $(json_image_field "${STAGE}" "${COMMIT}" radio-api tag),
+  "api_image_id": $(json_image_field "${STAGE}" "${COMMIT}" radio-api id),
+  "pipeline_image": $(json_image_field "${STAGE}" "${COMMIT}" radio-pipeline tag),
+  "pipeline_image_id": $(json_image_field "${STAGE}" "${COMMIT}" radio-pipeline id),
+  "llm_image": $(json_image_field "${STAGE}" "${COMMIT}" radio-llm tag),
+  "llm_image_id": $(json_image_field "${STAGE}" "${COMMIT}" radio-llm id),
   "migration": "ok",
+  "backup_created": $([ "${BACKUP_CREATED}" -eq 1 ] && printf true || printf false),
   "backup_path": "${BACKUP_PATH}",
   "smoke_test": "pass",
   "publish_host": "${RADIO_API_PUBLISH_HOST}",

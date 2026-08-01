@@ -586,7 +586,7 @@ def test_automatic_recovery_never_rebuilds_and_never_restores_the_database() -> 
     """
     text = (SCRIPTS / "deploy-compose.sh").read_text(encoding="utf-8")
     start = text.index("restore_previous_release() {")
-    end = text.index("on_failure() {")
+    end = text.index("write_failure_report() {")
     body = "\n".join(
         line for line in text[start:end].splitlines()
         if not line.lstrip().startswith("#")
@@ -596,7 +596,9 @@ def test_automatic_recovery_never_rebuilds_and_never_restores_the_database() -> 
     assert "backup-sqlite" not in body and "restore" not in body.replace(
         "restore_previous_release", ""
     ), "recovery must not touch the database"
-    assert "docker image inspect" in body, "recovery must verify the old image still exists"
+    # Every image the target stage needs, not just the API one: a core release
+    # whose pipeline image had been pruned used to start and then fail.
+    assert "require_stage_images" in body, "recovery must verify the old images still exist"
 
 
 def test_recovery_does_not_reacquire_the_deployment_lock() -> None:
@@ -604,7 +606,7 @@ def test_recovery_does_not_reacquire_the_deployment_lock() -> None:
     rollback-compose.sh here would deadlock on it."""
     text = (SCRIPTS / "deploy-compose.sh").read_text(encoding="utf-8")
     start = text.index("restore_previous_release() {")
-    end = text.index("on_failure() {")
+    end = text.index("write_failure_report() {")
     body = text[start:end]
     assert "acquire_deploy_lock" not in body
     assert "rollback-compose.sh" not in body
