@@ -29,6 +29,7 @@ pytestmark = pytest.mark.skipif(BASH is None, reason="bash is not available on t
 EXIT_OK = 0
 EXIT_USAGE = 64
 EXIT_PRECONDITION = 65
+EXIT_LOCKED = 66
 
 
 def run_snippet(snippet: str, **env) -> subprocess.CompletedProcess:
@@ -490,3 +491,87 @@ def test_migration_container_is_network_isolated() -> None:
     assert "--network none" in text, "a schema migration must not reach S3, SQS or a model host"
     assert "--entrypoint python" in text, "the image entrypoint is uvicorn and must be overridden"
     assert "-p " not in text and "--publish" not in text, "migration must publish no port"
+
+
+# --- N. concurrency, host layout and atomic swaps -----------------------------
+
+HAS_FLOCK = shutil.which("flock") is not None
+HAS_MOUNTPOINT = shutil.which("mountpoint") is not None
+
+
+@pytest.mark.skipif(not HAS_FLOCK, reason="flock is not available on this host")
+def test_a_second_deployment_cannot_take_the_lock(tmp_path: Path) -> None:
+    """Two concurrent deploys would race on the symlinks and the backup.
+
+    The first holder keeps the lock for the life of its process, so the second
+    must be refused rather than queued -- a queued deploy would start against a
+    host the first one has already changed underneath it.
+    """
+    lock = tmp_path / "deploy.lock"
+    result = run_snippet(
+        f'''
+        acquire_deploy_lock "{lock.as_posix()}"
+        # A child that inherits nothing: a separate bash re-opening the same
+        # file is exactly what a second operator's deploy looks like.
+        bash -c 'set -euo pipefail
+                 source "{LIB.as_posix()}"
+                 acquire_deploy_lock "{lock.as_posix()}"' && echo SECOND_ACQUIRED
+        '''
+    )
+    assert result.returncode == EXIT_LOCKED, result.stdout + result.stderr
+    assert "SECOND_ACQUIRED" not in result.stdout
+    assert "refusing to run concurrently" in result.stderr
+
+
+@pytest.mark.skipif(not HAS_FLOCK, reason="flock is not available on this host")
+def test_the_lock_is_released_when_the_holder_exits(tmp_path: Path) -> None:
+    """A crashed deploy must not wedge every later deploy."""
+    lock = tmp_path / "deploy.lock"
+    take = f'bash -c \'source "{LIB.as_posix()}"; acquire_deploy_lock "{lock.as_posix()}"\''
+    first = run_snippet(take)
+    assert first.returncode == EXIT_OK, first.stderr
+    second = run_snippet(take)
+    assert second.returncode == EXIT_OK, "the lock must not survive its holder"
+
+
+@pytest.mark.skipif(not HAS_MOUNTPOINT, reason="mountpoint(1) is not available on this host")
+def test_a_plain_directory_is_not_accepted_as_the_data_root(tmp_path: Path) -> None:
+    """Deploying onto the root volume lets the spool fill / and wedge the host."""
+    plain = tmp_path / "radio"
+    plain.mkdir()
+    result = run_snippet(f'require_mountpoint "{plain.as_posix()}"')
+    assert result.returncode == EXIT_PRECONDITION
+    assert "not a mount point" in result.stderr
+
+
+@pytest.mark.skipif(not HAS_MOUNTPOINT, reason="mountpoint(1) is not available on this host")
+def test_a_real_mount_point_is_accepted() -> None:
+    """The gate must not be one that nothing can ever satisfy."""
+    result = run_snippet('require_mountpoint "/"')
+    assert result.returncode == EXIT_OK, result.stderr
+
+
+@pytest.mark.skipif(os.name == "nt", reason="POSIX symlink semantics are not available")
+def test_repointing_a_release_symlink_replaces_it_in_place(tmp_path: Path) -> None:
+    """`current` must never be missing, even for an instant.
+
+    A remove-then-create leaves a window in which `current` does not resolve. A
+    reader that looks during that window sees no release at all, so the swap has
+    to be a rename over the existing link.
+    """
+    old = tmp_path / "release-old"
+    new = tmp_path / "release-new"
+    old.mkdir()
+    new.mkdir()
+    link = tmp_path / "current"
+
+    first = run_snippet(f'point_symlink_atomic "{link.as_posix()}" "{old.as_posix()}"')
+    assert first.returncode == EXIT_OK, first.stderr
+    assert link.is_symlink() and link.resolve() == old.resolve()
+
+    second = run_snippet(f'point_symlink_atomic "{link.as_posix()}" "{new.as_posix()}"')
+    assert second.returncode == EXIT_OK, second.stderr
+    assert link.is_symlink() and link.resolve() == new.resolve()
+
+    leftovers = [p.name for p in tmp_path.iterdir() if ".tmp." in p.name]
+    assert not leftovers, f"the staging link must be renamed away, found {leftovers}"
