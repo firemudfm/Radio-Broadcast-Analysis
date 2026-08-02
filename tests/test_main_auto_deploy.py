@@ -1381,3 +1381,106 @@ def test_a_missing_commit_is_still_reported_as_missing(tmp_path: Path) -> None:
         f'&& echo FOUND || echo ABSENT'
     )
     assert "ABSENT" in result.stdout
+
+
+# =============================================================================
+# S. The build toolchain: buildx
+# =============================================================================
+#
+# The first install passed every gate and then could not build:
+#
+#   ==> 14/16 Building images
+#   compose build requires buildx 0.17.0 or later
+#   ERROR: deployment failed in phase 'build' before any RUNNING CONTAINER
+#          was changed
+#
+# Compose v5 has no legacy builder to fall back to, and Amazon Linux 2023 does
+# not supply a new enough buildx. It is now pinned exactly like Compose.
+
+PREREQ_TEXT = (SCRIPTS / "ensure-host-prerequisites.sh").read_text(encoding="utf-8")
+
+
+def test_the_lock_pins_buildx_with_a_real_digest() -> None:
+    lock = json.loads(TOOLCHAIN_LOCK.read_text(encoding="utf-8"))
+    buildx = lock["docker_buildx"]
+    assert re.fullmatch(r"v\d+\.\d+\.\d+", buildx["version"])
+    asset = buildx["linux_aarch64"]
+    assert re.fullmatch(r"[0-9a-f]{64}", asset["sha256"]), "a pinned digest, not a tag"
+    assert buildx["version"] in asset["asset"], "the asset must be the pinned version"
+    assert "arm64" in asset["asset"] or "aarch64" in asset["asset"]
+
+
+def test_buildx_meets_the_floor_compose_enforces() -> None:
+    """Compose v5.3.1 refuses to build below 0.17.0; pinning something older
+    would reproduce the failure this fixes."""
+    lock = json.loads(TOOLCHAIN_LOCK.read_text(encoding="utf-8"))
+    minimum = lock["docker_buildx"]["minimum_supported"]
+    assert minimum == "0.17.0"
+    pinned = tuple(int(part) for part in lock["docker_buildx"]["version"].lstrip("v").split("."))
+    assert pinned >= tuple(int(part) for part in minimum.split(".")), (
+        "the pinned buildx is older than the minimum it declares"
+    )
+
+
+def test_both_plugins_install_into_one_directory() -> None:
+    """Docker searches several plugin directories. Two copies of a plugin make
+    which one runs depend on the Docker version, so an unrelated upgrade would
+    change the builder with nothing having been deployed."""
+    lock = json.loads(TOOLCHAIN_LOCK.read_text(encoding="utf-8"))
+    compose_path = lock["docker_compose"]["linux_aarch64"]["install_path"]
+    buildx_path = lock["docker_buildx"]["linux_aarch64"]["install_path"]
+    assert compose_path.rsplit("/", 1)[0] == buildx_path.rsplit("/", 1)[0]
+    assert buildx_path.endswith("/docker-buildx")
+    assert buildx_path.startswith("/usr/local/lib/docker/cli-plugins")
+
+
+def test_buildx_is_verified_against_the_digest_before_it_is_installed() -> None:
+    code = executable_lines(SCRIPTS / "ensure-host-prerequisites.sh")
+    assert "install_verified_plugin() {" in code
+    body = code[code.index("install_verified_plugin() {"):]
+    body = body[:body.index("\n}")]
+    assert body.index("sha256sum") < body.index('mv -f "${temp}"'), (
+        "the digest must be checked before the file is put where docker runs it"
+    )
+    assert 'rm -f "${temp}"' in body, "a mismatched download must not be left on disk"
+
+
+def test_no_download_may_skip_certificate_verification() -> None:
+    code = executable_lines(SCRIPTS / "ensure-host-prerequisites.sh")
+    for flag in ("--insecure", "--no-check-certificate", "-k "):
+        assert flag not in code, f"{flag} would defeat the pinned digest's purpose"
+    assert "--proto '=https'" in code and "--tlsv1.2" in code
+
+
+def test_an_existing_buildx_is_never_silently_replaced() -> None:
+    """Same rule as Compose: somebody put it there, and overwriting it without
+    a word hides both what they were doing and whatever went wrong."""
+    code = executable_lines(SCRIPTS / "ensure-host-prerequisites.sh")
+    assert "unverifiable docker buildx binary" in code
+
+
+def test_the_active_buildx_is_checked_not_just_the_installed_file() -> None:
+    """Installing the right file is not the same as the CLI using it -- and this
+    is the check that would have caught the failure before a build started."""
+    code = executable_lines(SCRIPTS / "ensure-host-prerequisites.sh")
+    assert "docker buildx version" in code
+    assert "does not resolve a buildx plugin" in code
+    assert "version_at_least \"${ACTIVE_BUILDX}\"" in code
+
+
+def test_buildx_is_settled_before_the_summary() -> None:
+    stages = re.findall(r'stage "([^"]+)"', PREREQ_TEXT)
+    titles = [s.strip() for s in stages]
+    buildx = next(i for i, s in enumerate(titles) if "Buildx" in s)
+    compose = next(i for i, s in enumerate(titles) if "Compose" in s)
+    summary = next(i for i, s in enumerate(titles) if "Summary" in s)
+    assert compose < buildx < summary
+
+
+def test_the_lock_still_carries_no_secret_or_account_identifier() -> None:
+    """Re-asserted for the new section: the lock is public."""
+    text = TOOLCHAIN_LOCK.read_text(encoding="utf-8")
+    assert not re.search(r"\b\d{12}\b", text), "an AWS account id"
+    assert not re.search(r"\bi-[0-9a-f]{8,}\b", text), "an instance id"
+    for forbidden in ("AKIA", "ASIA", "PRIVATE KEY", "password", "secret_key"):
+        assert forbidden not in text
