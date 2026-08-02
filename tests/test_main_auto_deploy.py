@@ -1235,3 +1235,149 @@ def test_every_embedded_python_program_compiles() -> None:
                 ) from error
             checked += 1
     assert checked >= 8, f"only {checked} embedded programs found; the scan stopped working"
+
+
+# =============================================================================
+# R. git against a repository owned by another account
+# =============================================================================
+#
+# The first install reached its last stage and failed with:
+#
+#   ERROR: commit fae5cfc5... is not present in
+#          /var/lib/radio/app/Radio-Broadcast-Analysis.
+#
+# The commit was present. The pinned SSM document clones as ec2-user, the
+# deployment runs as root, and git refuses a repository owned by another account
+# ("detected dubious ownership") because a repository is executable
+# configuration -- its config can name hooks, pagers and diff commands that
+# would then run as root. The refusal is correct. Every caller discarded git's
+# stderr, so it surfaced as a missing commit.
+#
+# main-auto-deploy.sh already dropped to the owner for its own git calls. The
+# library did not, so deploy-compose.sh inherited the bug.
+
+GIT = shutil.which("git")
+
+
+def run_library(snippet: str, cwd: Path | None = None) -> subprocess.CompletedProcess:
+    """Run a snippet with deploy-common.sh sourced."""
+    program = f"set -euo pipefail\nsource {LIB.as_posix()}\n{snippet}\n"
+    return subprocess.run(  # noqa: S603 - fixed interpreter, argument array
+        [BASH, "-c", program],
+        capture_output=True, text=True, timeout=180, check=False,
+        cwd=str(cwd or REPO_ROOT),
+    )
+
+
+def make_repo(path: Path) -> str:
+    path.mkdir(parents=True, exist_ok=True)
+    (path / "VERSION").write_text("1.0.0\n", encoding="utf-8")
+    env = {**os.environ, "GIT_AUTHOR_NAME": "t", "GIT_AUTHOR_EMAIL": "t@t",
+           "GIT_COMMITTER_NAME": "t", "GIT_COMMITTER_EMAIL": "t@t"}
+    for command in (["init", "-q", "."], ["add", "-A"], ["commit", "-qm", "test"]):
+        subprocess.run(  # noqa: S603 - fixed argument array
+            [GIT, *command], cwd=str(path), check=True, capture_output=True, env=env,
+        )
+    return subprocess.run(  # noqa: S603 - fixed argument array
+        [GIT, "rev-parse", "HEAD"], cwd=str(path), check=True,
+        capture_output=True, text=True, env=env,
+    ).stdout.strip()
+
+
+def test_no_deployment_git_call_bypasses_the_ownership_helper() -> None:
+    """Every git call against the source repository must go through
+    git_in_repo; a bare `git -C` is the bug that failed the first install."""
+    code = executable_lines(LIB)
+    # git_in_repo's own body is the one place `git -C` legitimately appears.
+    start = code.index("git_in_repo() {")
+    outside = code[:start] + code[code.index("\n}", start):]
+    offenders = [line.strip() for line in outside.splitlines() if "git -C " in line]
+    assert not offenders, f"these bypass git_in_repo: {offenders}"
+
+
+def test_the_helper_drops_to_the_repository_owner() -> None:
+    code = executable_lines(LIB)
+    assert "git_in_repo() {" in code
+    assert 'runuser -u "${owner}"' in code, "root must drop to the owner"
+    assert 'owner="$(stat -c \'%U\'' in code
+
+
+def test_git_protection_is_never_waived_globally() -> None:
+    """safe.directory would let root run git inside a directory another account
+    can write, which is the thing the refusal exists to prevent."""
+    for script in sorted(SCRIPTS.rglob("*.sh")):
+        assert "safe.directory" not in executable_lines(script), (
+            f"{script.name} waives git's ownership protection"
+        )
+    assert "safe.directory" not in cfn_yaml()
+
+
+def test_the_repository_is_proven_readable_before_the_commit_is_looked_up() -> None:
+    """Otherwise an unreadable repository is reported as a missing commit and
+    sends the operator looking for the wrong problem."""
+    code = executable_lines(SCRIPTS / "deploy-compose.sh")
+    assert code.index("require_readable_repo") < code.index("commit_exists_locally")
+
+
+@pytest.mark.skipif(GIT is None, reason="git is not available on this host")
+def test_a_clean_repository_is_read_correctly(tmp_path: Path) -> None:
+    sha = make_repo(tmp_path / "src")
+    repo = (tmp_path / "src").as_posix()
+    result = run_library(
+        f'require_readable_repo "{repo}"\n'
+        f'commit_exists_locally "{repo}" "{sha}"\n'
+        f'require_clean_source "{repo}"\n'
+        f'echo READABLE_CLEAN_PRESENT'
+    )
+    assert result.returncode == EXIT_OK, f"{result.stdout}\n{result.stderr}"
+    assert "READABLE_CLEAN_PRESENT" in result.stdout
+
+
+@pytest.mark.skipif(GIT is None, reason="git is not available on this host")
+def test_an_unreadable_repository_is_never_certified_clean(tmp_path: Path) -> None:
+    """The fail-open bug: `$(...)` of a failing git is empty, which is
+    indistinguishable from a clean tree -- so a git that could not run at all
+    certified the source as clean and the deployment packaged it."""
+    # A path git cannot enter. The production cause was an ownership
+    # refusal, which needs two accounts to reproduce; what matters here is
+    # the shape -- git fails, and the caller must not read that as "clean".
+    broken = tmp_path / "absent"
+    result = run_library(f'require_clean_source "{broken.as_posix()}"\necho REACHED')
+    assert result.returncode == EXIT_PRECONDITION, (
+        "an unreadable repository must not be certified clean"
+    )
+    assert "REACHED" not in result.stdout
+    assert "cannot determine whether the source tree is clean" in result.stderr
+
+
+@pytest.mark.skipif(GIT is None, reason="git is not available on this host")
+def test_an_unreadable_repository_reports_why(tmp_path: Path) -> None:
+    # A path git cannot enter. The production cause was an ownership
+    # refusal, which needs two accounts to reproduce; what matters here is
+    # the shape -- git fails, and the caller must not read that as "clean".
+    broken = tmp_path / "absent"
+    result = run_library(f'require_readable_repo "{broken.as_posix()}"')
+    assert result.returncode == EXIT_PRECONDITION
+    assert "git cannot read" in result.stderr
+    assert "ownership" in result.stderr, "the remediation must name the likely cause"
+
+
+@pytest.mark.skipif(GIT is None, reason="git is not available on this host")
+def test_a_dirty_tree_is_still_refused(tmp_path: Path) -> None:
+    """Failing closed must not weaken the check it protects."""
+    make_repo(tmp_path / "src")
+    (tmp_path / "src" / "VERSION").write_text("edited\n", encoding="utf-8")
+    result = run_library(f'require_clean_source "{(tmp_path / "src").as_posix()}"')
+    assert result.returncode == EXIT_PRECONDITION
+    assert "uncommitted changes" in result.stderr
+
+
+@pytest.mark.skipif(GIT is None, reason="git is not available on this host")
+def test_a_missing_commit_is_still_reported_as_missing(tmp_path: Path) -> None:
+    make_repo(tmp_path / "src")
+    absent = "0" * 40
+    result = run_library(
+        f'commit_exists_locally "{(tmp_path / "src").as_posix()}" "{absent}" '
+        f'&& echo FOUND || echo ABSENT'
+    )
+    assert "ABSENT" in result.stdout
