@@ -175,7 +175,18 @@ check() {
 
 printf '==> Verifying the API contract\n'
 check "/healthz" "${BASE}/healthz"
-check "/readyz"  "${BASE}/readyz"
+
+# /readyz must ANSWER, not necessarily say ready. This test starts the API
+# alone, and readiness requires every worker role -- so 503 with a body is the
+# correct answer here, and a curl that treats it as failure would be asserting
+# that a one-container stack is a complete pipeline. A dead process answers
+# neither code.
+readyz_code="$(curl -s -o /dev/null -w '%{http_code}' --max-time 10 "${BASE}/readyz" 2>/dev/null || echo '')"
+case "${readyz_code}" in
+    200|503) printf '    PASS  /readyz answered (HTTP %s)\n' "${readyz_code}" ;;
+    *)       printf '    FAIL  /readyz did not answer (HTTP %s)\n' "${readyz_code:-none}" >&2
+             fail=1 ;;
+esac
 
 # The published route table, not a data query. Every campaign and mention
 # endpoint reads from S3, and this container is deliberately pointed at a bucket
