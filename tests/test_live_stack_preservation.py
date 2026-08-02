@@ -811,8 +811,8 @@ def test_the_validator_reports_the_operational_facts() -> None:
     from app.cli.validate_configuration import SAFE_FIELDS
 
     for expected in (
-        "RADIO_PIPELINE_MODE", "RADIO_QUEUE_BACKEND",
-        "RADIO_SEGMENT_STORE", "RADIO_MAX_ACTIVE_UNIQUE_STATIONS",
+        "RADIO_QUEUE_BACKEND", "RADIO_SEGMENT_STORE",
+        "RADIO_MAX_ACTIVE_UNIQUE_STATIONS", "RADIO_MAX_REQUESTED_UNIQUE_STATIONS",
     ):
         assert expected in SAFE_FIELDS
 

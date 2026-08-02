@@ -36,8 +36,8 @@ EXIT_BAD_USAGE = 64
 #: deployment log, and none of them is a secret, a credential, an endpoint, a
 #: queue URL or a bucket name.
 SAFE_FIELDS = (
-    "RADIO_PIPELINE_MODE",
     "RADIO_QUEUE_BACKEND",
+    "RADIO_MAX_REQUESTED_UNIQUE_STATIONS",
     "RADIO_SEGMENT_STORE",
     "RADIO_MAX_ACTIVE_UNIQUE_STATIONS",
     "RADIO_LISTENER_MAX_SESSIONS",

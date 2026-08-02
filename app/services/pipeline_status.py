@@ -78,7 +78,7 @@ class PipelineStatusService:
         pressure = self.spool_pressure()
 
         return {
-            "pipeline_mode": settings.RADIO_PIPELINE_MODE,
+            "pipeline_mode": "shared_sqs",
             "queue_backend": settings.RADIO_QUEUE_BACKEND,
             "segment_store": settings.RADIO_SEGMENT_STORE,
             "queues_configured": self.queues_configured(),
@@ -104,15 +104,11 @@ class PipelineStatusService:
     def readiness(self) -> dict[str, Any]:
         """Whether this deployment can actually do its job right now.
 
-        Legacy mode is ready on the database alone -- it has no pipeline
-        workers by design, and demanding them would report a healthy legacy
-        deployment as broken (ADR-001).
+        Readiness requires every worker role, because there is one pipeline and
+        a missing role means audio is being captured and never transcribed --
+        which looks healthy from the API and loses every mention.
         """
         checks: dict[str, str] = {"database": "ok" if self._database_ok() else "error"}
-
-        if not self._settings.shared_pipeline_enabled:
-            ready = checks["database"] == "ok"
-            return {"ready": ready, "pipeline_mode": "legacy", "checks": checks}
 
         for role in REQUIRED_ROLES:
             checks[role] = self._heartbeats.role_status(role, now=self._clock())

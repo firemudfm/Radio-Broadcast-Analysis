@@ -512,6 +512,12 @@ def test_stations_beyond_capacity_are_parked_not_dropped(settings, database, spo
 
 
 def test_capacity_counters_distinguish_their_meanings(settings, database, spool, queues):
+    # Two active slots, stated explicitly. The production default is 1, and this
+    # test is about the counters meaning DIFFERENT things -- which only shows up
+    # when more than one station can be active at once.
+    settings = settings.model_copy(
+        update={"RADIO_MAX_ACTIVE_UNIQUE_STATIONS": 2, "RADIO_LISTENER_MAX_SESSIONS": 2}
+    )
     for index in range(3):
         create_campaign(
             database,

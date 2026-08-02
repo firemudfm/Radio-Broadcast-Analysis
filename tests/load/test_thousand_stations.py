@@ -47,7 +47,6 @@ def settings(tmp_path) -> Settings:
         RADIO_AUDIO_TOKEN_SECRET="x" * 48,
         RADIO_DATABASE_PATH=tmp_path / "radio.db",
         RADIO_SPOOL_PATH=tmp_path / "spool",
-        RADIO_PIPELINE_MODE="shared_sqs",
         RADIO_QUEUE_BACKEND="memory",
         # The whole point: far fewer active stations than requested ones.
         RADIO_MAX_ACTIVE_UNIQUE_STATIONS=8,

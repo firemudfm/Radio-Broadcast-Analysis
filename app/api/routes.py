@@ -62,7 +62,7 @@ async def health(request: Request) -> HealthView:
     settings = request.app.state.settings
     pipeline = None
     status_service = getattr(request.app.state, "pipeline_status_service", None)
-    if status_service is not None and settings.shared_pipeline_enabled:
+    if status_service is not None:
         try:
             pipeline = await asyncio.to_thread(status_service.snapshot)
         except Exception:  # noqa: BLE001 - health must never fail on a sub-report
@@ -77,7 +77,7 @@ async def health(request: Request) -> HealthView:
         sync_enabled=settings.RADIO_SYNC_ENABLED,
         analysis_worker_enabled=settings.RADIO_ANALYSIS_WORKER_ENABLED,
         version=settings.RADIO_API_VERSION,
-        pipeline_mode=settings.RADIO_PIPELINE_MODE,
+        pipeline_mode="shared_sqs",
         pipeline=pipeline,
     )
 
@@ -103,7 +103,7 @@ async def readiness(request: Request, response: Response) -> ReadinessView:
         alive = await asyncio.to_thread(request.app.state.database.ping)
         return ReadinessView(
             ready=bool(alive),
-            pipeline_mode=settings.RADIO_PIPELINE_MODE,
+            pipeline_mode="shared_sqs",
             checks={"database": "ok" if alive else "error"},
         )
     report = await asyncio.to_thread(status_service.readiness)

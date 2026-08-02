@@ -60,7 +60,7 @@ class BaseWorker:
             role=self.role,
             shard_index=self.shard_index,
             shard_count=settings.RADIO_LISTENER_SHARD_COUNT,
-            pipeline_mode=settings.RADIO_PIPELINE_MODE,
+            pipeline_mode="shared_sqs",
         )
         self._stop = threading.Event()
         self._last_beat = 0.0
@@ -117,7 +117,7 @@ class BaseWorker:
                 worker_id=self.worker_id,
                 role=self.role,
                 shard_index=self.shard_index,
-                pipeline_mode=self.settings.RADIO_PIPELINE_MODE,
+                pipeline_mode="shared_sqs",
             ),
         )
         self.beat(status="starting")
@@ -177,19 +177,11 @@ def open_database(settings: Settings) -> Database:
 def bootstrap(role: str) -> tuple[Settings, Database]:
     """Common start-up for a worker entrypoint.
 
-    Refuses to start a pipeline worker in legacy mode. Starting one anyway
-    would silently produce a process that consumes nothing and reports healthy,
-    which is worse than not starting (ADR-001).
     """
     settings = get_settings()
     configure_logging(
         level=settings.LOG_LEVEL, log_format=settings.RADIO_LOG_FORMAT
     )
-    if not settings.shared_pipeline_enabled:
-        raise SystemExit(
-            f"Refusing to start the {role} worker: RADIO_PIPELINE_MODE is "
-            f"{settings.RADIO_PIPELINE_MODE!r}, not 'shared_sqs'."
-        )
     return settings, open_database(settings)
 
 

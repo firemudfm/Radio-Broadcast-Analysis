@@ -1,10 +1,11 @@
 from __future__ import annotations
 
 import json
+import os
 import re
 from functools import lru_cache
 from pathlib import Path
-from typing import Annotated, Literal
+from typing import Annotated, ClassVar, Literal
 from urllib.parse import urlsplit
 
 from pydantic import BeforeValidator, Field, SecretStr, field_validator, model_validator
@@ -12,7 +13,11 @@ from pydantic_settings import BaseSettings, NoDecode, SettingsConfigDict
 
 # Enumerated settings. Declaring them as Literal makes pydantic reject unknown
 # values at startup instead of letting a typo select a silent no-op path.
-PipelineMode = Literal["legacy", "shared_sqs"]
+#: There is exactly one production processing pipeline: shared station + SQS.
+#: The old `RADIO_PIPELINE_MODE` switch is gone -- see
+#: docs/architecture/adr/ADR-single-shared-sqs-pipeline.md. Two runtime branches
+#: meant two things to reason about, two things to test and two things to get
+#: wrong, and only one of them was ever going to production.
 QueueBackend = Literal["sqs", "memory"]
 SegmentStoreBackend = Literal["local", "s3"]
 AudioClassifierBackend = Literal["vad_energy", "yamnet", "passthrough"]
@@ -68,7 +73,7 @@ class Settings(BaseSettings):
         ]
     )
 
-    RADIO_DATABASE_PATH: Path = Path("/var/lib/firemud/radio-intelligence-api/radio.db")
+    RADIO_DATABASE_PATH: Path = Path("/var/lib/radio/database/radio.db")
     RADIO_AUDIO_TOKEN_SECRET: SecretStr
     RADIO_AUDIO_TOKEN_TTL_SECONDS: int = 600
 
@@ -78,8 +83,8 @@ class Settings(BaseSettings):
     RADIO_SYNC_LOOKBACK_DAYS: int = 14
     RADIO_SYNC_MAX_OBJECTS: int = 1000
 
-    RADIO_STATION_CONFIG_DIR: Path = Path("/etc/radio-pipeline/stations")
-    RADIO_STATION_METADATA_PATH: Path = Path("/etc/firemud/radio-stations.json")
+    RADIO_STATION_CONFIG_DIR: Path = Path("/var/lib/radio/stations.d")
+    RADIO_STATION_METADATA_PATH: Path = Path("/var/lib/radio/stations.json")
     RADIO_STATION_REFRESH_SECONDS: int = 60
 
     # Dynamic conversation assembly. The service walks neighboring transcript
@@ -298,19 +303,10 @@ class Settings(BaseSettings):
     RADIO_BROWSER_MAX_ATTEMPTS: int = 3
     RADIO_DATABASE_OVERRIDE_URL: str = "https://db.radio-browser.info/all.json"
     RADIO_DATABASE_OVERRIDE_REFRESH_SECONDS: int = 21600
-    # Legacy systemd-pipeline admission limit: how many station unit sets
-    # (radio-capture@, radio-uploader@, radio-pipeline-worker@) may run at once.
-    # The backward-compatible default is 2, and it is the number the monitoring
-    # API reports as active_station_limit.
-    #
-    # The v0.5 shared-SQS pipeline does not read this setting. It has its own
-    # capacity knob, RADIO_MAX_ACTIVE_UNIQUE_STATIONS (default 8), declared in
-    # the v0.5 block below. The two defaults are intentionally independent and
-    # must not be collapsed into one another: they size different runtimes.
-    #
-    # Production may override either value through environment configuration
-    # (see deploy/radio-intelligence.env.example).
-    RADIO_MAX_ACTIVE_STATIONS: int = 2
+    # RADIO_MAX_ACTIVE_STATIONS is gone. It sized the removed systemd pipeline;
+    # active capacity is now RADIO_MAX_ACTIVE_UNIQUE_STATIONS alone, and the
+    # monitoring API still reports it as `active_station_limit` so the frontend
+    # contract is unchanged.
     RADIO_MAX_STATIONS_PER_CAMPAIGN: int = 10
     RADIO_ALLOW_COUNTRY_ALL: bool = False
     RADIO_STATION_STOP_GRACE_SECONDS: int = 300
@@ -320,13 +316,6 @@ class Settings(BaseSettings):
     RADIO_PROBE_SECONDS: int = 20
     RADIO_RECONCILER_POLL_SECONDS: int = 10
     RADIO_LEGACY_PINNED_STATION_IDS: CsvList = Field(default_factory=lambda: ["hertz879"])
-
-    @field_validator("RADIO_MAX_ACTIVE_STATIONS")
-    @classmethod
-    def validate_max_active(cls, value: int) -> int:
-        if not 1 <= value <= 64:
-            raise ValueError("RADIO_MAX_ACTIVE_STATIONS must be between 1 and 64")
-        return value
 
     @field_validator("RADIO_MAX_STATIONS_PER_CAMPAIGN")
     @classmethod
@@ -349,11 +338,13 @@ class Settings(BaseSettings):
             raise ValueError("RADIO_PROBE_SECONDS must be between 5 and 120")
         return value
 
-    # --- v0.5 shared-station SQS pipeline ------------------------------------
-    # Everything below is inert while RADIO_PIPELINE_MODE=legacy (the default).
-    # See docs/architecture/adr/ADR-001-legacy-and-shared-pipeline-modes.md.
+    # --- the shared-station SQS pipeline -------------------------------------
+    # The only production processing pipeline. There is no mode switch.
+    #
+    # RADIO_QUEUE_BACKEND defaults to `memory` so the deterministic test suite
+    # runs without AWS. That is a TEST DOUBLE, not a second pipeline: production
+    # is required to use `sqs` by the validator below, keyed on APP_ENV.
 
-    RADIO_PIPELINE_MODE: PipelineMode = "legacy"
     RADIO_QUEUE_BACKEND: QueueBackend = "memory"
     RADIO_SEGMENT_STORE: SegmentStoreBackend = "local"
 
@@ -372,11 +363,28 @@ class Settings(BaseSettings):
     RADIO_PIPELINE_CONFIG_PREFIX: str = "config/"
 
     # -- capacity -------------------------------------------------------------
-    # Unique ACTIVE stations, not campaigns and not keywords. The default is a
-    # conservative starting point for 4 vCPU / 8 GiB (see ADR-008); it is not a
-    # benchmarked optimum and must be raised only with measurements.
-    RADIO_MAX_ACTIVE_UNIQUE_STATIONS: int = 8
-    RADIO_LISTENER_MAX_SESSIONS: int = 8
+    # THREE DIFFERENT NUMBERS. Collapsing them is how "we support 1,000
+    # stations" becomes a claim about live decoding that no one measured.
+    #
+    #   RADIO_MAX_REQUESTED_UNIQUE_STATIONS  how many distinct stations
+    #       campaigns may ASK for. A control-plane number: rows, mappings and
+    #       keyword indexes. 1,000 is proven by the load suite.
+    #
+    #   RADIO_MAX_ACTIVE_UNIQUE_STATIONS     how many are decoded RIGHT NOW.
+    #       A compute number: one ffmpeg decode, one ring buffer and a share of
+    #       ASR each. Anything above it becomes `pending_capacity`, which is a
+    #       queue, not a failure.
+    #
+    #   RADIO_LISTENER_MAX_SESSIONS          concurrent listener sessions in one
+    #       process, bounded by sockets and threads rather than by policy.
+    #
+    # Active defaults to 1. This is a 4 vCPU / 8 GiB aarch64 host running ASR,
+    # an LLM and the API; one live station is the only figure this deployment
+    # has been verified for. Raise it from the benchmark harness in
+    # docs/CAPACITY.md, not from optimism.
+    RADIO_MAX_REQUESTED_UNIQUE_STATIONS: int = 1000
+    RADIO_MAX_ACTIVE_UNIQUE_STATIONS: int = 1
+    RADIO_LISTENER_MAX_SESSIONS: int = 1
     RADIO_LISTENER_SHARD_COUNT: int = 1
     RADIO_LISTENER_SHARD_INDEX: int = 0
     RADIO_STATION_WINDDOWN_GRACE_SECONDS: int = 300
@@ -488,6 +496,16 @@ class Settings(BaseSettings):
         if not cleaned:
             raise ValueError("S3 prefixes must not be empty")
         return cleaned if cleaned.endswith("/") else f"{cleaned}/"
+
+    @field_validator("RADIO_MAX_REQUESTED_UNIQUE_STATIONS")
+    @classmethod
+    def validate_requested_unique_stations(cls, value: int) -> int:
+        # A control-plane bound: rows, mappings and keyword indexes, not decodes.
+        if not 1 <= value <= 10_000:
+            raise ValueError(
+                "RADIO_MAX_REQUESTED_UNIQUE_STATIONS must be between 1 and 10000"
+            )
+        return value
 
     @field_validator("RADIO_MAX_ACTIVE_UNIQUE_STATIONS", "RADIO_LISTENER_MAX_SESSIONS")
     @classmethod
@@ -828,23 +846,97 @@ class Settings(BaseSettings):
             raise ValueError(
                 "RADIO_LISTENER_MAX_SESSIONS cannot exceed RADIO_MAX_ACTIVE_UNIQUE_STATIONS"
             )
-        if self.RADIO_PIPELINE_MODE == "shared_sqs":
-            self._validate_shared_sqs_requirements()
+        if self.RADIO_MAX_ACTIVE_UNIQUE_STATIONS > self.RADIO_MAX_REQUESTED_UNIQUE_STATIONS:
+            raise ValueError(
+                "RADIO_MAX_ACTIVE_UNIQUE_STATIONS cannot exceed "
+                "RADIO_MAX_REQUESTED_UNIQUE_STATIONS: a station cannot be decoded "
+                "without first having been requested"
+            )
+        if self.RADIO_LISTENER_SHARD_INDEX >= self.RADIO_LISTENER_SHARD_COUNT:
+            raise ValueError(
+                "RADIO_LISTENER_SHARD_INDEX must be lower than "
+                "RADIO_LISTENER_SHARD_COUNT: shard 2 of 2 does not exist"
+            )
+        self._reject_removed_settings()
+        self._validate_pipeline_requirements()
+        self._validate_production_requirements()
         return self
 
-    def _validate_shared_sqs_requirements(self) -> None:
+    #: Environment variables that used to select or size the removed systemd
+    #: pipeline. `extra="ignore"` means pydantic would silently drop them, so an
+    #: operator whose application.env still says RADIO_PIPELINE_MODE=legacy would
+    #: get the shared pipeline anyway and never learn their file was stale --
+    #: until the day they tried to change that value and nothing happened.
+    REMOVED_SETTINGS: ClassVar[dict[str, str]] = {
+        "RADIO_PIPELINE_MODE": (
+            "the legacy pipeline has been removed and shared-station SQS is now "
+            "the only pipeline. Delete this line from your environment file."
+        ),
+        "RADIO_MAX_ACTIVE_STATIONS": (
+            "this sized the removed systemd pipeline. Active capacity is now "
+            "RADIO_MAX_ACTIVE_UNIQUE_STATIONS."
+        ),
+        "RADIO_RECONCILER_POLL_SECONDS": (
+            "the systemd station reconciler has been removed; the planner polls "
+            "on RADIO_PLANNER_POLL_SECONDS."
+        ),
+    }
+
+    def _reject_removed_settings(self) -> None:
+        """Fail loudly on a stale environment rather than ignoring it."""
+        stale = [name for name in self.REMOVED_SETTINGS if os.environ.get(name)]
+        if not stale:
+            return
+        lines = [
+            "This environment still sets settings that no longer exist:",
+            "",
+        ]
+        for name in stale:
+            lines.append(f"  {name}={os.environ[name]!r}")
+            lines.append(f"      {self.REMOVED_SETTINGS[name]}")
+        lines += [
+            "",
+            "Migration: see docs/architecture/adr/ADR-single-shared-sqs-pipeline.md.",
+            "Refusing to start rather than run a configuration you did not intend.",
+        ]
+        raise ValueError("\n".join(lines))
+
+    def _validate_production_requirements(self) -> None:
+        """Refuse test doubles in production.
+
+        `memory` queues and the fake ASR/LLM engines exist so the deterministic
+        test suite runs without AWS and without a 480 MiB model. Reaching
+        production with either is not a degraded deployment: the memory queue
+        loses every message when the process restarts, and the fake engines
+        return fixed strings, so the system would look healthy while producing
+        nothing real.
+        """
+        if self.APP_ENV.strip().lower() != "production":
+            return
+        if self.RADIO_QUEUE_BACKEND != "sqs":
+            raise ValueError(
+                "APP_ENV=production requires RADIO_QUEUE_BACKEND=sqs; the memory "
+                "queue is an in-process test double and loses everything on restart"
+            )
+        if self.RADIO_ASR_BACKEND != "faster_whisper":
+            raise ValueError(
+                f"APP_ENV=production requires a real ASR backend, not "
+                f"{self.RADIO_ASR_BACKEND!r}"
+            )
+
+
+    def _validate_pipeline_requirements(self) -> None:
         """Fail fast rather than start a half-configured pipeline.
 
-        A shared_sqs deployment that starts without queues silently produces
-        segments nobody consumes, which looks healthy and loses every mention.
+        A deployment that starts without queues silently produces segments
+        nobody consumes, which looks healthy and loses every mention.
         """
         if self.RADIO_QUEUE_BACKEND == "sqs":
             for name in ("RADIO_TRANSCRIPTION_QUEUE_URL", "RADIO_ANALYSIS_QUEUE_URL"):
                 url = str(getattr(self, name) or "").strip()
                 if not url:
                     raise ValueError(
-                        f"{name} is required when RADIO_PIPELINE_MODE=shared_sqs "
-                        f"and RADIO_QUEUE_BACKEND=sqs"
+                        f"{name} is required when RADIO_QUEUE_BACKEND=sqs"
                     )
                 parsed = urlsplit(url)
                 if parsed.scheme != "https" or not parsed.netloc:
@@ -862,10 +954,6 @@ class Settings(BaseSettings):
     @property
     def effective_aws_region(self) -> str:
         return (self.AWS_DEFAULT_REGION or self.AWS_REGION).strip()
-
-    @property
-    def shared_pipeline_enabled(self) -> bool:
-        return self.RADIO_PIPELINE_MODE == "shared_sqs"
 
     @property
     def ring_buffer_bytes_per_station(self) -> int:

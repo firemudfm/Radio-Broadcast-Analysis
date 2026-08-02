@@ -615,11 +615,20 @@ def test_the_template_sets_the_pilot_capacity_to_one() -> None:
     assert values["RADIO_LISTENER_MAX_SESSIONS"] == "1"
 
 
-def test_the_template_selects_the_shared_sqs_pipeline() -> None:
+def test_the_template_configures_the_only_pipeline() -> None:
+    """There is no mode to select any more; the template must not carry one."""
     values = parse_env_template()
-    assert values["RADIO_PIPELINE_MODE"] == "shared_sqs"
+    assert "RADIO_PIPELINE_MODE" not in values, "the mode switch was removed"
     assert values["RADIO_QUEUE_BACKEND"] == "sqs"
     assert values["RADIO_SEGMENT_STORE"] == "local"
+
+
+def test_the_template_states_both_capacity_numbers() -> None:
+    """Requested is a control-plane bound; active is compute. Reading one as
+    the other is how "1,000 stations" becomes a claim about live decoding."""
+    values = parse_env_template()
+    assert values["RADIO_MAX_REQUESTED_UNIQUE_STATIONS"] == "1000"
+    assert values["RADIO_MAX_ACTIVE_UNIQUE_STATIONS"] == "1"
 
 
 def test_the_template_keeps_speech_over_music() -> None:

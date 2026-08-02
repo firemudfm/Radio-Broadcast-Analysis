@@ -212,6 +212,10 @@ class CapacityView(ApiModel):
     load_15m: float | None = None
     active_stations: int
     active_station_limit: int
+    # Additive. The active limit is compute; this is the control-plane bound on
+    # how many DISTINCT stations campaigns may request. Existing clients that
+    # ignore it are unaffected.
+    requested_station_limit: int = 1000
     pending_probe: int = 0
     pending_capacity: int = 0
     oldest_processing_job_seconds: int | None = None
@@ -233,6 +237,10 @@ class StationEstimateView(ApiModel):
     pending_capacity: int
     failed: int
     active_station_limit: int
+    # Additive. The active limit is compute; this is the control-plane bound on
+    # how many DISTINCT stations campaigns may request. Existing clients that
+    # ignore it are unaffected.
+    requested_station_limit: int = 1000
     capacity_reason: str
     station_uuids_preview: list[str] = Field(default_factory=list, max_length=20)
 

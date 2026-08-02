@@ -22,7 +22,7 @@ NOW = datetime(2026, 7, 27, 12, 0, 0, tzinfo=UTC)
 
 #: Fields the current frontend reads. Removing or repurposing any of them is a
 #: breaking change, so they are asserted explicitly rather than by shape.
-LEGACY_HEALTH_FIELDS = frozenset(
+EXISTING_HEALTH_FIELDS = frozenset(
     {
         "status",
         "database",
@@ -69,7 +69,7 @@ def build_app(settings: Settings, database: Database, *, spool_percent: float = 
 
 
 @pytest.fixture
-def legacy_settings(tmp_path) -> Settings:
+def base_settings(tmp_path) -> Settings:
     return Settings(
         RADIO_S3_BUCKET="bucket",
         RADIO_AUDIO_TOKEN_SECRET="x" * 48,
@@ -85,14 +85,13 @@ def shared_settings(tmp_path) -> Settings:
         RADIO_AUDIO_TOKEN_SECRET="x" * 48,
         RADIO_DATABASE_PATH=tmp_path / "radio.db",
         RADIO_SYNC_ENABLED=False,
-        RADIO_PIPELINE_MODE="shared_sqs",
         RADIO_QUEUE_BACKEND="memory",
     )
 
 
 @pytest.fixture
-def database(legacy_settings: Settings) -> Database:
-    db = Database(legacy_settings.RADIO_DATABASE_PATH)
+def database(base_settings: Settings) -> Database:
+    db = Database(base_settings.RADIO_DATABASE_PATH)
     db.connect()
     try:
         yield db
@@ -110,27 +109,33 @@ def beat_all(database: Database) -> None:
 # --- backward compatibility ---------------------------------------------------
 
 
-def test_healthz_keeps_every_existing_field(legacy_settings: Settings, database: Database) -> None:
-    with TestClient(build_app(legacy_settings, database)) as client:
+def test_healthz_keeps_every_existing_field(base_settings: Settings, database: Database) -> None:
+    # Heartbeats first: with one pipeline, a deployment whose workers are absent
+    # is legitimately `degraded`. This test is about the FIELD SHAPE the frontend
+    # consumes, so it asks a healthy deployment.
+    beat_all(database)
+    with TestClient(build_app(base_settings, database)) as client:
         response = client.get("/healthz")
     assert response.status_code == 200
     body = response.json()
-    assert LEGACY_HEALTH_FIELDS <= set(body), "an existing client must not break"
+    assert EXISTING_HEALTH_FIELDS <= set(body), "an existing client must not break"
     assert body["auth_mode"] == "none", "the pilot stays unauthenticated"
     assert body["storage_mode"] == "sqlite"
     assert body["status"] == "ok"
 
 
-def test_healthz_pipeline_block_is_absent_in_legacy_mode(
-    legacy_settings: Settings, database: Database
+def test_healthz_always_reports_the_shared_pipeline(
+    base_settings: Settings, database: Database
 ) -> None:
-    with TestClient(build_app(legacy_settings, database)) as client:
+    """There is one pipeline, so the block is never absent -- a missing block
+    used to mean `legacy`, and nothing should be able to mean that now."""
+    with TestClient(build_app(base_settings, database)) as client:
         body = client.get("/healthz").json()
-    assert body["pipeline_mode"] == "legacy"
-    assert body["pipeline"] is None, "legacy deployments report no pipeline block"
+    assert body["pipeline_mode"] == "shared_sqs"
+    assert body["pipeline"] is not None
 
 
-def test_healthz_adds_the_pipeline_block_in_shared_mode(
+def test_healthz_includes_the_pipeline_block(
     shared_settings: Settings, database: Database
 ) -> None:
     beat_all(database)
@@ -139,7 +144,7 @@ def test_healthz_adds_the_pipeline_block_in_shared_mode(
     assert body["pipeline_mode"] == "shared_sqs"
     assert body["pipeline"]["unique_active_station_count"] == 0
     assert body["pipeline"]["components"]["listener"] == "ok"
-    assert LEGACY_HEALTH_FIELDS <= set(body)
+    assert EXISTING_HEALTH_FIELDS <= set(body)
 
 
 def test_a_dead_worker_degrades_health(
@@ -154,15 +159,18 @@ def test_a_dead_worker_degrades_health(
 # --- readiness ----------------------------------------------------------------
 
 
-def test_readyz_is_ready_in_legacy_mode(
-    legacy_settings: Settings, database: Database
+def test_readyz_is_not_ready_without_workers(
+    base_settings: Settings, database: Database
 ) -> None:
-    with TestClient(build_app(legacy_settings, database)) as client:
+    """Readiness requires every worker role. A database-only "ready" was the
+    legacy answer, and reporting it now would claim a pipeline that is capturing
+    audio nobody transcribes."""
+    with TestClient(build_app(base_settings, database)) as client:
         response = client.get("/readyz")
-    assert response.status_code == 200
+    assert response.status_code == 503
     body = response.json()
-    assert body["ready"] is True
-    assert body["pipeline_mode"] == "legacy"
+    assert body["ready"] is False
+    assert body["pipeline_mode"] == "shared_sqs"
 
 
 def test_readyz_returns_503_when_workers_are_missing(

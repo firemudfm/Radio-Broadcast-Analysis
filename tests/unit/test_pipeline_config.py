@@ -9,21 +9,38 @@ from app.config import Settings
 BASE = {"RADIO_S3_BUCKET": "bucket", "RADIO_AUDIO_TOKEN_SECRET": "x" * 40}
 
 
-def test_pipeline_mode_defaults_to_legacy() -> None:
-    """The default must never change: an existing deployment upgrades inert."""
-    settings = Settings(**BASE)
-    assert settings.RADIO_PIPELINE_MODE == "legacy"
-    assert settings.shared_pipeline_enabled is False
+def test_there_is_no_pipeline_mode_setting() -> None:
+    """One pipeline means no switch. A mode field would immediately grow a
+    second runtime branch behind it."""
+    assert "RADIO_PIPELINE_MODE" not in Settings.model_fields
+    assert not hasattr(Settings(**BASE), "shared_pipeline_enabled")
 
 
-def test_unknown_pipeline_mode_is_rejected() -> None:
-    with pytest.raises(ValidationError, match="legacy"):
-        Settings(**BASE, RADIO_PIPELINE_MODE="turbo")
+def test_a_stale_legacy_environment_refuses_to_start(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """`extra="ignore"` would silently drop this, so an operator whose
+    application.env still says legacy would get the shared pipeline anyway and
+    never learn their file was stale."""
+    monkeypatch.setenv("RADIO_PIPELINE_MODE", "legacy")
+    with pytest.raises(ValidationError, match="no longer exist"):
+        Settings(**BASE)
+
+
+def test_the_migration_message_names_the_setting_and_the_replacement(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setenv("RADIO_MAX_ACTIVE_STATIONS", "4")
+    with pytest.raises(ValidationError) as error:
+        Settings(**BASE)
+    message = str(error.value)
+    assert "RADIO_MAX_ACTIVE_STATIONS" in message
+    assert "RADIO_MAX_ACTIVE_UNIQUE_STATIONS" in message
 
 
 def test_shared_sqs_requires_queue_urls() -> None:
     with pytest.raises(ValidationError, match="RADIO_TRANSCRIPTION_QUEUE_URL is required"):
-        Settings(**BASE, RADIO_PIPELINE_MODE="shared_sqs", RADIO_QUEUE_BACKEND="sqs")
+        Settings(**BASE, RADIO_QUEUE_BACKEND="sqs")
 
 
 def test_shared_sqs_requires_fifo_queues() -> None:
@@ -31,17 +48,36 @@ def test_shared_sqs_requires_fifo_queues() -> None:
     with pytest.raises(ValidationError, match="FIFO"):
         Settings(
             **BASE,
-            RADIO_PIPELINE_MODE="shared_sqs",
             RADIO_QUEUE_BACKEND="sqs",
             RADIO_TRANSCRIPTION_QUEUE_URL="https://sqs.eu-north-1.amazonaws.com/1/plain",
             RADIO_ANALYSIS_QUEUE_URL="https://sqs.eu-north-1.amazonaws.com/1/a.fifo",
         )
 
 
-def test_shared_sqs_with_memory_backend_needs_no_queue_urls() -> None:
-    """compose.dev and the test suite run shared_sqs without AWS."""
-    settings = Settings(**BASE, RADIO_PIPELINE_MODE="shared_sqs", RADIO_QUEUE_BACKEND="memory")
-    assert settings.shared_pipeline_enabled is True
+def test_the_memory_backend_needs_no_queue_urls() -> None:
+    """compose.dev and the test suite run without AWS. The memory queue is a
+    test double, and production is barred from it by APP_ENV."""
+    settings = Settings(**BASE, RADIO_QUEUE_BACKEND="memory")
+    assert settings.RADIO_QUEUE_BACKEND == "memory"
+
+
+def test_production_refuses_the_memory_queue() -> None:
+    """It loses every message on restart, so the system would look healthy
+    while producing nothing."""
+    with pytest.raises(ValidationError, match="RADIO_QUEUE_BACKEND=sqs"):
+        Settings(**BASE, APP_ENV="production", RADIO_QUEUE_BACKEND="memory")
+
+
+def test_production_refuses_a_fake_asr_backend() -> None:
+    with pytest.raises(ValidationError, match="real ASR backend"):
+        Settings(
+            **BASE,
+            APP_ENV="production",
+            RADIO_QUEUE_BACKEND="sqs",
+            RADIO_TRANSCRIPTION_QUEUE_URL="https://sqs.eu-north-1.amazonaws.com/1/t.fifo",
+            RADIO_ANALYSIS_QUEUE_URL="https://sqs.eu-north-1.amazonaws.com/1/a.fifo",
+            RADIO_ASR_BACKEND="fake",
+        )
 
 
 def test_s3_segment_store_requires_a_bucket() -> None:
@@ -49,7 +85,6 @@ def test_s3_segment_store_requires_a_bucket() -> None:
         Settings(
             RADIO_S3_BUCKET="",
             RADIO_AUDIO_TOKEN_SECRET="x" * 40,
-            RADIO_PIPELINE_MODE="shared_sqs",
             RADIO_QUEUE_BACKEND="memory",
             RADIO_SEGMENT_STORE="s3",
         )
@@ -131,6 +166,7 @@ def test_content_policy_defaults_exclude_song_lyrics() -> None:
 def test_capacity_default_is_conservative() -> None:
     """A regression guard against someone 'optimising' this to 1000."""
     settings = Settings(**BASE)
-    assert settings.RADIO_MAX_ACTIVE_UNIQUE_STATIONS == 8
+    assert settings.RADIO_MAX_ACTIVE_UNIQUE_STATIONS == 1
+    assert settings.RADIO_MAX_REQUESTED_UNIQUE_STATIONS == 1000
     assert settings.RADIO_LISTENER_SHARD_COUNT == 1
     assert settings.RADIO_LISTENER_SHARD_INDEX == 0
