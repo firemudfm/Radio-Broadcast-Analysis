@@ -276,6 +276,25 @@ Resources:
                   # so streaming it would silently cut off the very marker the
                   # workflow checks for. The full log stays on the host; SSM
                   # carries a concise result.
+                  # The PARENT is created separately and owned by the radio
+                  # account. `install -d` creates missing parents with the owner
+                  # given here, so creating ${LOG_DIR} in one step left
+                  # /var/lib/radio/logs root-owned -- and the deployment's own
+                  # ownership gate then refused, deadlocking every first install
+                  # on a directory the deployment had just created.
+                  #
+                  # The deployment scripts also repair this, because this
+                  # document is pinned in CloudFormation and an older version
+                  # may still be live.
+                  if [ ! -d "${DATA_ROOT}/logs" ]; then
+                    radio_uid="$(id -u radio 2>/dev/null || echo '')"
+                    radio_gid="$(id -g radio 2>/dev/null || echo '')"
+                    if [ -n "${radio_uid}" ] && [ -n "${radio_gid}" ]; then
+                      install -d -m 0750 -o "${radio_uid}" -g "${radio_gid}" "${DATA_ROOT}/logs"
+                    else
+                      install -d -m 0750 "${DATA_ROOT}/logs"
+                    fi
+                  fi
                   install -d -m 0750 -o root -g root "${LOG_DIR}"
                   stamp="$(date -u +%Y%m%dT%H%M%SZ)"
                   log_file="${LOG_DIR}/deploy-${commit}-${stamp}.log"

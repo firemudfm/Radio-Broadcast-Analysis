@@ -182,8 +182,45 @@ for directory in database spool evidence logs backups releases deploy models; do
     if [ ! -d "${path}" ]; then
         log "creating ${path}"
         install -d -o "${RADIO_UID}" -g "${RADIO_GID}" -m 0750 "${path}"
+        continue
+    fi
+
+    # The directory already exists. If ROOT owns it, this automation created it
+    # itself and got the owner wrong -- take it back.
+    #
+    # The concrete case this fixes is a first-install deadlock. The fixed SSM
+    # document writes its deployment log to ${DATA_ROOT}/logs/deployments with
+    #
+    #     install -d -m 0750 -o root -g root "${LOG_DIR}"
+    #
+    # and `install -d` creates the missing PARENT with the same owner. So
+    # ${DATA_ROOT}/logs appears root-owned moments before the ownership gate
+    # below runs, and every first install fails on a directory the deployment
+    # had just created. The SSM document is pinned in CloudFormation and cannot
+    # be corrected without a stack update, so the repair belongs here, where it
+    # ships with the release.
+    #
+    # Deliberately NOT recursive, and deliberately only from root. A recursive
+    # chown across a spool full of evidence during a deploy is exactly what
+    # require_writable_ownership refuses to do, and taking a directory away from
+    # some other non-root owner would hide a real misconfiguration.
+    owner="$(stat -c '%u' "${path}" 2>/dev/null || echo '?')"
+    if [ "${owner}" = "0" ] && [ "${RADIO_UID}" != "0" ]; then
+        warn "${path} is root-owned; the deployment created it, so reclaiming it"
+        chown "${RADIO_UID}:${RADIO_GID}" "${path}"
+        chmod 0750 "${path}"
+        log "${path} now owned by ${RADIO_UID}:${RADIO_GID} (not recursive)"
     fi
 done
+
+# Deployment logs stay root-only INSIDE the radio-owned logs directory: they
+# carry host output, and the application account has no reason to read them.
+DEPLOY_LOG_DIR="${DATA_ROOT}/logs/deployments"
+if [ -d "${DEPLOY_LOG_DIR}" ]; then
+    chown root:root "${DEPLOY_LOG_DIR}" 2>/dev/null || true
+    chmod 0750 "${DEPLOY_LOG_DIR}" 2>/dev/null || true
+fi
+
 require_writable_ownership "${RADIO_UID}" "${RADIO_GID}" \
     "${DATA_ROOT}/database" "${DATA_ROOT}/spool" "${DATA_ROOT}/evidence" \
     "${DATA_ROOT}/logs" "${DATA_ROOT}/backups"
