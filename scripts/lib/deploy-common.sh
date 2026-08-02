@@ -87,19 +87,70 @@ validate_full_sha() {
     fi
 }
 
+# git_in_repo <repo> [git args...]
+#
+# git against a repository that belongs to someone else.
+#
+# The source clone is owned by ec2-user and the deployment runs as root, and git
+# refuses to operate on a repository owned by another account -- "detected
+# dubious ownership" -- because a repository is executable configuration: its
+# config can name hooks, pagers and external diff commands that would then run
+# as root. That refusal is correct and must not be waived globally.
+#
+# So drop to the owner rather than adding a safe.directory exception. root still
+# never runs git inside a directory another account can write, and the caller
+# gets a working answer instead of a misleading one: every check below discards
+# git's stderr, so an ownership refusal reads as "the commit is not there".
+git_in_repo() {
+    local repo="$1"; shift
+    local owner home
+    owner="$(stat -c '%U' "${repo}/.git" 2>/dev/null || echo '')"
+    if [ "$(id -u)" = "0" ] && [ -n "${owner}" ] && [ "${owner}" != "root" ] \
+       && [ "${owner}" != "UNKNOWN" ] && command -v runuser >/dev/null 2>&1; then
+        home="$(getent passwd "${owner}" 2>/dev/null | cut -d: -f6)"
+        runuser -u "${owner}" -- env HOME="${home:-/home/${owner}}" \
+            git -C "${repo}" "$@"
+        return $?
+    fi
+    git -C "${repo}" "$@"
+}
+
+# require_readable_repo <repo>
+#
+# Answer the question the other checks cannot: is this a repository git will
+# actually talk to? Without it, an unreadable repository is reported as a
+# missing commit, and the operator goes looking for the wrong problem.
+require_readable_repo() {
+    local repo="$1" output
+    if ! output="$(git_in_repo "${repo}" rev-parse --git-dir 2>&1)"; then
+        fail "git cannot read ${repo}"
+        printf '  %s\n' "${output}" >&2
+        remediation "check the ownership of ${repo}: git refuses a repository owned by another account, and this deployment runs as root"
+        die "${EXIT_PRECONDITION}" "source repository is not readable"
+    fi
+}
+
 # commit_exists_locally <repo> <sha>
 #
 # Deliberately local-only: this script never fetches. Whoever approved the
 # commit is responsible for making it present.
 commit_exists_locally() {
     local repo="$1" sha="$2"
-    git -C "${repo}" cat-file -e "${sha}^{commit}" 2>/dev/null
+    git_in_repo "${repo}" cat-file -e "${sha}^{commit}" 2>/dev/null
 }
 
 # require_clean_source <repo>
 require_clean_source() {
-    local repo="$1"
-    if [ -n "$(git -C "${repo}" status --porcelain 2>/dev/null)" ]; then
+    local repo="$1" status
+    # Fails CLOSED. `$(...)` of a failing git is empty, which is
+    # indistinguishable from a clean tree -- so a git that cannot run at all
+    # would have certified the source as clean.
+    if ! status="$(git_in_repo "${repo}" status --porcelain 2>&1)"; then
+        fail "git status failed in ${repo}"
+        printf '  %s\n' "${status}" >&2
+        die "${EXIT_PRECONDITION}" "cannot determine whether the source tree is clean"
+    fi
+    if [ -n "${status}" ]; then
         die "${EXIT_PRECONDITION}" \
             "source repository ${repo} has uncommitted changes; refusing to package an unreviewed tree"
     fi
@@ -818,7 +869,10 @@ create_release() {
     staging="$(mktemp -d "${commit_dir}/.staging-${stage}.XXXXXX")" \
         || die "${EXIT_PRECONDITION}" "cannot create staging directory under ${commit_dir}"
 
-    if ! git -C "${repo}" archive --format=tar "${sha}" | tar -x -C "${staging}"; then
+    # The archive is produced by the repository's owner and extracted by root:
+    # only the git side needs to drop privileges, and the staging directory
+    # stays root-owned throughout.
+    if ! git_in_repo "${repo}" archive --format=tar "${sha}" | tar -x -C "${staging}"; then
         rm -rf "${staging}"
         die "${EXIT_PRECONDITION}" "git archive failed for ${sha}"
     fi

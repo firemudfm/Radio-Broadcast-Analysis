@@ -120,6 +120,10 @@ log "stage ${STAGE}$([ "${DRY_RUN}" -eq 1 ] && printf ' (dry run)')"
 # ---------------------------------------------------------------------------
 stage "2/16  Validating the source repository"
 [ -d "${REPO_DIR}/.git" ] || die "${EXIT_PRECONDITION}" "${REPO_DIR} is not a git repository"
+# Before asking whether the commit is there, establish that git can read the
+# repository at all -- otherwise an ownership refusal is reported as a missing
+# commit and sends the operator looking for the wrong problem.
+require_readable_repo "${REPO_DIR}"
 commit_exists_locally "${REPO_DIR}" "${COMMIT}" \
     || die "${EXIT_PRECONDITION}" \
        "commit ${COMMIT} is not present in ${REPO_DIR}. This script never fetches; make the approved commit available first."
