@@ -20,6 +20,7 @@ stations and takes minutes at a thousand -- not performance targets.
 """
 from __future__ import annotations
 
+import json
 import time
 
 import pytest
@@ -298,3 +299,221 @@ def test_ring_buffer_memory_is_a_predictable_constant() -> None:
     # The configured default must fit comfortably inside the listener's
     # 1024 MiB container limit from compose.prod.yaml.
     assert per_station * settings.RADIO_MAX_ACTIVE_UNIQUE_STATIONS < 256 * 1_048_576
+
+
+# --- production capacity truth ------------------------------------------------
+#
+# The tests above run with eight active slots so sharing behaviour is visible.
+# Production runs with ONE. These pin what that actually means, because "we
+# support 1,000 stations" is only ever true of the control plane.
+
+
+@pytest.fixture
+def production_settings(tmp_path) -> Settings:
+    """The real production capacity: request a thousand, decode one."""
+    return Settings(
+        RADIO_S3_BUCKET="load-test",
+        RADIO_AUDIO_TOKEN_SECRET="x" * 48,
+        RADIO_DATABASE_PATH=tmp_path / "radio.db",
+        RADIO_SPOOL_PATH=tmp_path / "spool",
+        RADIO_QUEUE_BACKEND="memory",
+        RADIO_MAX_REQUESTED_UNIQUE_STATIONS=1000,
+        RADIO_MAX_ACTIVE_UNIQUE_STATIONS=1,
+        RADIO_LISTENER_MAX_SESSIONS=1,
+        RADIO_MAX_STATIONS_PER_CAMPAIGN=100,
+    )
+
+
+@pytest.fixture
+def production_database(production_settings: Settings) -> Database:
+    db = Database(production_settings.RADIO_DATABASE_PATH)
+    db.connect()
+    try:
+        yield db
+    finally:
+        db.close()
+
+
+def test_one_thousand_requested_stations_park_nine_hundred_and_ninety_nine(
+    production_settings: Settings, production_database: Database
+) -> None:
+    """requested=1000, active=1, pending_capacity=999.
+
+    This is the shape of the truth. A thousand stations are accepted, recorded
+    and indexed; exactly one is decoded; the other 999 wait for a slot. None is
+    silently dropped, and none is silently started.
+    """
+    # Ten campaigns of a hundred stations each. One campaign of a thousand is
+    # refused by RADIO_MAX_STATIONS_PER_CAMPAIGN, which is a deliberate product
+    # limit and not something a load test should widen.
+    for campaign in range(10):
+        create_campaign(
+            production_database,
+            name=f"Everything {campaign:02d}",
+            station_ids=[
+                f"rb-prod-{campaign * 100 + index:04d}" for index in range(100)
+            ],
+            keywords=[("NVIDIA", "brand")],
+        )
+
+    planner = SubscriptionPlanner(production_settings, production_database)
+    result = planner.plan_once()
+
+    assert result.unique_requested == 1000, "every requested station is recorded"
+    assert result.unique_active == 1, "one station is decoded on this host"
+    assert result.pending_capacity == 999, "the rest wait; none is dropped"
+
+    snapshot = planner.capacity_snapshot()
+    assert snapshot["unique_requested_station_count"] == 1000
+    assert snapshot["unique_active_station_count"] == 1
+    assert snapshot["pending_capacity_station_count"] == 999
+    assert snapshot["active_unique_station_limit"] == 1
+
+    # Nothing lost: the two states account for every requested station.
+    assert (
+        snapshot["unique_active_station_count"]
+        + snapshot["pending_capacity_station_count"]
+        == snapshot["unique_requested_station_count"]
+    )
+
+
+def test_a_parked_station_says_why(
+    production_settings: Settings, production_database: Database
+) -> None:
+    """An operator looking at 999 parked stations must not have to guess."""
+    create_campaign(
+        production_database,
+        name="Everything",
+        station_ids=[f"rb-prod-{index:04d}" for index in range(50)],
+        keywords=[("NVIDIA", "brand")],
+    )
+    SubscriptionPlanner(production_settings, production_database).plan_once()
+
+    parked = production_database.read_all(
+        "SELECT state_reason FROM station_subscriptions WHERE state='pending_capacity'"
+    )
+    assert len(parked) == 49
+    assert all("limit reached" in str(row["state_reason"]) for row in parked)
+
+
+def test_one_hundred_campaigns_on_one_station_open_one_subscription(
+    production_settings: Settings, production_database: Database
+) -> None:
+    """The core economic claim. A hundred customers watching the same station
+    is one decode, not a hundred -- and one decode is all this host has."""
+    for index in range(100):
+        create_campaign(
+            production_database,
+            name=f"Campaign {index:03d}",
+            station_ids=["rb-shared-0001"],
+            keywords=[(f"Brand{index:03d}", "brand")],
+        )
+
+    planner = SubscriptionPlanner(production_settings, production_database)
+    result = planner.plan_once()
+    snapshot = planner.capacity_snapshot()
+
+    assert snapshot["campaign_station_reference_count"] == 100, "100 campaign links"
+    assert result.unique_requested == 1, "one distinct station"
+    assert result.unique_active == 1, "one subscription, one decode"
+    assert result.pending_capacity == 0
+
+    rows = production_database.read_all(
+        "SELECT station_id, reference_count FROM station_subscriptions"
+    )
+    assert len(rows) == 1, "one row, not one hundred"
+    assert rows[0]["reference_count"] == 100
+
+
+def test_removing_one_of_a_hundred_campaigns_keeps_the_station(
+    production_settings: Settings, production_database: Database
+) -> None:
+    """Reference counting, not last-writer-wins. Ninety-nine campaigns still
+    need this station."""
+    for index in range(100):
+        create_campaign(
+            production_database,
+            name=f"Campaign {index:03d}",
+            station_ids=["rb-shared-0001"],
+            keywords=[(f"Brand{index:03d}", "brand")],
+        )
+    planner = SubscriptionPlanner(production_settings, production_database)
+    planner.plan_once()
+
+    production_database.write(
+        lambda connection: connection.execute(
+            "DELETE FROM campaigns WHERE name='Campaign 000'"
+        )
+    )
+    result = planner.plan_once()
+
+    assert result.unique_active == 1, "the station is still needed"
+    rows = production_database.read_all(
+        "SELECT reference_count FROM station_subscriptions WHERE state != 'stopped'"
+    )
+    assert rows[0]["reference_count"] == 99
+
+
+def test_ten_thousand_keyword_bindings_build_one_index_per_station(
+    production_settings: Settings, production_database: Database
+) -> None:
+    """200 campaigns x 50 keywords, all on one station: one combined index.
+
+    Fifty per campaign is the product limit; a load test widens the campaign
+    count rather than the limit.
+    """
+    for campaign in range(200):
+        create_campaign(
+            production_database,
+            name=f"Keyword Campaign {campaign:03d}",
+            station_ids=["rb-shared-0001"],
+            keywords=[
+                (f"Brand{campaign:03d}x{keyword:02d}", "brand")
+                for keyword in range(50)
+            ],
+        )
+
+    planner = SubscriptionPlanner(production_settings, production_database)
+    planner.plan_once()
+
+    indexes = production_database.read_all(
+        "SELECT station_id, keyword_count, campaign_count, payload_json "
+        "FROM station_keyword_index_versions ORDER BY version DESC"
+    )
+    assert len(indexes) == 1, "one combined index per station, not per campaign"
+    assert indexes[0]["campaign_count"] == 200
+    assert indexes[0]["keyword_count"] == 10_000, "every binding is in the one index"
+
+    payload = json.loads(indexes[0]["payload_json"])
+    # One term per distinct surface form. Every keyword here is unique, so the
+    # term count matches the binding count.
+    assert len(payload["terms"]) == 10_000
+
+
+def test_duplicate_terms_collapse_but_keep_every_owner(
+    production_settings: Settings, production_database: Database
+) -> None:
+    """Fifty campaigns tracking the same word is one scan term and fifty
+    owners. Scanning it fifty times would be fifty times the CPU for one
+    answer; losing the owners would break attribution."""
+    for index in range(50):
+        create_campaign(
+            production_database,
+            name=f"Duplicate {index:02d}",
+            station_ids=["rb-shared-0001"],
+            keywords=[("NVIDIA", "brand")],
+        )
+
+    SubscriptionPlanner(production_settings, production_database).plan_once()
+    index_row = production_database.read_all(
+        "SELECT payload_json FROM station_keyword_index_versions"
+    )[0]
+    terms = json.loads(index_row["payload_json"])["terms"]
+
+    scan_terms = {str(term["normalized"]).casefold() for term in terms}
+    assert scan_terms == {"nvidia"}, "one term to scan for, not fifty"
+
+    # One term, fifty owning keywords. Losing the owners would break attribution;
+    # scanning fifty times would be fifty times the CPU for one answer.
+    owning_keywords = {kid for term in terms for kid in term["keyword_ids"]}
+    assert len(owning_keywords) == 50, "every owning keyword survives de-duplication"
