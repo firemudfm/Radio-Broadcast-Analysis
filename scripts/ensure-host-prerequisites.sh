@@ -252,6 +252,66 @@ else
     remediation "sudo systemctl edit docker  # add [Unit] ${MOUNT_REQUIREMENT}"
 fi
 
+# require_usable_image_store <data root>
+#
+# A CONFIGURED root is not a USABLE one, and `docker info` cannot tell them
+# apart. Docker can start before the data volume is mounted -- exactly what the
+# RequiresMountsFor above exists to prevent -- and the daemon then holds a
+# storage driver initialised on the ROOT filesystem while the path resolves to
+# the volume mounted over it. Everything reports correctly right up until a
+# build fails with:
+#
+#   failed to prepare ... : symlink ../<id>/diff
+#   /var/lib/radio/docker/overlay2/l/<link>: no such file or directory
+#
+# The overlay2 driver creates its `l` link directory when it initialises,
+# whether or not any image exists, so a missing `l` means the store the daemon
+# is using is not the one at this path. Restarting is the fix, and it is safe
+# only when nothing is running -- so that is the condition.
+require_usable_image_store() {
+    local root="$1" driver running attempt
+    driver="$(docker info --format '{{.Driver}}' 2>/dev/null || echo '')"
+    if [ "${driver}" != "overlay2" ]; then
+        log "storage driver ${driver:-unknown}; image store layout not checked"
+        return 0
+    fi
+    if [ -d "${root}/overlay2/l" ]; then
+        log "image store initialised at ${root} (driver overlay2)"
+        return 0
+    fi
+
+    warn "${root}/overlay2/l is missing: the daemon's image store is not on the filesystem now mounted here"
+    # Fail closed: if the daemon will not say what is running, the one thing we
+    # must not do is restart it and find out.
+    if ! running="$(docker ps --quiet 2>/dev/null | wc -l | tr -d ' ')"; then
+        die "${EXIT_PRECONDITION}" \
+            "cannot list running containers; refusing to restart Docker without knowing what it would stop"
+    fi
+    if [ "${running}" != "0" ]; then
+        # Never trade someone's running service for a build.
+        fail "${running} container(s) are running; restarting Docker would stop them"
+        remediation "stop the running containers, then: sudo systemctl restart docker"
+        die "${EXIT_PRECONDITION}" \
+            "Docker must be restarted to see its data volume, which is not safe while containers are running"
+    fi
+
+    log "no containers are running; restarting docker so it re-initialises against ${root}"
+    systemctl restart docker \
+        || die "${EXIT_PRECONDITION}" "could not restart docker"
+    for attempt in $(seq 1 30); do
+        docker info >/dev/null 2>&1 && break
+        sleep 1
+    done
+    docker info >/dev/null 2>&1 \
+        || die "${EXIT_PRECONDITION}" "docker did not come back after being restarted"
+    if [ ! -d "${root}/overlay2/l" ]; then
+        fail "${root}/overlay2/l is still missing after a restart"
+        remediation "confirm the data volume is mounted at /var/lib/radio and that ${root} is writable"
+        die "${EXIT_PRECONDITION}" "the Docker image store is unusable"
+    fi
+    log "docker restarted; image store now initialised at ${root}"
+}
+
 if [ "${DRY_RUN}" -eq 0 ]; then
     if ! systemctl is-enabled docker >/dev/null 2>&1; then
         log "enabling docker"
@@ -268,6 +328,7 @@ if [ "${DRY_RUN}" -eq 0 ]; then
             "Docker is running with root dir '${RUNTIME_DATA_ROOT}', expected '${EXPECTED_DATA_ROOT}'"
     fi
     log "docker active with root dir ${RUNTIME_DATA_ROOT}"
+    require_usable_image_store "${RUNTIME_DATA_ROOT}"
 else
     log "dry run: not starting or inspecting the docker service"
 fi
