@@ -29,12 +29,40 @@ from . import BaseWorker, bootstrap
 logger = logging.getLogger(__name__)
 
 
+def _build_url_resolver(settings, database):
+    """The planner's bridge from a campaign's station id to a stream URL.
+
+    Built here rather than imported at module scope so a Radio Browser outage,
+    or a host with no outbound access, degrades to "stations stay unresolved"
+    instead of a planner that will not start at all.
+    """
+    try:
+        from ..services.radio_browser import RadioBrowserClient
+        from ..services.station_url_resolver import StationUrlResolver
+
+        client = RadioBrowserClient(
+            user_agent=settings.RADIO_BROWSER_USER_AGENT,
+            request_timeout_seconds=settings.RADIO_BROWSER_REQUEST_TIMEOUT_SECONDS,
+            max_attempts=settings.RADIO_BROWSER_MAX_ATTEMPTS,
+            mirror_refresh_seconds=settings.RADIO_BROWSER_MIRROR_REFRESH_SECONDS,
+            country_cache_seconds=settings.RADIO_BROWSER_COUNTRY_CACHE_SECONDS,
+            search_cache_seconds=settings.RADIO_BROWSER_SEARCH_CACHE_SECONDS,
+            station_cache_seconds=settings.RADIO_BROWSER_STATION_CACHE_SECONDS,
+        )
+        return StationUrlResolver(database, client=client)
+    except Exception:
+        logger.exception("Stream URL resolution is unavailable; stations will stay unresolved")
+        return None
+
+
 class PlannerWorker(BaseWorker):
     role = "planner"
 
     def __init__(self, settings, database, *, queues=None, **kwargs) -> None:
         super().__init__(settings, database, **kwargs)
-        self.planner = SubscriptionPlanner(settings, database)
+        self.planner = SubscriptionPlanner(
+            settings, database, url_resolver=_build_url_resolver(settings, database)
+        )
         self.dispatcher = OutboxDispatcher(
             database,
             queues if queues is not None else build_queues(settings),

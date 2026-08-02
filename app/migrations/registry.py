@@ -518,6 +518,28 @@ _M0006 = Migration(
     ),
 )
 
-MIGRATIONS: tuple[Migration, ...] = (_M0003, _M0004, _M0005, _M0006)
+# --- 0007: stream URL resolution backoff -------------------------------------
+#
+# The planner resolves a subscription's stream URL through Radio Browser when
+# the catalogue has none. A station that cannot be resolved -- a dead uuid, a
+# mirror outage -- must not be retried on every five-second planner cycle:
+# /json/url counts a click for the station, so a permanent failure would spam a
+# free community service and distort its rankings forever.
+#
+# Additive and nullable. NULL means "never attempted", which is exactly the
+# right default for every row that already exists.
+
+_M0007 = Migration(
+    version=7,
+    name="station_stream_url_retry_after",
+    statements=(
+        """
+        ALTER TABLE station_subscriptions
+          ADD COLUMN stream_url_retry_after_utc TEXT
+        """,
+    ),
+)
+
+MIGRATIONS: tuple[Migration, ...] = (_M0003, _M0004, _M0005, _M0006, _M0007)
 
 __all__ = ["MIGRATIONS"]

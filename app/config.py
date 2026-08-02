@@ -477,6 +477,19 @@ class Settings(BaseSettings):
     # -- planner --------------------------------------------------------------
     RADIO_PLANNER_POLL_SECONDS: float = 5.0
 
+    # A campaign stores a station id; the listener needs a URL. The planner
+    # resolves the gap through Radio Browser when the catalogue has none, and
+    # writes the answer back so it is asked once per station rather than once
+    # per cycle.
+    #
+    # Bounded per cycle because a campaign may reference hundreds of stations
+    # at once, and resolving them all in one tick would stall the planner loop
+    # behind a burst of HTTP calls to a free community service.
+    RADIO_STATION_URL_RESOLVE_PER_CYCLE: int = 10
+    # Backoff after a failed resolution. /json/url counts a click, so a dead
+    # station must not be retried every five seconds forever.
+    RADIO_STATION_URL_RETRY_SECONDS: int = 900
+
     # -- observability --------------------------------------------------------
     RADIO_LOG_FORMAT: LogFormat = "text"
     RADIO_LOG_TRANSCRIPT_BODIES: bool = False
