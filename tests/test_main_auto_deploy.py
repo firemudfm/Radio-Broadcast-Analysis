@@ -1008,3 +1008,230 @@ def test_the_health_gate_still_fails_closed_on_a_missing_check() -> None:
     lib = (SCRIPTS / "lib" / "deploy-common.sh").read_text(encoding="utf-8")
     assert "defines no healthcheck" in lib
     assert "none)" in lib
+
+
+# =============================================================================
+# Q. Production configuration, actually executed
+# =============================================================================
+#
+# Two first installs failed in a row inside ensure-production-config.sh, and the
+# suite passed both times, because every test above reads the script as TEXT and
+# none of them ever RAN it:
+#
+#   * the template named the secret placeholder twice -- once in a comment --
+#     and the substitution refuses that, because replacing every occurrence
+#     would have written the generated secret into the comment;
+#   * the structural validator escaped a quote inside an f-string expression,
+#     which is a SyntaxError before Python 3.12, and the host runs the system
+#     python3.
+#
+# Neither is visible to a grep for a forbidden string. Both are caught the
+# moment the script is executed once, so these tests execute it.
+
+PY3 = shutil.which("python3") or shutil.which("python")
+
+# These tests RUN the script, which enforces 0640 on every environment file.
+# Windows does not honour POSIX modes -- a file chmodded 0640 reads back 0644 --
+# so the permission gate fires before the script reaches what is being tested.
+# CI runs on Linux, which is where the behaviour actually matters.
+runs_the_script = pytest.mark.skipif(
+    PY3 is None or os.name != "posix",
+    reason="needs python3 and a filesystem that honours POSIX modes",
+)
+
+
+def seed_env_dir(directory: Path) -> Path:
+    """A host with infrastructure.env provisioned and nothing else."""
+    directory.mkdir(parents=True, exist_ok=True)
+    infrastructure = directory / "infrastructure.env"
+    infrastructure.write_text(
+        "AWS_REGION=eu-north-1\nRADIO_S3_BUCKET=radio-broadcast-evidence\n",
+        encoding="utf-8",
+    )
+    infrastructure.chmod(0o640)
+    return infrastructure
+
+
+def run_config(directory: Path, template: Path | None = None):
+    return run_script(
+        CONFIG,
+        RADIO_ENV_DIR=str(directory),
+        RADIO_APP_ENV_TEMPLATE=str(template or APP_ENV_TEMPLATE),
+        RADIO_DATA_ROOT=str(directory / "data"),
+    )
+
+
+def secret_of(path: Path) -> str:
+    for line in path.read_text(encoding="utf-8").splitlines():
+        name, _, value = line.partition("=")
+        if name.strip() == "RADIO_AUDIO_TOKEN_SECRET":
+            return value.strip()
+    return ""
+
+
+@runs_the_script
+def test_a_first_install_actually_succeeds(tmp_path: Path) -> None:
+    """The end-to-end test that was missing. Both production failures would have
+    been caught here, before a deployment spent them one at a time."""
+    env_dir = tmp_path / "etc"
+    seed_env_dir(env_dir)
+    result = run_config(env_dir)
+    assert result.returncode == EXIT_OK, (
+        f"first install failed:\n{result.stdout}\n{result.stderr}"
+    )
+    assert "structural checks passed" in result.stdout
+    application = env_dir / "application.env"
+    assert application.is_file() and application.stat().st_size > 0
+
+
+@runs_the_script
+def test_the_generated_secret_never_lands_in_a_comment(tmp_path: Path) -> None:
+    """Every occurrence of the placeholder is replaced, so a template that named
+    it in a comment would publish the secret in that comment."""
+    env_dir = tmp_path / "etc"
+    seed_env_dir(env_dir)
+    assert run_config(env_dir).returncode == EXIT_OK
+    application = env_dir / "application.env"
+    secret = secret_of(application)
+    assert len(secret) >= 48
+    for number, line in enumerate(application.read_text(encoding="utf-8").splitlines(), 1):
+        if line.lstrip().startswith("#"):
+            assert secret not in line, f"the secret was written into comment line {number}"
+    assert "REPLACE_WITH_GENERATED_SECRET" not in application.read_text(encoding="utf-8")
+
+
+def test_the_template_names_the_placeholder_exactly_once() -> None:
+    """The rule the substitution enforces, asserted on the real template so a
+    well-meant comment cannot break a first install again."""
+    lines = APP_ENV_TEMPLATE.read_text(encoding="utf-8").splitlines()
+    found = [n for n, line in enumerate(lines, 1) if "REPLACE_WITH_GENERATED_SECRET" in line]
+    assert len(found) == 1, f"the placeholder is named on lines {found}; it must appear once"
+    assert lines[found[0] - 1].strip() == "RADIO_AUDIO_TOKEN_SECRET=REPLACE_WITH_GENERATED_SECRET"
+
+
+@runs_the_script
+def test_a_template_naming_the_placeholder_twice_is_refused(tmp_path: Path) -> None:
+    env_dir = tmp_path / "etc"
+    seed_env_dir(env_dir)
+    template = tmp_path / "twice.env.example"
+    template.write_text(
+        "# REPLACE_WITH_GENERATED_SECRET is substituted once\n"
+        "RADIO_AUDIO_TOKEN_SECRET=REPLACE_WITH_GENERATED_SECRET\n",
+        encoding="utf-8",
+    )
+    result = run_config(env_dir, template)
+    assert result.returncode == EXIT_PRECONDITION
+    assert "exactly once" in result.stderr
+    assert "line 1, 2" in result.stderr, "the failure must name the offending lines"
+
+
+@runs_the_script
+def test_the_placeholder_must_be_the_secret_assignment(tmp_path: Path) -> None:
+    """One occurrence is not enough: it has to be the assignment, so the
+    substitution can only ever produce a secret setting."""
+    env_dir = tmp_path / "etc"
+    seed_env_dir(env_dir)
+    template = tmp_path / "stray.env.example"
+    template.write_text(
+        "# a stray mention: REPLACE_WITH_GENERATED_SECRET\n"
+        "RADIO_AUDIO_TOKEN_SECRET=something-else\n",
+        encoding="utf-8",
+    )
+    result = run_config(env_dir, template)
+    assert result.returncode == EXIT_PRECONDITION
+    assert "must be exactly" in result.stderr
+
+
+@runs_the_script
+def test_a_failed_substitution_leaves_no_file_behind(tmp_path: Path) -> None:
+    """The failure that wedged production: application.env was created BEFORE
+    the substitution, so a refusal left a zero-byte file that the next run
+    faithfully preserved -- and the secret was never generated again."""
+    env_dir = tmp_path / "etc"
+    seed_env_dir(env_dir)
+    template = tmp_path / "twice.env.example"
+    template.write_text(
+        "# REPLACE_WITH_GENERATED_SECRET\nRADIO_AUDIO_TOKEN_SECRET=REPLACE_WITH_GENERATED_SECRET\n",
+        encoding="utf-8",
+    )
+    assert run_config(env_dir, template).returncode == EXIT_PRECONDITION
+    assert not (env_dir / "application.env").exists(), (
+        "a refused substitution must not leave application.env behind"
+    )
+    assert not list(env_dir.glob("*.new.*")), "the staged file must be cleaned up"
+    # And the host is still installable afterwards.
+    assert run_config(env_dir).returncode == EXIT_OK
+    assert len(secret_of(env_dir / "application.env")) >= 48
+
+
+@runs_the_script
+def test_an_empty_application_env_is_recovered_not_preserved(tmp_path: Path) -> None:
+    """An empty file is an interrupted install, not configuration. Preserving it
+    wedges the host permanently: it exists, so it is never created, so the secret
+    is never generated, so every later deployment fails validation."""
+    env_dir = tmp_path / "etc"
+    seed_env_dir(env_dir)
+    application = env_dir / "application.env"
+    application.write_text("", encoding="utf-8")
+    application.chmod(0o640)
+    result = run_config(env_dir)
+    assert result.returncode == EXIT_OK, f"{result.stdout}\n{result.stderr}"
+    assert "exists but is empty" in result.stderr
+    assert len(secret_of(application)) >= 48
+
+
+@runs_the_script
+def test_a_real_secret_is_never_rotated(tmp_path: Path) -> None:
+    """The reason the never-overwrite rule exists: rotating it invalidates every
+    audio URL already issued. The empty-file recovery must not weaken this."""
+    env_dir = tmp_path / "etc"
+    seed_env_dir(env_dir)
+    assert run_config(env_dir).returncode == EXIT_OK
+    application = env_dir / "application.env"
+    first = secret_of(application)
+    before = application.read_bytes()
+    assert run_config(env_dir).returncode == EXIT_OK
+    assert secret_of(application) == first, "the audio token secret was rotated"
+    assert application.read_bytes() == before, "application.env was not preserved byte-for-byte"
+
+
+@runs_the_script
+def test_the_config_script_never_prints_the_secret(tmp_path: Path) -> None:
+    """Asserted against real output, not against the source text."""
+    env_dir = tmp_path / "etc"
+    seed_env_dir(env_dir)
+    result = run_config(env_dir)
+    secret = secret_of(env_dir / "application.env")
+    assert secret
+    assert secret not in result.stdout
+    assert secret not in result.stderr
+
+
+def test_every_embedded_python_program_compiles() -> None:
+    """The structural validator escaped a quote inside an f-string expression --
+    a SyntaxError on the host's python3, invisible to `bash -n` and to any grep.
+    Compiling every embedded program catches the whole class."""
+    pattern = re.compile(r"python3 -c '\n(?P<program>.*?)\n'", re.S)
+    checked = 0
+    for script in sorted(SCRIPTS.rglob("*.sh")):
+        text = script.read_text(encoding="utf-8")
+        for match in pattern.finditer(text):
+            line = text[: match.start()].count("\n") + 1
+            program = match.group("program")
+            # A backslash inside an f-string expression is only legal from
+            # Python 3.12; the host runs the system interpreter, which is older.
+            for number, source in enumerate(program.splitlines(), 1):
+                if re.search(r'f"[^"]*\\"', source):
+                    raise AssertionError(
+                        f"{script.name}:{line + number} escapes a quote inside an "
+                        f"f-string; that is a SyntaxError before Python 3.12"
+                    )
+            try:
+                compile(program, f"{script.name}:{line}", "exec")
+            except SyntaxError as error:
+                raise AssertionError(
+                    f"{script.name}:{line} embeds a python program that does not "
+                    f"compile: {error.msg} (line {error.lineno} of the program)"
+                ) from error
+            checked += 1
+    assert checked >= 8, f"only {checked} embedded programs found; the scan stopped working"

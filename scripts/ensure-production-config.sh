@@ -90,6 +90,21 @@ PRESERVED+=("infrastructure.env")
 
 # ---------------------------------------------------------------------------
 stage "2/4  Ensuring application.env"
+# An EMPTY application.env is not configuration to preserve -- it is the wreckage
+# of an interrupted first install. The never-overwrite rule exists to stop a LIVE
+# audio token secret being rotated out from under every URL already issued, and a
+# zero-byte file has no secret to protect. Treating it as real configuration
+# would wedge the host permanently: the file exists, so it is never created, so
+# the secret is never generated, so every future deployment fails validation on a
+# file the deployment itself left behind.
+if [ -f "${APPLICATION}" ] && [ ! -s "${APPLICATION}" ]; then
+    warn "${APPLICATION} exists but is empty; an interrupted install left it, so it is not preserved"
+    if [ "${DRY_RUN}" -eq 1 ]; then
+        log "dry run: would discard the empty file and create it properly"
+    else
+        rm -f "${APPLICATION}"
+    fi
+fi
 if [ -f "${APPLICATION}" ]; then
     log "application.env already exists; preserving it byte-for-byte"
     PRESERVED+=("application.env")
@@ -106,23 +121,50 @@ else
         # momentarily world-readable.
         secret="$(python3 -c 'import secrets; print(secrets.token_urlsafe(48))')"
         [ "${#secret}" -ge 48 ] || die "${EXIT_PRECONDITION}" "generated secret is too short"
-        install -m 0640 -o root -g radio /dev/null "${APPLICATION}" 2>/dev/null \
-            || install -m 0640 /dev/null "${APPLICATION}"
+        # Written to a temporary file and moved into place, so application.env
+        # either does not exist or is complete -- never a half-written file that
+        # the next run would faithfully preserve.
+        staged="${APPLICATION}.new.$$"
+        install -m 0640 -o root -g radio /dev/null "${staged}" 2>/dev/null \
+            || install -m 0640 /dev/null "${staged}"
         # Substituted with python, not sed: the generated value can contain `/`
         # and `&`, both of which sed would interpret.
+        #
+        # Every occurrence is replaced, so the template must name the marker
+        # exactly once and only as the value of RADIO_AUDIO_TOKEN_SECRET. A
+        # comment that mentioned it would otherwise be handed the real secret
+        # and application.env would carry it in a line nobody reads. The check
+        # names the offending lines, because "expected exactly one" without a
+        # line number sends the next person hunting through the template.
         SECRET_VALUE="${secret}" python3 -c '
 import os, sys
 marker, source, destination = sys.argv[1], sys.argv[2], sys.argv[3]
 with open(source, encoding="utf-8") as handle:
     text = handle.read()
-if text.count(marker) != 1:
-    raise SystemExit(f"expected exactly one {marker} in the template")
+lines = text.splitlines()
+found = [n for n, line in enumerate(lines, 1) if marker in line]
+if len(found) != 1:
+    where = ", ".join(str(n) for n in found) if found else "nowhere"
+    raise SystemExit(
+        source + ": the secret placeholder must appear exactly once, found "
+        + str(len(found)) + " (line " + where + "). Every occurrence is "
+        + "replaced, so naming it in a comment would write the generated "
+        + "secret into that comment."
+    )
+if lines[found[0] - 1].strip() != "RADIO_AUDIO_TOKEN_SECRET=" + marker:
+    raise SystemExit(
+        source + ": line " + str(found[0]) + " must be exactly "
+        + "RADIO_AUDIO_TOKEN_SECRET=<placeholder>, so the substitution can "
+        + "only ever produce a secret assignment."
+    )
 with open(destination, "w", encoding="utf-8") as handle:
     handle.write(text.replace(marker, os.environ["SECRET_VALUE"]))
-' "${SECRET_MARKER}" "${TEMPLATE}" "${APPLICATION}"
+' "${SECRET_MARKER}" "${TEMPLATE}" "${staged}" \
+            || { rm -f "${staged}"; die "${EXIT_PRECONDITION}" "the application template cannot be safely substituted"; }
         unset secret
-        chmod 0640 "${APPLICATION}"
-        chown root:radio "${APPLICATION}" 2>/dev/null || warn "could not set root:radio on ${APPLICATION}"
+        chmod 0640 "${staged}"
+        chown root:radio "${staged}" 2>/dev/null || warn "could not set root:radio on ${APPLICATION}"
+        mv -f "${staged}" "${APPLICATION}"
         CREATED+=("application.env")
         log "application.env created with a freshly generated audio token secret (value not printed)"
     fi
@@ -181,6 +223,12 @@ fi
 
 # ---------------------------------------------------------------------------
 stage "3/4  Ensuring compose.env"
+# Same reasoning as application.env: an empty file is an interrupted install, not
+# an operator's choice, and preserving it would wedge every later deployment.
+if [ -f "${COMPOSE_ENV}" ] && [ ! -s "${COMPOSE_ENV}" ]; then
+    warn "${COMPOSE_ENV} exists but is empty; an interrupted install left it, so it is not preserved"
+    [ "${DRY_RUN}" -eq 1 ] || rm -f "${COMPOSE_ENV}"
+fi
 if [ -f "${COMPOSE_ENV}" ]; then
     log "compose.env already exists; preserving it"
     PRESERVED+=("compose.env")
@@ -188,9 +236,10 @@ elif [ "${DRY_RUN}" -eq 1 ]; then
     log "dry run: would create ${COMPOSE_ENV}"
 else
     log "creating compose.env"
-    install -m 0640 -o root -g radio /dev/null "${COMPOSE_ENV}" 2>/dev/null \
-        || install -m 0640 /dev/null "${COMPOSE_ENV}"
-    cat > "${COMPOSE_ENV}" <<EOF
+    staged_compose="${COMPOSE_ENV}.new.$$"
+    install -m 0640 -o root -g radio /dev/null "${staged_compose}" 2>/dev/null \
+        || install -m 0640 /dev/null "${staged_compose}"
+    cat > "${staged_compose}" <<EOF
 # Compose CLI interpolation. Non-secret. Created once by
 # scripts/ensure-production-config.sh and never rewritten.
 COMPOSE_PROJECT_NAME=radio-prod
@@ -213,8 +262,9 @@ RADIO_CONTAINER_GID=
 RADIO_RELEASE_ROOT=${DATA_ROOT}/releases
 RADIO_DEPLOY_ROOT=${DATA_ROOT}/deploy
 EOF
-    chmod 0640 "${COMPOSE_ENV}"
-    chown root:radio "${COMPOSE_ENV}" 2>/dev/null || warn "could not set root:radio on ${COMPOSE_ENV}"
+    chmod 0640 "${staged_compose}"
+    chown root:radio "${staged_compose}" 2>/dev/null || warn "could not set root:radio on ${COMPOSE_ENV}"
+    mv -f "${staged_compose}" "${COMPOSE_ENV}"
     CREATED+=("compose.env")
 fi
 
@@ -285,9 +335,13 @@ if problems:
         print(f"configuration problem: {problem}", file=sys.stderr)
     raise SystemExit(1)
 
-print("structural checks passed: "
-      f"queue={merged.get(\"RADIO_QUEUE_BACKEND\", \"<default>\")} "
-      f"active_capacity={merged.get(\"RADIO_MAX_ACTIVE_UNIQUE_STATIONS\", \"<default>\")}")
+# Plain concatenation, not an f-string: this program is embedded in single
+# quotes, so a nested double quote has to be backslash-escaped, and a backslash
+# inside an f-string expression is a SyntaxError before Python 3.12. The host
+# runs the system python3, which is older than that.
+queue = merged.get("RADIO_QUEUE_BACKEND", "<default>")
+capacity = merged.get("RADIO_MAX_ACTIVE_UNIQUE_STATIONS", "<default>")
+print("structural checks passed: queue=" + queue + " active_capacity=" + capacity)
 ' || die "${EXIT_PRECONDITION}" "production configuration failed structural validation"
     log "layer B (real Settings model) runs inside the exact-SHA image during deployment"
 fi
