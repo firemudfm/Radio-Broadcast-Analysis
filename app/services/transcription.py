@@ -271,6 +271,16 @@ class FasterWhisperEngine:
                     # upstream, and a second VAD would silently drop the quiet
                     # speech-over-music the policy deliberately retained.
                     vad_filter=False,
+                    # Decode each 30-second window independently instead of
+                    # conditioning on the previous window's text. Conditioning
+                    # is what turns one bad window into a runaway loop -- music
+                    # that slipped through classification came out in
+                    # production as "right, right, right, ..." repeated for
+                    # hundreds of tokens, because each window fed the loop to
+                    # the next. The cost is slightly weaker cross-window
+                    # consistency; the benefit is that a hallucination cannot
+                    # propagate past the window that produced it.
+                    condition_on_previous_text=False,
                 )
                 collected = list(segments)
             except Exception as error:  # noqa: BLE001 - retryable by classification
