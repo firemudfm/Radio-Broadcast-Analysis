@@ -893,3 +893,118 @@ def test_no_install_script_formats_or_mounts_a_device(script: Path) -> None:
     code = executable_lines(script)
     for forbidden in ("mkfs", "parted", "fdisk", "sgdisk", "wipefs", "mount -o", "mount /dev"):
         assert forbidden not in code, f"{script.name} would touch a block device"
+
+
+# =============================================================================
+# O. First-install runtime-directory ownership
+# =============================================================================
+#
+# A first install used to deadlock on a directory the deployment had just
+# created. The fixed SSM document writes its log to
+# ${DATA_ROOT}/logs/deployments with
+#
+#     install -d -m 0750 -o root -g root "${LOG_DIR}"
+#
+# and `install -d` creates the missing PARENT with the same owner -- so
+# /var/lib/radio/logs appeared root-owned moments before the ownership gate ran,
+# and every first install failed. The document is pinned in CloudFormation, so
+# the repair has to live in the release.
+
+
+def test_the_deploy_document_creates_the_logs_parent_for_the_radio_account() -> None:
+    text = CFN_TEMPLATE.read_text(encoding="utf-8")
+    document = text[text.index("DeployMainDocument:"):text.index("GitHubActionsRole:")]
+    assert 'if [ ! -d "${DATA_ROOT}/logs" ]' in document, (
+        "the parent must be created separately, not as a side effect of the log dir"
+    )
+    assert "id -u radio" in document
+
+
+def test_main_auto_deploy_reclaims_a_root_owned_runtime_directory() -> None:
+    code = executable_lines(SCRIPTS / "main-auto-deploy.sh")
+    assert 'owner="$(stat -c \'%u\' "${path}"' in code
+    assert 'chown "${RADIO_UID}:${RADIO_GID}" "${path}"' in code
+
+
+def test_the_ownership_repair_is_never_recursive() -> None:
+    """A recursive chown across a spool full of evidence during a deploy is
+    exactly what require_writable_ownership refuses to do."""
+    for line in executable_lines(SCRIPTS / "main-auto-deploy.sh").splitlines():
+        if "chown" not in line:
+            continue
+        assert " -R" not in line, f"recursive chown in the deploy path: {line.strip()}"
+
+
+def test_the_ownership_repair_only_takes_a_directory_from_root() -> None:
+    """Taking one from another non-root owner would hide a real
+    misconfiguration rather than fix a self-inflicted one."""
+    code = executable_lines(SCRIPTS / "main-auto-deploy.sh")
+    assert '[ "${owner}" = "0" ]' in code
+
+
+def test_deployment_logs_stay_root_only() -> None:
+    """They carry host output; the application account has no reason to read
+    them."""
+    code = executable_lines(SCRIPTS / "main-auto-deploy.sh")
+    assert 'DEPLOY_LOG_DIR="${DATA_ROOT}/logs/deployments"' in code
+    assert "chown root:root" in code
+
+
+def test_the_ownership_gate_itself_is_unchanged() -> None:
+    """The repair happens BEFORE the gate; the gate still refuses and still
+    never chowns."""
+    code = executable_lines(SCRIPTS / "main-auto-deploy.sh")
+    assert code.index("chown \"${RADIO_UID}") < code.index("require_writable_ownership")
+    lib = executable_lines(SCRIPTS / "lib" / "deploy-common.sh")
+    body = lib[lib.index("require_writable_ownership() {"):]
+    body = body[:body.index("\n}")]
+    # The gate may NAME chown in the remediation it prints for the operator; it
+    # may never execute one.
+    for line in body.splitlines():
+        if "chown" not in line:
+            continue
+        assert line.lstrip().startswith("remediation "), (
+            f"require_writable_ownership must only report, not chown: {line.strip()}"
+        )
+
+
+# =============================================================================
+# P. Every production service reports health
+# =============================================================================
+
+
+def test_every_full_stage_service_has_a_health_check() -> None:
+    """wait_for_health treats `none` as a hard failure, so a service without one
+    can never pass the gate. Six declare it in Compose; the LLM declares it in
+    its Dockerfile, which Docker reports the same way."""
+    compose = (REPO_ROOT / "compose.yaml").read_text(encoding="utf-8")
+    declared = {
+        name
+        for name in (
+            "api", "planner", "listener", "transcription-worker",
+            "analysis-worker", "cleanup-worker",
+        )
+        if "healthcheck:" in _service_block(compose, name)
+    }
+    assert declared == {
+        "api", "planner", "listener", "transcription-worker",
+        "analysis-worker", "cleanup-worker",
+    }
+    llm_dockerfile = (REPO_ROOT / "docker" / "llm.Dockerfile").read_text(encoding="utf-8")
+    assert "HEALTHCHECK" in llm_dockerfile, "the LLM must report health somehow"
+    assert "/health" in llm_dockerfile
+
+
+def _service_block(compose: str, name: str) -> str:
+    start = compose.index(f"\n  {name}:")
+    rest = compose[start + 1:]
+    following = re.search(r"\n  [a-z][a-z0-9-]*:\n", rest)
+    return rest[: following.start()] if following else rest
+
+
+def test_the_health_gate_still_fails_closed_on_a_missing_check() -> None:
+    """The gate is what turned this into a caught problem instead of a silent
+    one; it must keep failing closed."""
+    lib = (SCRIPTS / "lib" / "deploy-common.sh").read_text(encoding="utf-8")
+    assert "defines no healthcheck" in lib
+    assert "none)" in lib
