@@ -1,12 +1,23 @@
 from __future__ import annotations
 
 import json
+import logging
 import re
 import time
 from pathlib import Path
 from typing import Any
 
+from botocore.exceptions import ClientError
+
 from ..config import Settings
+
+logger = logging.getLogger(__name__)
+
+# S3 error codes that mean "you are not allowed to list this prefix", as opposed
+# to "S3 is unreachable / misconfigured". raw-audio/ is a legacy prefix that the
+# production instance role deliberately does not grant s3:ListBucket on, so a
+# denied listing there is expected and must not take a request-time route down.
+_LIST_DENIED_CODES = {"AccessDenied", "AllAccessDisabled", "AccessDeniedException"}
 
 _ENV_PATTERN = re.compile(r"^([A-Z0-9_]+)=(.*)$")
 
@@ -113,12 +124,33 @@ class StationService:
         return output
 
     def _s3_station_ids(self) -> list[str]:
-        response = self._s3.list_objects_v2(
-            Bucket=self._settings.RADIO_S3_BUCKET,
-            Prefix=self._settings.RADIO_RAW_PREFIX,
-            Delimiter="/",
-            MaxKeys=1000,
-        )
+        try:
+            response = self._s3.list_objects_v2(
+                Bucket=self._settings.RADIO_S3_BUCKET,
+                Prefix=self._settings.RADIO_RAW_PREFIX,
+                Delimiter="/",
+                MaxKeys=1000,
+            )
+        except ClientError as error:
+            # raw-audio/ is a legacy prefix: the current pipeline stores segments
+            # locally and publishes results under mentions/, so nothing writes
+            # raw-audio/ anymore and the production role scopes s3:ListBucket to
+            # the active prefixes only. Treat a denied listing as "no
+            # S3-discovered stations" and fall back to the locally configured
+            # ones -- _hydrate already tolerates a station missing from the map.
+            # A real outage (absent credentials, unreachable endpoint) raises
+            # BotoCoreError rather than ClientError and still propagates, so
+            # routes that genuinely depend on S3 keep failing loudly.
+            code = error.response.get("Error", {}).get("Code", "")
+            if code in _LIST_DENIED_CODES:
+                logger.warning(
+                    "S3 station discovery skipped (%s on prefix %r); "
+                    "using local station config only",
+                    code,
+                    self._settings.RADIO_RAW_PREFIX,
+                )
+                return []
+            raise
         output: list[str] = []
         for item in response.get("CommonPrefixes", []):
             prefix = str(item.get("Prefix") or "")
