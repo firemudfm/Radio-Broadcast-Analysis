@@ -152,7 +152,7 @@ def test_countries_normalized(catalog) -> None:
 
 
 def test_activation_respects_capacity_limit(monitoring, store, settings) -> None:
-    assert settings.RADIO_MAX_ACTIVE_STATIONS == 2
+    assert settings.RADIO_MAX_ACTIVE_UNIQUE_STATIONS == 2
     first = monitoring.request_activation(HERTZ_UUID)
     assert first["actual_state"] == "pending_probe"
     store.set_station_state(first["managed_station_id"], actual_state="active")

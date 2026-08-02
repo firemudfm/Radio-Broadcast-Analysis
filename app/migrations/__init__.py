@@ -15,8 +15,8 @@ Properties the runner guarantees:
 * **Tamper-evident** — a checksum over the statements detects a migration file
   edited after it was applied, which is otherwise a silent schema divergence
   between hosts.
-* **Mode-independent** — migrations run in both pipeline modes, so switching
-  ``RADIO_PIPELINE_MODE`` is never a data-migration event (ADR-001).
+* **Independent of the runtime** — the schema is shared, so removing the legacy
+  pipeline was never a data-migration event and historical rows stay readable.
 
 Migrations are forward-only by policy. Each carries a documented manual
 ``DOWN`` in its module docstring for emergency use.

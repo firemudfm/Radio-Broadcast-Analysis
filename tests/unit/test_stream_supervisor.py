@@ -33,8 +33,12 @@ def settings(tmp_path) -> Settings:
         RADIO_AUDIO_TOKEN_SECRET="x" * 48,
         RADIO_MODEL_PATH=tmp_path / "models",
         RADIO_SPOOL_PATH=tmp_path / "spool",
-        RADIO_PIPELINE_MODE="shared_sqs",
         RADIO_QUEUE_BACKEND="memory",
+        # Control-plane unit tests: several distinct stations must be active
+        # at once for the counters to mean different things. Production
+        # defaults to 1; that is asserted in tests/test_capacity_defaults.py.
+        RADIO_MAX_ACTIVE_UNIQUE_STATIONS=8,
+        RADIO_LISTENER_MAX_SESSIONS=8,
     )
 
 

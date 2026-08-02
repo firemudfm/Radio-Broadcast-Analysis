@@ -143,19 +143,16 @@ async def lifespan(app: FastAPI):
     app.state.monitoring_service = monitoring_service
     app.state.preview_service = preview_service
 
-    # v0.5 pipeline status. Constructed in BOTH modes so /readyz exists
-    # everywhere; it reports legacy readiness (database only) when the shared
-    # pipeline is off, and does not require any pipeline worker to be running.
+    # Pipeline status. There is one pipeline, so this is always constructed.
     segment_store = None
-    if settings.shared_pipeline_enabled:
-        try:
-            from .pipeline.factory import build_segment_store
+    try:
+        from .pipeline.factory import build_segment_store
 
-            segment_store = build_segment_store(settings)
-        except Exception:  # noqa: BLE001 - status must not block API start-up
-            logging.getLogger(__name__).warning(
-                "Segment store unavailable; spool usage will report 0"
-            )
+        segment_store = build_segment_store(settings)
+    except Exception:  # noqa: BLE001 - status must not block API start-up
+        logging.getLogger(__name__).warning(
+            "Segment store unavailable; spool usage will report 0"
+        )
     app.state.pipeline_status_service = PipelineStatusService(
         settings, database, segment_store=segment_store
     )

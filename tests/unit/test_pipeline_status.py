@@ -28,8 +28,12 @@ def settings(tmp_path) -> Settings:
         RADIO_S3_BUCKET="test-bucket",
         RADIO_AUDIO_TOKEN_SECRET="x" * 48,
         RADIO_DATABASE_PATH=tmp_path / "radio.db",
-        RADIO_PIPELINE_MODE="shared_sqs",
         RADIO_QUEUE_BACKEND="memory",
+        # Control-plane unit tests: several distinct stations must be active
+        # at once for the counters to mean different things. Production
+        # defaults to 1; that is asserted in tests/test_capacity_defaults.py.
+        RADIO_MAX_ACTIVE_UNIQUE_STATIONS=8,
+        RADIO_LISTENER_MAX_SESSIONS=8,
     )
 
 
@@ -80,19 +84,18 @@ def test_a_stale_worker_makes_the_node_unready(
     assert report["checks"]["listener"] == "stale"
 
 
-def test_legacy_mode_is_ready_on_the_database_alone(tmp_path, database: Database) -> None:
-    """A healthy legacy deployment must not be reported broken for lacking
-    workers it was never meant to have."""
-    legacy = Settings(
+def test_readiness_always_requires_every_worker_role(tmp_path, database: Database) -> None:
+    """A database-only "ready" was the legacy answer. Reporting it now would
+    claim a working pipeline while audio is captured and never transcribed."""
+    settings = Settings(
         RADIO_S3_BUCKET="b",
         RADIO_AUDIO_TOKEN_SECRET="x" * 48,
         RADIO_DATABASE_PATH=tmp_path / "radio.db",
-        RADIO_PIPELINE_MODE="legacy",
     )
-    report = PipelineStatusService(legacy, database, clock=lambda: NOW).readiness()
-    assert report["ready"] is True
-    assert report["pipeline_mode"] == "legacy"
-    assert set(report["checks"]) == {"database"}
+    report = PipelineStatusService(settings, database, clock=lambda: NOW).readiness()
+    assert report["ready"] is False
+    assert report["pipeline_mode"] == "shared_sqs"
+    assert set(report["checks"]) > {"database"}
 
 
 def test_unconfigured_queues_block_readiness(tmp_path, database: Database) -> None:
@@ -100,8 +103,12 @@ def test_unconfigured_queues_block_readiness(tmp_path, database: Database) -> No
         RADIO_S3_BUCKET="b",
         RADIO_AUDIO_TOKEN_SECRET="x" * 48,
         RADIO_DATABASE_PATH=tmp_path / "radio.db",
-        RADIO_PIPELINE_MODE="shared_sqs",
         RADIO_QUEUE_BACKEND="memory",
+        # Control-plane unit tests: several distinct stations must be active
+        # at once for the counters to mean different things. Production
+        # defaults to 1; that is asserted in tests/test_capacity_defaults.py.
+        RADIO_MAX_ACTIVE_UNIQUE_STATIONS=8,
+        RADIO_LISTENER_MAX_SESSIONS=8,
     )
     service = PipelineStatusService(unconfigured, database, clock=lambda: NOW)
     beat_all(database)

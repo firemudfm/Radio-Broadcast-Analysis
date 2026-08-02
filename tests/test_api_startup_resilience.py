@@ -56,7 +56,6 @@ def startup_env(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Path:
     monkeypatch.setenv("RADIO_STATION_METADATA_PATH", str(metadata))
     monkeypatch.setenv("RADIO_SYNC_ENABLED", "false")
     monkeypatch.setenv("RADIO_SYNC_ON_STARTUP", "false")
-    monkeypatch.setenv("RADIO_PIPELINE_MODE", "legacy")
     get_settings.cache_clear()
     yield tmp_path
     get_settings.cache_clear()

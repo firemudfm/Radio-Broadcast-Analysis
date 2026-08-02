@@ -1,9 +1,17 @@
 """Managed-station monitoring: capacity, admission, estimates, activation.
 
-The API layer only queues work; the root-owned reconciler executes probes and
-systemd changes. Admission is capacity-aware: RADIO_MAX_ACTIVE_STATIONS is a
-hard limit, selecting a whole country produces a plan rather than instantly
-launching capture processes.
+The API layer only records intent; the planner turns that into shared station
+subscriptions. Admission is capacity-aware against two DIFFERENT limits:
+
+  * RADIO_MAX_REQUESTED_UNIQUE_STATIONS -- how many distinct stations campaigns
+    may ask for. A control-plane number, proven to 1,000.
+  * RADIO_MAX_ACTIVE_UNIQUE_STATIONS -- how many are decoded at once. A compute
+    number, currently 1 on this host.
+
+Selecting a whole country therefore produces a plan, not a thousand decodes:
+stations beyond the active limit are parked as `pending_capacity` and picked up
+as slots free. The API still reports the active limit as `active_station_limit`,
+which is the field name the frontend already consumes.
 """
 from __future__ import annotations
 
@@ -50,7 +58,8 @@ class MonitoringService:
 
     def capacity(self) -> dict[str, Any]:
         active = self._store.active_station_count()
-        limit = self._settings.RADIO_MAX_ACTIVE_STATIONS
+        limit = self._settings.RADIO_MAX_ACTIVE_UNIQUE_STATIONS
+        requested_limit = self._settings.RADIO_MAX_REQUESTED_UNIQUE_STATIONS
         states = self._store.state_counts()
         pending_probe = states.get("pending_probe", 0) + states.get("probing", 0)
         pending_capacity = states.get("pending_capacity", 0)
@@ -60,7 +69,11 @@ class MonitoringService:
         reason = (
             f"{active}/{limit} station slots in use"
             if can_add
-            else f"Active station limit reached ({active}/{limit}); stop a station or raise RADIO_MAX_ACTIVE_STATIONS"
+            else (
+                f"Active station limit reached ({active}/{limit}); further stations "
+                f"are accepted and parked as pending_capacity. Raising "
+                f"RADIO_MAX_ACTIVE_UNIQUE_STATIONS requires a live benchmark."
+            )
         )
         snapshot = {
             "vcpus": os.cpu_count() or 1,
@@ -74,7 +87,10 @@ class MonitoringService:
             "load_5m": round(load[1], 2),
             "load_15m": round(load[2], 2),
             "active_stations": active,
+            # Field name preserved for the frontend; it now sources the
+            # shared-pipeline active limit.
             "active_station_limit": limit,
+            "requested_station_limit": requested_limit,
             "pending_probe": pending_probe,
             "pending_capacity": pending_capacity,
             "oldest_processing_job_seconds": self._store.oldest_running_job_age_seconds(),

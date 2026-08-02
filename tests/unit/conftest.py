@@ -28,11 +28,16 @@ def pipeline_settings(tmp_path: Path) -> Settings:
         RADIO_MODEL_PATH=tmp_path / "models",
         RADIO_EVIDENCE_PATH=tmp_path / "evidence",
         RADIO_LOG_PATH=tmp_path / "logs",
-        RADIO_PIPELINE_MODE="shared_sqs",
         RADIO_QUEUE_BACKEND="memory",
         RADIO_SEGMENT_STORE="local",
         RADIO_SYNC_ENABLED=False,
         RADIO_ASR_BACKEND="fake",
+        # Eight active slots. Production defaults to 1, asserted in
+        # tests/test_capacity_defaults.py; these fixtures exercise CONTROL-PLANE
+        # behaviour -- sharing, reference counts, sharding -- which only becomes
+        # visible when several distinct stations can be active at once.
+        RADIO_MAX_ACTIVE_UNIQUE_STATIONS=8,
+        RADIO_LISTENER_MAX_SESSIONS=8,
     )
 
 

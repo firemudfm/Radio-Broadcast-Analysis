@@ -131,6 +131,12 @@ def settings(tmp_path: Path) -> Settings:
         RADIO_STATION_CONFIG_DIR=station_dir,
         RADIO_STATION_METADATA_PATH=metadata,
         RADIO_SYNC_ENABLED=False,
+        # Two active slots. Production defaults to 1 (asserted in
+        # tests/test_capacity_defaults.py); admission behaviour -- accepting a
+        # station, filling the last slot, then parking the next as
+        # pending_capacity -- is only observable with more than one.
+        RADIO_MAX_ACTIVE_UNIQUE_STATIONS=2,
+        RADIO_LISTENER_MAX_SESSIONS=2,
     )
 
 

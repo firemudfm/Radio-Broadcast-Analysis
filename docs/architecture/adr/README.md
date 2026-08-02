@@ -5,7 +5,8 @@ risks, Security impact, Cost impact, Test requirements and a Reversal strategy.
 
 | ADR | Decision | The uncomfortable part |
 |---|---|---|
-| [001](ADR-001-legacy-and-shared-pipeline-modes.md) | `RADIO_PIPELINE_MODE ∈ {legacy, shared_sqs}`, default `legacy` | Two code paths must be maintained until the new one is proven |
+| [single-pipeline](ADR-single-shared-sqs-pipeline.md) | Shared-station SQS is the ONLY production pipeline | One runtime to reason about, test, deploy and operate |
+| ~~[001](ADR-001-legacy-and-shared-pipeline-modes.md)~~ | **SUPERSEDED** by [ADR-single-shared-sqs-pipeline](ADR-single-shared-sqs-pipeline.md) | The dual-mode switch existed until the shared pipeline was proven; it is now the only pipeline |
 | [002](ADR-002-local-versus-s3-segment-storage.md) | `SegmentStore` abstraction; local spool by default, S3 for distributed mode | Disk becomes a first-class resource needing watermarks |
 | [003](ADR-003-sqs-fifo-message-contracts.md) | FIFO queues, `MessageGroupId = station_id`, versioned Pydantic schemas | Per-group FIFO serialises a station's segments across the whole fleet — a real throughput ceiling |
 | [004](ADR-004-sqlite-wal-and-write-boundaries.md) | WAL + four pragmas on **every** connection, versioned migrations, short transactions | `PRAGMA synchronous` was never set; PostgreSQL is the honest answer past ~100 stations |

@@ -236,6 +236,6 @@ receive + one delete (plus visibility extensions on long jobs). Long polling
 ## Reversal strategy
 
 `RADIO_QUEUE_BACKEND=memory` degrades to single-process operation for
-diagnostics. Reverting the whole hand-off is `RADIO_PIPELINE_MODE=legacy`
+diagnostics. Reverting the whole hand-off is a rollback to an earlier release
 (ADR-001). Draining is the normal path: stop producers, let consumers finish, then
 switch — messages are self-describing and no consumer depends on producer state.

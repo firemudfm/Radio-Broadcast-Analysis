@@ -29,6 +29,7 @@ DRY_RUN=0
 
 CREATED=()
 PRESERVED=()
+MIGRATED=()
 
 usage() {
     cat <<'USAGE'
@@ -128,6 +129,36 @@ with open(destination, "w", encoding="utf-8") as handle:
 fi
 
 if [ -f "${APPLICATION}" ]; then
+    # Settings removed with the legacy pipeline. The API refuses to start when
+    # one is present -- deliberately, so a stale file is never silently ignored.
+    # Here, on the deployment path, we can do better than fail: strip the dead
+    # lines, say exactly what was removed, and keep a timestamped copy of the
+    # original. Leaving them would turn every deployment of this release into a
+    # guaranteed outage for a line that no longer does anything.
+    REMOVED_SETTINGS="RADIO_PIPELINE_MODE RADIO_MAX_ACTIVE_STATIONS RADIO_RECONCILER_POLL_SECONDS"
+    stale_found=0
+    for name in ${REMOVED_SETTINGS}; do
+        if grep -qE "^[[:space:]]*${name}=" "${APPLICATION}" 2>/dev/null; then
+            stale_found=1
+            warn "${APPLICATION} sets ${name}, which no longer exists"
+        fi
+    done
+    if [ "${stale_found}" -eq 1 ]; then
+        if [ "${DRY_RUN}" -eq 1 ]; then
+            log "dry run: would remove the obsolete settings above"
+        else
+            backup="${APPLICATION}.pre-single-pipeline.$(date -u +%Y%m%dT%H%M%SZ)"
+            cp -p "${APPLICATION}" "${backup}"
+            chmod 0640 "${backup}"
+            for name in ${REMOVED_SETTINGS}; do
+                sed -i "/^[[:space:]]*${name}=/d" "${APPLICATION}"
+            done
+            log "removed obsolete settings; original kept at ${backup}"
+            log "see docs/architecture/adr/ADR-single-shared-sqs-pipeline.md"
+            MIGRATED+=("application.env")
+        fi
+    fi
+
     require_env_file "${APPLICATION}"
     reject_placeholder_secret "${APPLICATION}"
     reject_static_aws_credentials "${APPLICATION}"
@@ -248,10 +279,6 @@ for name in ("RADIO_MAX_ACTIVE_UNIQUE_STATIONS", "RADIO_LISTENER_MAX_SESSIONS",
     if not raw.isdigit():
         problems.append(f"{name} is not a non-negative integer")
 
-mode = merged.get("RADIO_PIPELINE_MODE")
-if mode is not None and mode not in ("legacy", "shared_sqs"):
-    problems.append(f"RADIO_PIPELINE_MODE is {mode!r}")
-
 if problems:
     # The problem, never the value. This file holds the audio token secret.
     for problem in problems:
@@ -259,12 +286,13 @@ if problems:
     raise SystemExit(1)
 
 print("structural checks passed: "
-      f"mode={merged.get(\"RADIO_PIPELINE_MODE\", \"<default>\")} "
-      f"capacity={merged.get(\"RADIO_MAX_ACTIVE_UNIQUE_STATIONS\", \"<default>\")}")
+      f"queue={merged.get(\"RADIO_QUEUE_BACKEND\", \"<default>\")} "
+      f"active_capacity={merged.get(\"RADIO_MAX_ACTIVE_UNIQUE_STATIONS\", \"<default>\")}")
 ' || die "${EXIT_PRECONDITION}" "production configuration failed structural validation"
     log "layer B (real Settings model) runs inside the exact-SHA image during deployment"
 fi
 
 log "created:   ${#CREATED[@]}${CREATED:+ (${CREATED[*]})}"
 log "preserved: ${#PRESERVED[@]}${PRESERVED:+ (${PRESERVED[*]})}"
+log "migrated:  ${#MIGRATED[@]}${MIGRATED:+ (${MIGRATED[*]})}"
 exit "${EXIT_OK}"
