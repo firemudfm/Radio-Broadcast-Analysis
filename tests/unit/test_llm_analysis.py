@@ -343,3 +343,87 @@ def test_an_overlong_evidence_quote_is_truncated_not_rejected() -> None:
         {"summary": "ok", "evidence": [{"text": "q" * 3000, "start_ms": 0, "end_ms": 1}]}
     )
     assert len(result.evidence[0].text) == 1000
+
+
+# --- the model output the grammar actually permits ----------------------------
+#
+# The grammar and the pydantic model must agree, and in production they did
+# not: the grammar requires only "text" on an evidence item, the model emitted
+# exactly that, and Evidence required both timestamps -- so every analysis
+# failed validation with "1 error(s)" and fell back. The rule: anything the
+# grammar permits must validate (possibly degraded), and a rejection must name
+# the field.
+
+
+def test_evidence_without_timestamps_is_accepted(
+    settings: Settings, request_: AnalysisRequest
+) -> None:
+    """The production failure: the grammar marks start_ms/end_ms optional."""
+    client = FakeLlmClient(
+        responses=[good_response(evidence=[{"text": "the new NVIDIA laptop"}])]
+    )
+    result = ConversationAnalyzer(settings, client=client).analyze(request_)
+    assert result.status == "ready", "a missing timestamp must not cost the analysis"
+    assert result.evidence[0].text == "the new NVIDIA laptop"
+    assert result.evidence[0].end_ms >= result.evidence[0].start_ms >= 0
+
+
+def test_evidence_with_only_a_start_timestamp_is_accepted(
+    settings: Settings, request_: AnalysisRequest
+) -> None:
+    client = FakeLlmClient(
+        responses=[good_response(evidence=[{"text": "the new NVIDIA laptop", "start_ms": 1000}])]
+    )
+    result = ConversationAnalyzer(settings, client=client).analyze(request_)
+    assert result.status == "ready"
+    assert result.evidence[0].start_ms == 1000
+    assert result.evidence[0].end_ms >= 1000
+
+
+def test_a_blank_entity_name_is_dropped_not_fatal(
+    settings: Settings, request_: AnalysisRequest
+) -> None:
+    """The grammar guarantees a "name" key, not a non-blank one. One empty
+    entity must not discard the other findings."""
+    client = FakeLlmClient(
+        responses=[good_response(entities=[{"name": "   "}, {"name": "NVIDIA"}])]
+    )
+    result = ConversationAnalyzer(settings, client=client).analyze(request_)
+    assert result.status == "ready"
+    assert [entity.name for entity in result.entities] == ["NVIDIA"]
+
+
+def test_blank_evidence_text_is_dropped_not_fatal(
+    settings: Settings, request_: AnalysisRequest
+) -> None:
+    client = FakeLlmClient(responses=[good_response(evidence=[{"text": ""}])])
+    result = ConversationAnalyzer(settings, client=client).analyze(request_)
+    assert result.status == "ready"
+    assert result.evidence == []
+
+
+def test_the_fallback_entities_survive_the_blank_filter(
+    request_: AnalysisRequest,
+) -> None:
+    """The filters see Entity instances when the fallback constructs the
+    result directly; they must never strip those."""
+    from app.services.llm_analysis import Entity
+
+    result = AnalysisResult(summary="ok", entities=[Entity(name="keyword", type="other")])
+    assert [entity.name for entity in result.entities] == ["keyword"]
+
+
+def test_a_validation_rejection_names_the_field(
+    settings: Settings, request_: AnalysisRequest, caplog
+) -> None:
+    """"1 error(s)" with no location cost a production diagnosis cycle."""
+    import logging as logging_module
+
+    client = FakeLlmClient(responses=[good_response(confidence=7.5)])
+    with caplog.at_level(logging_module.INFO, logger="app.services.llm_analysis"):
+        ConversationAnalyzer(settings, client=client).analyze(request_)
+    reasons = [
+        record.__dict__.get("reason", "") for record in caplog.records
+        if "rejected by validation" in record.getMessage()
+    ]
+    assert reasons and "confidence" in reasons[0], reasons

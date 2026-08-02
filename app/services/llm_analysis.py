@@ -112,8 +112,13 @@ class Evidence(BaseModel):
     model_config = ConfigDict(extra="forbid", str_strip_whitespace=True)
 
     text: str = Field(min_length=1, max_length=1000)
-    start_ms: int = Field(ge=0)
-    end_ms: int = Field(ge=0)
+    # The decode grammar requires only "text" on an evidence item, so the model
+    # may legitimately omit either timestamp -- and in production it did, which
+    # failed the WHOLE analysis with "1 error(s)" on every attempt. Missing
+    # timestamps default to zero; _validated_evidence then clamps them into the
+    # conversation, which is also where invented ones get corrected.
+    start_ms: int = Field(default=0, ge=0)
+    end_ms: int = Field(default=0, ge=0)
 
     @field_validator("text", mode="before")
     @classmethod
@@ -181,6 +186,33 @@ class AnalysisResult(BaseModel):
         if not isinstance(value, list):
             return []
         return [str(item).strip()[:500] for item in value if str(item).strip()][:MAX_KEY_POINTS]
+
+    # The grammar guarantees an entity has a "name" key and an evidence item a
+    # "text" key -- but not that either is non-blank, and min_length=1 would
+    # fail the ENTIRE result over one empty string. One blank item is the
+    # model's problem; the other nine findings are still findings.
+
+    @field_validator("entities", mode="before")
+    @classmethod
+    def drop_blank_entities(cls, value: Any) -> list[Any]:
+        if not isinstance(value, list):
+            return []
+        return [
+            item for item in value
+            if isinstance(item, Entity)
+            or (isinstance(item, dict) and str(item.get("name") or "").strip())
+        ][:MAX_ENTITIES]
+
+    @field_validator("evidence", mode="before")
+    @classmethod
+    def drop_blank_evidence(cls, value: Any) -> list[Any]:
+        if not isinstance(value, list):
+            return []
+        return [
+            item for item in value
+            if isinstance(item, Evidence)
+            or (isinstance(item, dict) and str(item.get("text") or "").strip())
+        ][:MAX_EVIDENCE]
 
     def as_payload(self) -> dict[str, Any]:
         return self.model_dump(mode="json")
@@ -535,7 +567,16 @@ class ConversationAnalyzer:
                 }
             )
         except ValidationError as error:
-            raise ValueError(f"schema validation failed: {error.error_count()} error(s)") from error
+            # Name the fields. "1 error(s)" with no location cost a production
+            # diagnosis cycle: every analysis was falling back and the log
+            # could not say why.
+            details = "; ".join(
+                f"{'.'.join(str(part) for part in item['loc']) or '<root>'}: {item['type']}"
+                for item in error.errors()[:3]
+            )
+            raise ValueError(
+                f"schema validation failed: {error.error_count()} error(s): {details}"
+            ) from error
 
         evidence = _validated_evidence(result.evidence, request)
         dropped = len(result.evidence) - len(evidence)
