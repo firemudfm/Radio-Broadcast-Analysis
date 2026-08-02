@@ -34,6 +34,37 @@
     "minimum_supported": "v2.24.0",
     "minimum_reason": "compose.prod.yaml uses the !override tag, added in Compose 2.24."
   },
+  "docker_buildx": {
+    "version": "v0.35.0",
+    "released": "2026-06-17",
+    "release_url": "https://github.com/docker/buildx/releases/tag/v0.35.0",
+    "comment": [
+      "Compose v5 has no legacy builder to fall back to: `docker compose build`",
+      "refuses to run without buildx, with 'compose build requires buildx 0.17.0",
+      "or later'. The first install failed exactly there, having already passed",
+      "every other gate. Amazon Linux 2023's docker package does not supply a",
+      "buildx new enough, so it is pinned here like Compose rather than left to",
+      "whatever the mirrors hold.",
+      "",
+      "The digest below was taken from the published checksums.txt AND confirmed",
+      "by hashing the downloaded asset independently."
+    ],
+    "linux_aarch64": {
+      "asset": "buildx-v0.35.0.linux-arm64",
+      "asset_comment": "docker/buildx names its aarch64 asset 'linux-arm64'; docker/compose names the same architecture 'linux-aarch64'.",
+      "sha256": "c4248d6cbc4a619a7e0b4609c11e509ad4ac0b475e1c64817c0ac20c5d90c766",
+      "checksum_asset": "checksums.txt",
+      "install_path": "/usr/local/lib/docker/cli-plugins/docker-buildx",
+      "install_path_comment": [
+        "The same directory as the pinned Compose plugin. Docker searches",
+        "/usr/local/lib/docker/cli-plugins before /usr/libexec/docker/cli-plugins,",
+        "so a buildx shipped by the docker package is superseded without being",
+        "removed or modified."
+      ]
+    },
+    "minimum_supported": "0.17.0",
+    "minimum_reason": "The floor Compose v5.3.1 itself enforces before it will build."
+  },
   "minimum_versions": {
     "docker_engine": "24.0.0",
     "python": "3.11",

@@ -273,6 +273,33 @@ else
 fi
 
 # ---------------------------------------------------------------------------
+# install_verified_plugin <label> <url> <sha256> <destination>
+#
+# Download, verify, then install. The digest is checked BEFORE the file is
+# given a name anything would execute, and a mismatch removes the download
+# rather than leaving it somewhere hopeful.
+install_verified_plugin() {
+    local label="$1" url="$2" expected="$3" destination="$4"
+    local temp actual
+    require_commands curl sha256sum
+    temp="$(mktemp)"
+    log "downloading ${label}"
+    curl -fsSL --proto '=https' --tlsv1.2 -o "${temp}" "${url}" \
+        || { rm -f "${temp}"; die "${EXIT_PRECONDITION}" "could not download ${url}"; }
+    actual="$(sha256sum "${temp}" | awk '{print $1}')"
+    if [ "${actual}" != "${expected}" ]; then
+        rm -f "${temp}"
+        die "${EXIT_PRECONDITION}" \
+            "${label} checksum mismatch: expected ${expected}, got ${actual}"
+    fi
+    log "checksum verified"
+    mkdir -p "$(dirname "${destination}")"
+    chmod 0755 "${temp}"
+    mv -f "${temp}" "${destination}"
+    log "installed ${label}"
+}
+
+# ---------------------------------------------------------------------------
 stage "4/5  Checking the Docker Compose plugin"
 COMPOSE_VERSION="$(lock_query 'd["docker_compose"]["version"]')"
 COMPOSE_ASSET="$(lock_query 'd["docker_compose"]["linux_aarch64"]["asset"]')"
@@ -300,24 +327,10 @@ else
         remediation "inspect ${COMPOSE_PATH}, then remove it explicitly to allow a pinned reinstall"
         die "${EXIT_PRECONDITION}" "unverifiable docker compose binary"
     fi
-    require_commands curl sha256sum
-    url="https://github.com/docker/compose/releases/download/${COMPOSE_VERSION}/${COMPOSE_ASSET}"
-    temp="$(mktemp)"
-    log "downloading docker compose ${COMPOSE_VERSION}"
-    curl -fsSL --proto '=https' --tlsv1.2 -o "${temp}" "${url}" \
-        || { rm -f "${temp}"; die "${EXIT_PRECONDITION}" "could not download ${url}"; }
-    actual="$(sha256sum "${temp}" | awk '{print $1}')"
-    if [ "${actual}" != "${COMPOSE_SHA}" ]; then
-        rm -f "${temp}"
-        die "${EXIT_PRECONDITION}" \
-            "docker compose checksum mismatch: expected ${COMPOSE_SHA}, got ${actual}"
-    fi
-    log "checksum verified"
-    mkdir -p "$(dirname "${COMPOSE_PATH}")"
-    chmod 0755 "${temp}"
-    mv -f "${temp}" "${COMPOSE_PATH}"
+    install_verified_plugin "docker compose ${COMPOSE_VERSION}" \
+        "https://github.com/docker/compose/releases/download/${COMPOSE_VERSION}/${COMPOSE_ASSET}" \
+        "${COMPOSE_SHA}" "${COMPOSE_PATH}"
     INSTALLED+=("docker-compose-plugin")
-    log "installed docker compose ${COMPOSE_VERSION}"
 fi
 
 # Installing the right file is not the same as the CLI using it. Docker searches
@@ -336,6 +349,62 @@ if [ "${DRY_RUN}" -eq 0 ] && command -v docker >/dev/null 2>&1; then
         die "${EXIT_PRECONDITION}" "an unexpected compose plugin is active"
     fi
     log "docker compose resolves to ${ACTIVE_COMPOSE} from the pinned plugin"
+fi
+
+# ---------------------------------------------------------------------------
+stage "4a/5 Checking the Docker Buildx plugin"
+# Compose v5 has no legacy builder to fall back to. Without buildx it refuses:
+# "compose build requires buildx 0.17.0 or later" -- which is where the first
+# install failed, having passed every other gate. Installed the same way as
+# Compose, into the same directory, so a buildx shipped by the docker package is
+# superseded without being removed or modified.
+BUILDX_VERSION="$(lock_query 'd["docker_buildx"]["version"]')"
+BUILDX_ASSET="$(lock_query 'd["docker_buildx"]["linux_aarch64"]["asset"]')"
+BUILDX_SHA="$(lock_query 'd["docker_buildx"]["linux_aarch64"]["sha256"]')"
+BUILDX_PATH="$(lock_query 'd["docker_buildx"]["linux_aarch64"]["install_path"]')"
+BUILDX_MINIMUM="$(lock_query 'd["docker_buildx"]["minimum_supported"]')"
+
+buildx_is_correct() {
+    [ -x "${BUILDX_PATH}" ] || return 1
+    local actual
+    actual="$(sha256sum "${BUILDX_PATH}" 2>/dev/null | awk '{print $1}')"
+    [ "${actual}" = "${BUILDX_SHA}" ]
+}
+
+if buildx_is_correct; then
+    log "docker buildx ${BUILDX_VERSION} already installed and matches the pinned digest"
+    ALREADY_PRESENT+=("docker-buildx-plugin")
+elif [ "${DRY_RUN}" -eq 1 ]; then
+    log "dry run: would install docker buildx ${BUILDX_VERSION}"
+else
+    if [ -e "${BUILDX_PATH}" ]; then
+        # Present but wrong. Same reasoning as Compose: someone installed this,
+        # and replacing it silently hides both what they were doing and whatever
+        # went wrong.
+        fail "${BUILDX_PATH} exists but does not match the pinned ${BUILDX_VERSION} digest"
+        remediation "inspect ${BUILDX_PATH}, then remove it explicitly to allow a pinned reinstall"
+        die "${EXIT_PRECONDITION}" "unverifiable docker buildx binary"
+    fi
+    install_verified_plugin "docker buildx ${BUILDX_VERSION}" \
+        "https://github.com/docker/buildx/releases/download/${BUILDX_VERSION}/${BUILDX_ASSET}" \
+        "${BUILDX_SHA}" "${BUILDX_PATH}"
+    INSTALLED+=("docker-buildx-plugin")
+fi
+
+# Installing the right file is not the same as the CLI using it, and this is the
+# check that would have caught the original failure before a build was attempted.
+if [ "${DRY_RUN}" -eq 0 ] && command -v docker >/dev/null 2>&1; then
+    ACTIVE_BUILDX="$(docker buildx version 2>/dev/null | awk '{print $2}' | tr -d 'v')"
+    if [ -z "${ACTIVE_BUILDX}" ]; then
+        die "${EXIT_PRECONDITION}" \
+            "the docker CLI does not resolve a buildx plugin; compose build cannot run without one"
+    fi
+    if ! version_at_least "${ACTIVE_BUILDX}" "${BUILDX_MINIMUM}"; then
+        fail "docker buildx resolves to ${ACTIVE_BUILDX}, below the ${BUILDX_MINIMUM} Compose requires"
+        remediation "find / -name docker-buildx -path '*cli-plugins*' 2>/dev/null  # remove the older duplicate"
+        die "${EXIT_PRECONDITION}" "the active buildx is too old to build"
+    fi
+    log "docker buildx resolves to ${ACTIVE_BUILDX} (minimum ${BUILDX_MINIMUM})"
 fi
 
 # ---------------------------------------------------------------------------
