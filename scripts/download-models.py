@@ -81,6 +81,19 @@ def download(url: str, destination: Path, *, expected_sha256: str | None) -> Non
             raise ValueError(
                 f"digest mismatch\n      expected {expected_sha256}\n      actual   {actual}"
             )
+        # tempfile.mkstemp creates 0600 and os.replace preserves it, so without
+        # this every model lands readable only by the account that ran the
+        # download -- root, on a deployment. The containers run as the
+        # unprivileged radio account and mount /models read-only, so they could
+        # not open a single file, and the stack failed at startup with
+        # "model not readable at /models/qwen/Qwen3-0.6B-Q8_0.gguf".
+        #
+        # 0644 is correct rather than merely convenient: these are published
+        # model weights, not secrets. The boundary that matters is that the
+        # containers cannot WRITE them, which the read-only mount enforces.
+        # Widened only after the digest has been verified, so a partial or
+        # corrupt download is never readable by anyone but the downloader.
+        os.chmod(temporary, 0o644)
         os.replace(temporary, destination)
     except BaseException:
         temporary.unlink(missing_ok=True)

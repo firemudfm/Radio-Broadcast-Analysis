@@ -1549,3 +1549,98 @@ def test_no_deployment_path_ever_deletes_images_to_fix_a_build() -> None:
         code = executable_lines(script)
         for forbidden in ("system prune", "image prune", "rmi -f", "volume prune"):
             assert forbidden not in code, f"{script.name} runs docker {forbidden}"
+
+
+# =============================================================================
+# U. A model that verifies but cannot be opened is not installed
+# =============================================================================
+#
+# The api and core stages succeeded; the full stage died because the LLM
+# container could not read its weights:
+#
+#   llm.sh: model not readable at /models/qwen/Qwen3-0.6B-Q8_0.gguf
+#
+# ensure-models.sh had just reported "llm: VERIFIED". Both were true.
+# tempfile.mkstemp creates 0600 and os.replace preserves it, so every model
+# landed readable only by the account that ran the download -- root -- while the
+# containers run as the unprivileged radio account and mount /models read-only.
+# Nothing verified that the account which has to OPEN the file can.
+
+DOWNLOAD_MODELS = SCRIPTS / "download-models.py"
+ENSURE_MODELS = SCRIPTS / "ensure-models.sh"
+
+
+def test_a_downloaded_model_is_installed_readable() -> None:
+    code = DOWNLOAD_MODELS.read_text(encoding="utf-8")
+    assert "os.chmod(temporary, 0o644)" in code, (
+        "mkstemp creates 0600 and os.replace preserves it"
+    )
+
+
+def test_the_mode_is_widened_only_after_the_digest_is_verified() -> None:
+    """A partial or corrupt download must never be readable by anyone but the
+    account fetching it."""
+    code = DOWNLOAD_MODELS.read_text(encoding="utf-8")
+    assert code.index("digest mismatch") < code.index("os.chmod(temporary, 0o644)")
+    assert code.index("os.chmod(temporary, 0o644)") < code.index("os.replace(temporary, destination)")
+
+
+def test_models_are_never_made_writable_by_the_containers() -> None:
+    """They are mounted read-only and the containers must not be able to alter
+    what a later run would then verify as correct."""
+    for path in (DOWNLOAD_MODELS, ENSURE_MODELS):
+        code = path.read_text(encoding="utf-8")
+        for forbidden in ("a+w", "o+w", "0o666", "0o777", "chmod 777", "chmod 666"):
+            assert forbidden not in code, f"{path.name} makes models writable ({forbidden})"
+
+
+def test_the_model_repair_only_adds_read_and_traverse_bits() -> None:
+    code = executable_lines(ENSURE_MODELS)
+    assert "chmod a+r " in code
+    assert "chmod a+rx " in code
+    assert "chown" not in code, "the repair must not take ownership of the model tree"
+    for forbidden in ("rm -rf", "rm -f", "unlink"):
+        assert forbidden not in code, f"ensure-models.sh must never delete a model ({forbidden})"
+
+
+def test_the_repair_targets_only_paths_that_are_actually_unreadable() -> None:
+    """So a correct install is a no-op rather than a recursive chmod of a
+    multi-gigabyte tree on every deployment."""
+    code = executable_lines(ENSURE_MODELS)
+    assert "! -perm -004" in code, "files that are not world-readable"
+    assert "! -perm -005" in code, "directories that are not traversable"
+    assert "-type f" in code and "-type d" in code
+
+
+@runs_the_script
+def test_an_unreadable_model_is_repaired_and_the_repair_is_idempotent(tmp_path: Path) -> None:
+    """The production failure, reproduced: a 0600 model under a model root."""
+    import stat as stat_module
+
+    root = tmp_path / "models"
+    (root / "qwen").mkdir(parents=True)
+    model = root / "qwen" / "Qwen3-0.6B-Q8_0.gguf"
+    model.write_bytes(b"weights")
+    model.chmod(0o600)
+    (root / "qwen").chmod(0o700)
+
+    body = executable_lines(ENSURE_MODELS)
+    start = body.index('stage "Making the models readable by the containers"')
+    repair = body[start:body.index('stage "Model summary"')]
+    program = (
+        f"set -euo pipefail\nsource {LIB.as_posix()}\n"
+        f"MODEL_ROOT={root.as_posix()}\nDRY_RUN=0\n{repair}\n"
+    )
+    first = subprocess.run(  # noqa: S603 - fixed interpreter, argument array
+        [BASH, "-c", program], capture_output=True, text=True, timeout=120, check=False,
+    )
+    assert first.returncode == EXIT_OK, f"{first.stdout}\n{first.stderr}"
+    assert model.stat().st_mode & stat_module.S_IROTH, "the model is still unreadable"
+    assert (root / "qwen").stat().st_mode & stat_module.S_IXOTH, "the directory is not traversable"
+    assert not model.stat().st_mode & stat_module.S_IWOTH, "the model was made writable"
+
+    second = subprocess.run(  # noqa: S603 - fixed interpreter, argument array
+        [BASH, "-c", program], capture_output=True, text=True, timeout=120, check=False,
+    )
+    assert second.returncode == EXIT_OK
+    assert "already readable" in second.stdout, "a correct tree must be a no-op"
