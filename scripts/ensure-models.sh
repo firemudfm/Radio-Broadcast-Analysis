@@ -196,6 +196,49 @@ for role in "${ROLES[@]}"; do
     DOWNLOADED+=("${role}")
 done
 
+stage "Making the models readable by the containers"
+# A model that verifies but cannot be OPENED is not installed, and until now
+# nothing checked the difference. Files downloaded before this release were
+# created 0600 by the account that ran the deployment -- root -- while every
+# container runs as the unprivileged radio account and mounts /models read-only.
+# The stack started and then died with:
+#
+#   llm.sh: model not readable at /models/qwen/Qwen3-0.6B-Q8_0.gguf
+#
+# download-models.py now installs 0644 directly. This repairs what earlier
+# deployments already left on disk, and is a no-op once everything is correct.
+#
+# Only the read bit is added, and only to regular files under the model root.
+# Nothing is chowned, nothing is made writable, and nothing is deleted.
+if [ "${DRY_RUN}" -eq 1 ]; then
+    log "dry run: not adjusting model permissions"
+elif [ ! -d "${MODEL_ROOT}" ]; then
+    log "no model root at ${MODEL_ROOT}; nothing to adjust"
+else
+    UNREADABLE=0
+    while IFS= read -r model_file; do
+        [ -n "${model_file}" ] || continue
+        chmod a+r "${model_file}" || warn "could not make ${model_file} readable"
+        UNREADABLE=$((UNREADABLE + 1))
+    done <<EOF
+$(find "${MODEL_ROOT}" -type f ! -perm -004 2>/dev/null)
+EOF
+    # Directories must also be traversable, or a readable file inside one still
+    # cannot be opened.
+    while IFS= read -r model_dir; do
+        [ -n "${model_dir}" ] || continue
+        chmod a+rx "${model_dir}" || warn "could not make ${model_dir} traversable"
+        UNREADABLE=$((UNREADABLE + 1))
+    done <<EOF
+$(find "${MODEL_ROOT}" -mindepth 1 -type d ! -perm -005 2>/dev/null)
+EOF
+    if [ "${UNREADABLE}" -gt 0 ]; then
+        log "made ${UNREADABLE} model path(s) readable by the container account"
+    else
+        log "every model file is already readable by the container account"
+    fi
+fi
+
 stage "Model summary"
 log "verified (untouched): ${#VERIFIED[@]}${VERIFIED:+ (${VERIFIED[*]})}"
 log "downloaded now:       ${#DOWNLOADED[@]}${DOWNLOADED:+ (${DOWNLOADED[*]})}"
