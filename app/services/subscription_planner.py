@@ -90,10 +90,15 @@ class SubscriptionPlanner:
         database: Any,
         *,
         clock=None,
+        url_resolver=None,
     ) -> None:
         self._settings = settings
         self._database = database
         self._clock = clock or (lambda: datetime.now(UTC))
+        # Optional so every existing caller and test keeps working. Without one
+        # the planner behaves exactly as before: subscriptions are created, and
+        # a station with no catalogue URL simply stays unresolved.
+        self._url_resolver = url_resolver
 
     # -- desired state ---------------------------------------------------------
 
@@ -214,6 +219,8 @@ class SubscriptionPlanner:
         shard_count = self._settings.RADIO_LISTENER_SHARD_COUNT
         created = 0
 
+        resolved_budget = self._settings.RADIO_STATION_URL_RESOLVE_PER_CYCLE
+
         for station_id in sorted(desired):
             shard = stable_shard_index(station_id, shard_count)
             reference_count = reference_counts[station_id]
@@ -237,6 +244,8 @@ class SubscriptionPlanner:
                     )
 
                 self._database.write(insert)
+                if resolved_budget > 0 and self._fill_stream_url(station_id, None, now):
+                    resolved_budget -= 1
                 continue
 
             # Reuse: the reference count rises, the stream is not restarted.
@@ -261,7 +270,80 @@ class SubscriptionPlanner:
                 )
 
             self._database.write(update)
+
+            # Backfill. Every subscription created before stream-URL resolution
+            # existed has a NULL url, and reuse never touches it -- so without
+            # this the stations already on the host would stay skipped forever.
+            if resolved_budget > 0 and self._fill_stream_url(station_id, record, now):
+                resolved_budget -= 1
         return created
+
+    def _fill_stream_url(
+        self,
+        station_id: str,
+        record: dict[str, Any] | None,
+        now: datetime,
+    ) -> bool:
+        """Give a subscription its stream URL. True when a lookup was spent.
+
+        Returns True for an *attempt*, not a success: a failed attempt has cost
+        a Radio Browser call and must count against the per-cycle budget.
+        """
+        if self._url_resolver is None:
+            return False
+        if record is not None:
+            if str(record.get("stream_url") or "").strip():
+                return False
+            retry_after = _parse(record.get("stream_url_retry_after_utc"))
+            if retry_after is not None and retry_after > now:
+                # Backing off from an earlier failure.
+                return False
+
+        url = self._url_resolver.resolve(station_id)
+        stamp = _iso(now)
+        if not url:
+            backoff = self._settings.RADIO_STATION_URL_RETRY_SECONDS
+            retry_at = _iso(now + timedelta(seconds=backoff))
+
+            def mark(connection: sqlite3.Connection, sid=station_id, at=retry_at, s=stamp) -> None:
+                connection.execute(
+                    "UPDATE station_subscriptions SET stream_url_retry_after_utc=?,"
+                    " last_error='stream URL could not be resolved', updated_at_utc=?"
+                    " WHERE station_id=?",
+                    (at, s, sid),
+                )
+
+            self._database.write(mark)
+            return True
+
+        metadata = self._url_resolver.metadata(station_id)
+        name = str(metadata.get("display_name") or "")
+        station_uuid = metadata.get("station_uuid")
+        country = metadata.get("country_code")
+        languages = metadata.get("language_codes_json")
+
+        def store(
+            connection: sqlite3.Connection,
+            sid=station_id,
+            u=url,
+            uuid=station_uuid,
+            nm=name,
+            cc=country,
+            langs=languages,
+            s=stamp,
+        ) -> None:
+            connection.execute(
+                "UPDATE station_subscriptions SET stream_url=?, station_uuid=?,"
+                " display_name=CASE WHEN ?='' THEN display_name ELSE ? END,"
+                " country_code=COALESCE(?, country_code),"
+                " language_codes_json=COALESCE(?, language_codes_json),"
+                " stream_url_retry_after_utc=NULL, last_error=NULL, updated_at_utc=?"
+                " WHERE station_id=?",
+                (u, uuid, nm, nm, cc, langs, s, sid),
+            )
+
+        self._database.write(store)
+        return True
 
     def _wind_down_unreferenced(
         self,

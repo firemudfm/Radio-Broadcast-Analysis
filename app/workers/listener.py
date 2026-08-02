@@ -74,6 +74,9 @@ class ListenerWorker(BaseWorker):
         self._pressure: SpoolPressure = "ok"
         self._admitted = 0
         self._rejected_by_pressure = 0
+        # Stations warned about once already. Bounded by the number of stations
+        # this shard owns, and cleared per station the moment one is resolved.
+        self._unresolved: set[str] = set()
 
     # -- async entry point -----------------------------------------------------
 
@@ -129,15 +132,30 @@ class ListenerWorker(BaseWorker):
         """Stations this shard owns, with their current index version."""
         plans: list[StationPlan] = []
         for row in self.planner.assigned_stations(shard_index=self.shard_index):
+            station_id = str(row.get("station_id"))
             url = str(row.get("stream_url") or "").strip()
             if not url:
                 # A subscription with no resolved stream URL is a catalogue gap,
-                # not a listener failure. Skip it loudly and move on.
-                logger.warning(
-                    "Station has no stream URL; skipping",
-                    extra=log_fields(station_id=str(row.get("station_id"))),
-                )
+                # not a listener failure. Say so ONCE per station: the planner
+                # reconciles every few seconds, so warning on each pass buried
+                # the logs in thousands of copies of the same line and told
+                # nobody anything they did not know after the first one.
+                if station_id not in self._unresolved:
+                    self._unresolved.add(station_id)
+                    logger.warning(
+                        "Station has no stream URL yet; the planner resolves it, skipping for now",
+                        extra=log_fields(
+                            station_id=station_id,
+                            last_error=str(row.get("last_error") or ""),
+                        ),
+                    )
                 continue
+            if station_id in self._unresolved:
+                self._unresolved.discard(station_id)
+                logger.info(
+                    "Station now has a stream URL; starting it",
+                    extra=log_fields(station_id=station_id),
+                )
             plans.append(
                 StationPlan(
                     station_id=str(row["station_id"]),
