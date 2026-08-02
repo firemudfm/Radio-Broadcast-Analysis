@@ -1484,3 +1484,68 @@ def test_the_lock_still_carries_no_secret_or_account_identifier() -> None:
     assert not re.search(r"\bi-[0-9a-f]{8,}\b", text), "an instance id"
     for forbidden in ("AKIA", "ASIA", "PRIVATE KEY", "password", "secret_key"):
         assert forbidden not in text
+
+
+# =============================================================================
+# T. A configured Docker root is not a usable one
+# =============================================================================
+#
+# With buildx pinned, the build finally started -- and BuildKit failed inside
+# the daemon's own storage:
+#
+#   failed to prepare ... : symlink ../<id>/diff
+#   /var/lib/radio/docker/overlay2/l/<link>: no such file or directory
+#
+# `docker info` reported the expected root dir the whole time. Docker can start
+# before the data volume is mounted, and then holds a storage driver
+# initialised on the ROOT filesystem while the path resolves to the volume
+# mounted over it. The check confirmed the configured root and never that the
+# store there could be used.
+
+
+def test_the_image_store_is_checked_not_just_the_configured_root() -> None:
+    code = executable_lines(SCRIPTS / "ensure-host-prerequisites.sh")
+    assert "require_usable_image_store() {" in code
+    assert "overlay2/l" in code, "the link directory overlay2 creates when it initialises"
+    assert code.index("docker active with root dir") < code.index("require_usable_image_store \"${RUNTIME_DATA_ROOT}\"")
+
+
+def test_docker_is_only_restarted_when_nothing_is_running() -> None:
+    """A build is never worth stopping someone's running service for."""
+    code = executable_lines(SCRIPTS / "ensure-host-prerequisites.sh")
+    body = code[code.index("require_usable_image_store() {"):]
+    body = body[:body.index("\n}")]
+    assert 'docker ps --quiet' in body
+    assert body.index("docker ps --quiet") < body.index("systemctl restart docker")
+    assert "restarting Docker would stop them" in body
+
+
+def test_an_unavailable_container_list_prevents_a_restart() -> None:
+    """If the daemon will not say what is running, the one thing not to do is
+    restart it and find out."""
+    code = executable_lines(SCRIPTS / "ensure-host-prerequisites.sh")
+    assert "refusing to restart Docker without knowing what it would stop" in code
+
+
+def test_the_store_is_re_verified_after_the_restart() -> None:
+    """A restart that did not fix it must stop the deployment, not hand a
+    broken store to the build."""
+    code = executable_lines(SCRIPTS / "ensure-host-prerequisites.sh")
+    body = code[code.index("require_usable_image_store() {"):]
+    body = body[:body.index("\n}")]
+    assert body.count("overlay2/l") >= 3, "checked before the restart and again after"
+    assert "the Docker image store is unusable" in body
+
+
+def test_a_different_storage_driver_is_not_second_guessed() -> None:
+    code = executable_lines(SCRIPTS / "ensure-host-prerequisites.sh")
+    assert 'driver}" != "overlay2"' in code.replace("{{.Driver}}", "")
+
+
+def test_no_deployment_path_ever_deletes_images_to_fix_a_build() -> None:
+    """The tempting wrong fix. Pruning during a deployment throws away the
+    previous release's images, which is what a rollback needs."""
+    for script in sorted(SCRIPTS.rglob("*.sh")):
+        code = executable_lines(script)
+        for forbidden in ("system prune", "image prune", "rmi -f", "volume prune"):
+            assert forbidden not in code, f"{script.name} runs docker {forbidden}"
