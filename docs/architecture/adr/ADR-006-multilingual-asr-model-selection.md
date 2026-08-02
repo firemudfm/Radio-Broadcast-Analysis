@@ -159,7 +159,7 @@ model is local.
 ## Reversal strategy
 
 Every knob is configuration. Reverting to the legacy externally-managed ASR is
-`RADIO_PIPELINE_MODE=legacy`. Changing model is: update `models.lock.json`, run
+a rollback to an earlier release. Changing model is: update `models.lock.json`, run
 `download-models.py`, restart the worker. Because `transcripts` records the model
 revision per row, a bad model change is identifiable and re-runnable rather than
 silently mixed into history.

@@ -139,7 +139,6 @@ python3 -c "import secrets; print('RADIO_AUDIO_TOKEN_SECRET=' + secrets.token_ur
 The settings that actually decide behaviour:
 
 ```bash
-RADIO_PIPELINE_MODE=shared_sqs        # `legacy` is the default; opt in explicitly
 RADIO_QUEUE_BACKEND=sqs
 RADIO_SEGMENT_STORE=local             # see ADR-002
 RADIO_TRANSCRIPTION_QUEUE_URL=https://sqs.<region>.amazonaws.com/<acct>/<name>.fifo
@@ -738,25 +737,25 @@ local spool is not shared. See ADR-002.
 
 ## 8. Rolling back
 
-The fastest rollback is a mode flip, not a redeploy:
+There is one pipeline, so there is no mode to flip back to. Rollback is a
+rollback:
 
 ```bash
-sudo sed -i 's/^RADIO_PIPELINE_MODE=.*/RADIO_PIPELINE_MODE=legacy/' \
-    /etc/radio-broadcast-analysis/application.env
-
-sudo docker compose -f compose.yaml -f compose.prod.yaml \
-    --profile pipeline --profile llm down
-
-sudo systemctl start radio-intelligence-api
+sudo scripts/rollback-compose.sh --previous
+sudo scripts/rollback-compose.sh --to-commit <sha> --stage <api|core|full>
 ```
 
-The pipeline workers refuse to start in `legacy` mode, so this is
-self-enforcing. No schema change is needed in either direction: migrations run
-in **both** modes deliberately, so switching is a configuration change rather
-than a data migration.
+Artifact-only: it restores an existing immutable release and existing images
+with `--no-build --pull never`, and never restores the database — that would
+discard every mention written since the backup.
 
-The v0.4 tables and routes are untouched by the new path, so legacy data
-remains readable throughout.
+To narrow scope rather than revert code, deploy the same commit at a smaller
+stage (`--stage api`). Excluded services are stopped and removed, and the
+station subscriptions stay recorded as `pending_capacity` rather than being
+lost.
+
+Historical data written by the removed pipeline remains readable: both paths
+always shared one schema, so nothing needed migrating.
 
 ---
 
@@ -764,7 +763,7 @@ remains readable throughout.
 
 | Symptom | Likely cause | Check |
 |---|---|---|
-| Worker exits immediately with `RADIO_PIPELINE_MODE is 'legacy'` | Mode not enabled | `application.env` |
+| API exits with `settings that no longer exist` | `application.env` still sets a removed setting such as `RADIO_PIPELINE_MODE` | delete the named lines |
 | Container cannot write the spool | Host dir not owned by the container uid | `ls -ln /var/lib/radio`, compare with `id -u radio` |
 | `model_verification_failed` | Models absent or truncated | `scripts/verify-models.py` |
 | LLM container exits 78 | GGUF missing | `ls -l /var/lib/radio/models/qwen/` |

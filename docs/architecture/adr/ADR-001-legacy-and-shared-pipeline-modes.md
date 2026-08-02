@@ -1,5 +1,7 @@
 # ADR-001 — Legacy and shared-SQS pipeline modes
 
+> **SUPERSEDED** by [ADR-single-shared-sqs-pipeline](ADR-single-shared-sqs-pipeline.md). The dual-mode switch was removed once the shared pipeline was the one being deployed. This record is kept as history: it explains why the switch existed, which is worth knowing before anyone proposes another.
+
 Status: **Accepted** · Date: 2026-07-27 · Supersedes: none
 
 ## Context

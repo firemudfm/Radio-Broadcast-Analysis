@@ -12,7 +12,7 @@
 #   * temporary directories and temporary env files, removed on exit;
 #   * a generated throwaway token secret -- no real secret is ever read;
 #   * an obviously fake S3 bucket;
-#   * RADIO_PIPELINE_MODE=legacy, so no SQS queue is required;
+#   * the in-memory queue backend, so no SQS queue is required;
 #   * a non-production port;
 #   * no worker, no model, no AWS call.
 set -euo pipefail
@@ -97,7 +97,7 @@ cat > "${WORKDIR}/smoke.env" <<EOF
 AWS_REGION=eu-north-1
 RADIO_S3_BUCKET=smoke-test-bucket-does-not-exist
 RADIO_AUDIO_TOKEN_SECRET=${SMOKE_SECRET}
-RADIO_PIPELINE_MODE=legacy
+RADIO_QUEUE_BACKEND=memory
 RADIO_SYNC_ENABLED=false
 RADIO_SYNC_ON_STARTUP=false
 RADIO_LLM_ENABLED=false

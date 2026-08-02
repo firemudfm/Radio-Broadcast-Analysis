@@ -97,7 +97,6 @@ async def readiness(request: Request, response: Response) -> ReadinessView:
     stat, no S3 and no LLM call. A readiness probe runs constantly, and one
     that does network I/O fails under exactly the load it exists to detect.
     """
-    settings = request.app.state.settings
     status_service = getattr(request.app.state, "pipeline_status_service", None)
     if status_service is None:
         alive = await asyncio.to_thread(request.app.state.database.ping)

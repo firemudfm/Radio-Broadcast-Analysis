@@ -166,9 +166,18 @@ See `ADR-008` for the sharding path from 8 to 1 000 and why it needs no API chan
 
 ## 6. What stays exactly as it is
 
-`RADIO_PIPELINE_MODE=legacy` is the default. In legacy mode not one new
-component starts, no new setting is required, and the process tree, systemd
-units, S3 behaviour, database rows and API responses are byte-identical to
-`d82d847`. `station_reconciler.py`, the legacy units, the legacy deploy scripts,
-every existing route and every existing table are retained. The 140-test baseline
-must keep passing unchanged — it is a regression gate, not a legacy artefact.
+The **API contract**. Every existing route and response field is preserved,
+including `active_station_limit`, which keeps its name and now reports the
+shared-pipeline active limit. `auth_mode` stays `none`.
+
+The **database**. Both pipelines always shared one schema, so removing the
+legacy runtime was not a data-migration event: campaigns, stations, keywords
+and mentions written by the old path remain readable and are planned as ordinary
+rows. Historical tables are retained.
+
+The **deployment stages** `api` / `core` / `full`. They are rollout stages, not
+pipeline alternatives; `full` always runs this architecture.
+
+What did NOT stay: `RADIO_PIPELINE_MODE`, the systemd unit templates,
+`station_reconciler.py` and the legacy deploy scripts. See
+`adr/ADR-single-shared-sqs-pipeline.md`.
