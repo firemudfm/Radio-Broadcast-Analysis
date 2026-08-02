@@ -76,11 +76,30 @@ MAX_EVIDENCE = 10
 # --- validated result ---------------------------------------------------------
 
 
+# The response grammar no longer bounds string lengths (see
+# RESPONSE_JSON_SCHEMA below), so the bounds are enforced here -- and they
+# TRUNCATE rather than reject. A model that rambles past a cap has still found
+# the mention; failing validation over length would discard a real analysis
+# and replace it with the no-model fallback, which is strictly worse than a
+# shortened summary.
+
+
+def _truncated(value: Any, limit: int) -> Any:
+    if isinstance(value, str) and len(value) > limit:
+        return value[:limit]
+    return value
+
+
 class Entity(BaseModel):
     model_config = ConfigDict(extra="forbid", str_strip_whitespace=True)
 
     name: str = Field(min_length=1, max_length=200)
     type: EntityType = "other"
+
+    @field_validator("name", mode="before")
+    @classmethod
+    def truncate_name(cls, value: Any) -> Any:
+        return _truncated(value, 200)
 
     @field_validator("type", mode="before")
     @classmethod
@@ -95,6 +114,14 @@ class Evidence(BaseModel):
     text: str = Field(min_length=1, max_length=1000)
     start_ms: int = Field(ge=0)
     end_ms: int = Field(ge=0)
+
+    @field_validator("text", mode="before")
+    @classmethod
+    def truncate_text(cls, value: Any) -> Any:
+        # A truncated quote may no longer match the transcript verbatim, in
+        # which case the evidence verifier downstream drops it and flags the
+        # result for review -- the right outcome for an over-length quote.
+        return _truncated(value, 1000)
 
 
 class AnalysisResult(BaseModel):
@@ -119,6 +146,16 @@ class AnalysisResult(BaseModel):
     needs_review: bool = False
     status: str = "ready"
     model: str | None = None
+
+    @field_validator("summary", "translated_summary", mode="before")
+    @classmethod
+    def truncate_summaries(cls, value: Any) -> Any:
+        return _truncated(value, 2000)
+
+    @field_validator("main_topic", mode="before")
+    @classmethod
+    def truncate_main_topic(cls, value: Any) -> Any:
+        return _truncated(value, 300)
 
     @field_validator("sentiment", mode="before")
     @classmethod
@@ -151,6 +188,19 @@ class AnalysisResult(BaseModel):
 
 #: JSON schema handed to llama.cpp so the model is constrained at decode time
 #: rather than merely asked politely for JSON.
+#:
+#: DELIBERATELY NO maxLength ANYWHERE. llama.cpp compiles a string bound into a
+#: bounded grammar repetition -- ``char{0,2000}`` -- and its grammar parser
+#: refuses large ones outright:
+#:
+#:   parse: error parsing grammar: number of rules that are going to be
+#:   repeated multiplied by the new repetition exceeds sane defaults
+#:
+#: which failed EVERY analysis call in production; the model never ran and every
+#: mention carried the deterministic fallback instead. Length limits live in
+#: the pydantic model below, which truncates after decoding. maxItems stays,
+#: because those bounds are tiny (a {0,19} repetition parses fine) and they cap
+#: the number of objects generated, which truncation cannot do afterwards.
 RESPONSE_JSON_SCHEMA: dict[str, Any] = {
     "type": "object",
     "additionalProperties": False,
@@ -159,9 +209,9 @@ RESPONSE_JSON_SCHEMA: dict[str, Any] = {
         "content_type": {"type": "string"},
         "language": {"type": "string"},
         "relevant": {"type": "boolean"},
-        "summary": {"type": "string", "maxLength": 2000},
-        "translated_summary": {"type": "string", "maxLength": 2000},
-        "main_topic": {"type": "string", "maxLength": 300},
+        "summary": {"type": "string"},
+        "translated_summary": {"type": "string"},
+        "main_topic": {"type": "string"},
         "sentiment": {"type": "string", "enum": list(SENTIMENTS)},
         "speaker_stance": {"type": "string", "enum": list(SPEAKER_STANCES)},
         "urgency": {"type": "string", "enum": list(URGENCIES)},

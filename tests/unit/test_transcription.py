@@ -208,3 +208,17 @@ def test_build_engine_selects_faster_whisper(settings: Settings) -> None:
     assert isinstance(engine, FasterWhisperEngine)
     assert engine.compute_type == "int8"
     assert engine.model_name == tuned.RADIO_ASR_MODEL
+
+
+def test_windows_are_decoded_independently() -> None:
+    """condition_on_previous_text must stay off. Conditioning each 30-second
+    window on the previous window's text is what turned one bad window into a
+    runaway loop in production -- music that slipped through classification
+    came out as "right, right, right, ..." for hundreds of tokens, because
+    each window fed the loop to the next."""
+    from pathlib import Path
+
+    source = Path(__file__).resolve().parents[2].joinpath(
+        "app", "services", "transcription.py"
+    ).read_text(encoding="utf-8")
+    assert "condition_on_previous_text=False" in source

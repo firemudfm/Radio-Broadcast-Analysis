@@ -9,6 +9,7 @@ from app.config import Settings
 from app.services.llm_analysis import (
     RESPONSE_JSON_SCHEMA,
     AnalysisRequest,
+    AnalysisResult,
     CircuitBreaker,
     ConversationAnalyzer,
     FakeLlmClient,
@@ -272,3 +273,73 @@ def test_the_transcript_is_truncated_to_the_input_budget(settings: Settings) -> 
     ConversationAnalyzer(settings, client=client).analyze(long_request)
     sent = client.calls[0][1]["content"]
     assert len(sent) < len(long_request.transcript)
+
+
+# --- the response grammar must actually parse ---------------------------------
+#
+# llama.cpp compiles maxLength into a bounded grammar repetition (char{0,2000})
+# and its parser refuses large ones: "number of rules that are going to be
+# repeated multiplied by the new repetition exceeds sane defaults". That failed
+# EVERY analysis call in production -- the model never ran, and every mention
+# carried the deterministic fallback. Length limits belong in the pydantic
+# model, which truncates after decoding.
+
+
+def _walk(schema, path="$"):
+    if isinstance(schema, dict):
+        for key, value in schema.items():
+            yield path, key, value
+            yield from _walk(value, f"{path}.{key}")
+    elif isinstance(schema, list):
+        for index, item in enumerate(schema):
+            yield from _walk(item, f"{path}[{index}]")
+
+
+def test_the_response_schema_contains_no_string_length_bounds() -> None:
+    offenders = [
+        f"{path}.{key}" for path, key, _ in _walk(RESPONSE_JSON_SCHEMA)
+        if key in {"maxLength", "minLength", "pattern"}
+    ]
+    assert not offenders, (
+        f"these compile into grammar repetitions llama.cpp refuses: {offenders}"
+    )
+
+
+def test_array_bounds_stay_small_enough_to_compile() -> None:
+    """maxItems is kept -- it caps how many objects are generated, which
+    truncation cannot do afterwards -- but only because the bounds are tiny.
+    A {0,19} repetition parses; a {0,2000} does not."""
+    for path, key, value in _walk(RESPONSE_JSON_SCHEMA):
+        if key == "maxItems":
+            assert isinstance(value, int) and value <= 32, f"{path}.maxItems={value}"
+
+
+def test_an_overlong_summary_is_truncated_not_rejected() -> None:
+    """Without the grammar bound a rambling model must degrade to a shortened
+    summary, never to a failed validation and the no-model fallback."""
+    result = AnalysisResult.model_validate({"summary": "x" * 5000})
+    assert len(result.summary) == 2000
+
+
+def test_overlong_optional_strings_are_truncated_not_rejected() -> None:
+    result = AnalysisResult.model_validate(
+        {"summary": "ok", "translated_summary": "y" * 5000, "main_topic": "z" * 5000}
+    )
+    assert len(result.translated_summary) == 2000
+    assert len(result.main_topic) == 300
+
+
+def test_an_overlong_entity_name_is_truncated_not_rejected() -> None:
+    result = AnalysisResult.model_validate(
+        {"summary": "ok", "entities": [{"name": "n" * 900}]}
+    )
+    assert len(result.entities[0].name) == 200
+
+
+def test_an_overlong_evidence_quote_is_truncated_not_rejected() -> None:
+    # A truncated quote may stop matching the transcript verbatim; the evidence
+    # verifier then drops it and flags for review, which is the right outcome.
+    result = AnalysisResult.model_validate(
+        {"summary": "ok", "evidence": [{"text": "q" * 3000, "start_ms": 0, "end_ms": 1}]}
+    )
+    assert len(result.evidence[0].text) == 1000
