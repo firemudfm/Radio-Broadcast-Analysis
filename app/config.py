@@ -383,8 +383,19 @@ class Settings(BaseSettings):
     # has been verified for. Raise it from the benchmark harness in
     # docs/CAPACITY.md, not from optimism.
     RADIO_MAX_REQUESTED_UNIQUE_STATIONS: int = 1000
+    # Code defaults are the NO-ENV fallback (dev shells, tests), so they stay at
+    # the measured figure. Production capacity is set in application.env, where
+    # the owner has chosen the application's maximum (512) with the
+    # unbenchmarked-capacity acknowledgement -- see the deployment template.
+    # Setting these defaults to 1000 was tried and refuses to boot: the
+    # validator below caps station capacity at 512.
     RADIO_MAX_ACTIVE_UNIQUE_STATIONS: int = 1
     RADIO_LISTENER_MAX_SESSIONS: int = 1
+    # Read by the deployment's configuration gate, not by the application: the
+    # owner's in-writing acceptance that running above the benchmarked ceiling
+    # is unmeasured. Declared here so the name is a real setting rather than a
+    # string the environment file carries and everything else silently ignores.
+    RADIO_ALLOW_UNBENCHMARKED_CAPACITY: bool = False
     RADIO_LISTENER_SHARD_COUNT: int = 1
     RADIO_LISTENER_SHARD_INDEX: int = 0
     RADIO_STATION_WINDDOWN_GRACE_SECONDS: int = 300

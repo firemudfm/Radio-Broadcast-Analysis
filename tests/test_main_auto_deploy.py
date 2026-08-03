@@ -562,10 +562,25 @@ def test_the_config_script_never_modifies_a_security_group() -> None:
         assert forbidden not in code
 
 
-def test_station_capacity_above_the_reviewed_ceiling_is_rejected() -> None:
+def test_station_capacity_above_the_ceiling_requires_acknowledgement() -> None:
+    """The ceiling is the default, not a wall: the owner lifts it with an
+    explicit in-file acknowledgement, the same idiom as RADIO_ALLOW_DIRECT_HTTP.
+    Nothing dangerous happens silently, and nothing is refused to someone who
+    accepted the risk in writing."""
     code = executable_lines(CONFIG)
     assert "RADIO_MAX_ALLOWED_STATION_CAPACITY" in code
-    assert "exceeds the reviewed ceiling" in code
+    assert "RADIO_ALLOW_UNBENCHMARKED_CAPACITY" in code
+    assert "requires explicit acknowledgement" in code
+
+
+def test_station_capacity_above_the_application_bound_is_always_refused() -> None:
+    """The Settings model refuses values above 512 at container start, so the
+    gate fails fast and names the real limit instead of letting the failure
+    surface inside the image. No acknowledgement changes what the app boots."""
+    code = executable_lines(CONFIG)
+    assert "the application refuses values above 512" in code
+    body = code[code.index("-gt 512"):]
+    assert "die" in body.split("fi")[0], "above 512 must die regardless of the ack"
 
 
 def test_configuration_validation_is_split_into_two_layers() -> None:
@@ -609,10 +624,16 @@ def test_every_template_setting_exists_in_the_settings_model() -> None:
         assert name in known, f"{name} is not a real setting in app/config.py"
 
 
-def test_the_template_sets_the_pilot_capacity_to_one() -> None:
+def test_the_template_sets_the_owner_chosen_maximum() -> None:
+    """The owner directed maximum live capacity; 512 is the application's hard
+    bound, so it is the largest number a first install can actually boot."""
     values = parse_env_template()
-    assert values["RADIO_MAX_ACTIVE_UNIQUE_STATIONS"] == "1"
-    assert values["RADIO_LISTENER_MAX_SESSIONS"] == "1"
+    assert values["RADIO_MAX_ACTIVE_UNIQUE_STATIONS"] == "512"
+    assert values["RADIO_LISTENER_MAX_SESSIONS"] == "512"
+    assert values["RADIO_ALLOW_UNBENCHMARKED_CAPACITY"] == "1", (
+        "above the ceiling the acknowledgement must ship too, or a first "
+        "install fails its own configuration gate"
+    )
 
 
 def test_the_template_configures_the_only_pipeline() -> None:
@@ -628,7 +649,7 @@ def test_the_template_states_both_capacity_numbers() -> None:
     the other is how "1,000 stations" becomes a claim about live decoding."""
     values = parse_env_template()
     assert values["RADIO_MAX_REQUESTED_UNIQUE_STATIONS"] == "1000"
-    assert values["RADIO_MAX_ACTIVE_UNIQUE_STATIONS"] == "1"
+    assert values["RADIO_MAX_ACTIVE_UNIQUE_STATIONS"] == "512"
 
 
 def test_the_template_keeps_speech_over_music() -> None:
@@ -644,10 +665,13 @@ def test_the_template_contains_no_real_secret() -> None:
     assert values["RADIO_AUDIO_TOKEN_SECRET"] == "REPLACE_WITH_GENERATED_SECRET"
 
 
-def test_the_template_makes_no_thousand_station_claim() -> None:
+def test_the_template_makes_no_measured_capacity_claim() -> None:
+    """Maximum configured capacity is not measured capacity, and the template
+    must keep saying so."""
     text = APP_ENV_TEMPLATE.read_text(encoding="utf-8")
-    assert "1,000" in text or "1000" in text, "the limitation should be stated"
-    assert "no evidence this host supports anything near 1,000" in text
+    assert "unmeasured above 1" in text, "the honest limitation must be stated"
+    assert "hard bound" in text, "512 must be explained as the app's limit, not a target"
+    assert "a full spool drops audio" in text
 
 
 # =============================================================================
@@ -1644,3 +1668,104 @@ def test_an_unreadable_model_is_repaired_and_the_repair_is_idempotent(tmp_path: 
     )
     assert second.returncode == EXIT_OK
     assert "already readable" in second.stdout, "a correct tree must be a no-op"
+
+
+# =============================================================================
+# V. The capacity ceiling is the owner's to lift -- explicitly
+# =============================================================================
+
+
+def seeded_application_env(directory: Path, capacity: int, *, ack: str | None) -> None:
+    application = directory / "application.env"
+    lines = [
+        "RADIO_AUDIO_TOKEN_SECRET=" + "s" * 64,
+        "RADIO_QUEUE_BACKEND=sqs",
+        f"RADIO_MAX_ACTIVE_UNIQUE_STATIONS={capacity}",
+        f"RADIO_LISTENER_MAX_SESSIONS={capacity}",
+    ]
+    if ack is not None:
+        lines.append(f"RADIO_ALLOW_UNBENCHMARKED_CAPACITY={ack}")
+    application.write_text("\n".join(lines) + "\n", encoding="utf-8")
+    application.chmod(0o640)
+
+
+@runs_the_script
+def test_capacity_above_the_ceiling_is_refused_without_the_acknowledgement(
+    tmp_path: Path,
+) -> None:
+    env_dir = tmp_path / "etc"
+    seed_env_dir(env_dir)
+    seeded_application_env(env_dir, 512, ack=None)
+    result = run_config(env_dir)
+    assert result.returncode == EXIT_PRECONDITION
+    assert "RADIO_ALLOW_UNBENCHMARKED_CAPACITY=1" in result.stderr, (
+        "the refusal must say exactly how the owner lifts it"
+    )
+
+
+@runs_the_script
+def test_the_owner_can_lift_the_ceiling_in_writing(tmp_path: Path) -> None:
+    env_dir = tmp_path / "etc"
+    seed_env_dir(env_dir)
+    seeded_application_env(env_dir, 512, ack="1")
+    result = run_config(env_dir)
+    assert result.returncode == EXIT_OK, f"{result.stdout}\n{result.stderr}"
+    assert "explicitly acknowledged" in result.stderr, (
+        "running above the ceiling must still be called out loudly"
+    )
+
+
+@runs_the_script
+def test_a_non_one_acknowledgement_does_not_lift_the_ceiling(tmp_path: Path) -> None:
+    """Only the exact value 1 counts as in-writing acceptance."""
+    env_dir = tmp_path / "etc"
+    seed_env_dir(env_dir)
+    seeded_application_env(env_dir, 64, ack="yes")
+    assert run_config(env_dir).returncode == EXIT_PRECONDITION
+
+
+@runs_the_script
+def test_capacity_above_the_application_bound_is_refused_even_with_the_ack(
+    tmp_path: Path,
+) -> None:
+    """The app refuses >512 at boot; the gate must fail fast and say so
+    rather than let the failure surface inside the image."""
+    env_dir = tmp_path / "etc"
+    seed_env_dir(env_dir)
+    seeded_application_env(env_dir, 1000, ack="1")
+    result = run_config(env_dir)
+    assert result.returncode == EXIT_PRECONDITION
+    assert "refuses values above 512" in result.stderr
+
+
+@runs_the_script
+def test_capacity_at_or_below_the_ceiling_needs_no_acknowledgement(
+    tmp_path: Path,
+) -> None:
+    env_dir = tmp_path / "etc"
+    seed_env_dir(env_dir)
+    seeded_application_env(env_dir, 8, ack=None)
+    result = run_config(env_dir)
+    assert result.returncode == EXIT_OK, f"{result.stdout}\n{result.stderr}"
+    # The capacity warning specifically -- the 0.0.0.0 exposure warning also
+    # says "explicitly acknowledged" and legitimately appears here.
+    assert "above the benchmarked ceiling" not in result.stderr
+
+
+def test_the_template_is_internally_coherent() -> None:
+    """The template ships the owner's chosen maximum, so it must also ship the
+    acknowledgement that makes a first install actually deploy."""
+    text = APP_ENV_TEMPLATE.read_text(encoding="utf-8")
+    values = dict(
+        line.split("=", 1) for line in text.splitlines()
+        if "=" in line and not line.lstrip().startswith("#")
+    )
+    active = int(values["RADIO_MAX_ACTIVE_UNIQUE_STATIONS"])
+    sessions = int(values["RADIO_LISTENER_MAX_SESSIONS"])
+    assert active <= 512, "the application refuses more at boot"
+    assert sessions <= active, "Settings enforces sessions <= active"
+    if active > 8:
+        assert values.get("RADIO_ALLOW_UNBENCHMARKED_CAPACITY") == "1", (
+            "above the ceiling the template must carry the acknowledgement, "
+            "or every first install fails its own configuration gate"
+        )
