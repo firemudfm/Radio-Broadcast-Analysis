@@ -360,6 +360,30 @@ class ListenerWorker(BaseWorker):
                     _iso(status.started_at_utc),
                 ),
             )
+            # The planner admits a station as 'starting' and nothing ever
+            # advanced it: subscriptions sat at 'starting' forever while their
+            # sessions streamed for hours, so every capacity readout lied. The
+            # session status is the ground truth, so the transition lives here,
+            # in the same transaction as the status row.
+            mapped = _map_status(status.status)
+            if mapped == "streaming":
+                connection.execute(
+                    "UPDATE station_subscriptions SET state='active',"
+                    " state_reason=NULL, updated_at_utc=?"
+                    " WHERE station_id=? AND state IN ('starting','degraded')",
+                    (_iso(datetime.now(UTC)), status.station_id),
+                )
+            elif mapped in {"reconnecting", "failed"}:
+                connection.execute(
+                    "UPDATE station_subscriptions SET state='degraded',"
+                    " state_reason=?, updated_at_utc=?"
+                    " WHERE station_id=? AND state IN ('starting','active')",
+                    (
+                        (status.last_error or mapped)[:300],
+                        _iso(datetime.now(UTC)),
+                        status.station_id,
+                    ),
+                )
 
         with contextlib.suppress(Exception):
             await asyncio.to_thread(self.database.write, write)
