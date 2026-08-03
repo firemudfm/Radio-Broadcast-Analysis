@@ -1,0 +1,126 @@
+@startuml radio-broadcast-pipeline
+' =============================================================================
+' Radio Broadcast Analysis -- the one production pipeline, campaign to mention.
+'
+' Every box and arrow below corresponds to real code, named in [brackets].
+'
+' Render options:
+'   * draw.io:  Arrange > Insert > Advanced > PlantUML...  (paste this file)
+'   * VS Code:  PlantUML extension (Alt+D preview)
+'   * CLI:      plantuml docs/architecture/diagrams/pipeline-flow.puml
+'
+' The AWS icons load from the official aws-icons-for-plantuml release, which
+' the draw.io / PlantUML renderer fetches at render time (internet required).
+'
+' Arrow colours, one per stage of the pipeline:
+'   blue    #1F77B4  control plane (campaigns, planning)
+'   teal    #0E8088  capture (streams -> spool)
+'   orange  #E68A00  transcription and keyword matching
+'   purple  #8E44AD  conversation analysis (LLM)
+'   green   #2E8B57  durable results and the dashboard
+'   gray    #7F8C8D  housekeeping
+' =============================================================================
+
+!define AWSPuml https://raw.githubusercontent.com/awslabs/aws-icons-for-plantuml/v20.0/dist
+!include AWSPuml/AWSCommon.puml
+!include AWSPuml/General/User.puml
+!include AWSPuml/General/Internet.puml
+!include AWSPuml/Compute/EC2.puml
+!include AWSPuml/Storage/SimpleStorageService.puml
+!include AWSPuml/ApplicationIntegration/SimpleQueueService.puml
+
+skinparam rectangle {
+  RoundCorner 8
+}
+skinparam database {
+  BackgroundColor #FDF6E3
+}
+skinparam frame {
+  BorderColor #444444
+}
+left to right direction
+
+' --- people and the outside world --------------------------------------------
+
+User(operator, "Brand team", "creates campaigns, reads mentions")
+Internet(radio, "Radio stations", "live Icecast and HLS audio streams")
+rectangle "Radio Browser API\n(community catalogue)" as radiobrowser #EEEEEE
+
+' --- the EC2 host: seven Compose containers ----------------------------------
+
+frame "EC2 aarch64 host  --  docker compose (7 containers)" as host {
+
+  rectangle "**api**\nFastAPI :8788\n[app/main.py]" as api #D6EAF8
+  rectangle "**planner**\nsubscriptions, keyword index,\nstream URLs, outbox -> SQS\n[app/workers/planner.py]" as planner #D6EAF8
+  rectangle "**listener**\nffmpeg decode per station\nclassifier + Opus encoder\n[app/workers/listener.py]" as listener #D1F2EB
+  rectangle "**transcription-worker**\nfaster-whisper ASR\ncombined keyword index\n[app/workers/transcription.py]" as asr #FDEBD0
+  rectangle "**analysis-worker**\nconversation -> mention\n[app/workers/analysis.py]" as analysis #E8DAEF
+  rectangle "**llm**\nllama.cpp + Qwen3 :8790\n(internal only, never published)\n[docker/llm.Dockerfile]" as llm #E8DAEF
+  rectangle "**cleanup-worker**\nprunes disposable segments\n[app/workers/cleanup.py]" as cleanup #EAECEE
+
+  database "SQLite (WAL)\ncampaigns - subscriptions\nsegments - transcripts\nconversations - mentions\n[app/db.py, migrations]" as db
+  database "EBS spool\nOpus segments\nretained = evidence\n[/var/lib/radio/spool]" as spool
+  database "Models (EBS)\nWhisper - Qwen - VAD\n[/var/lib/radio/models]" as models
+}
+
+' --- AWS services -------------------------------------------------------------
+
+SimpleQueueService(sqsT, "radio-transcription.fifo", "MessageGroupId = station_id")
+SimpleQueueService(sqsA, "radio-analysis.fifo", "MessageGroupId = station_id")
+SimpleQueueService(dlq, "DLQs (.fifo)", "poisoned messages")
+SimpleStorageService(s3, "S3 bucket", "mentions/YYYY/MM/DD/ one folder per mention")
+
+' --- 1-3: control plane (blue) ------------------------------------------------
+
+operator -[#1F77B4]-> api : (1) create campaign
+api -[#1F77B4]-> db : (2) campaign + stations + keywords
+planner -[#1F77B4]-> db : (3) one subscription per DISTINCT\nstation + keyword index
+planner -[#1F77B4]-> radiobrowser : (3a) resolve stream URL once
+
+' --- 4-5: capture (teal) ------------------------------------------------------
+
+radio -[#0E8088]-> listener : (4) live audio
+listener -[#0E8088]-> spool : (5) Opus segments\n(songs discarded)
+listener -[#0E8088]-> db : (5a) segment + job + outbox,\nONE transaction
+
+' --- 6-7: transcription (orange) ---------------------------------------------
+
+planner -[#E68A00]-> sqsT : (6) outbox -> queue
+sqsT -[#E68A00]-> asr : (7) transcription job
+models .[#E68A00].> asr : Whisper weights
+asr -[#E68A00]-> db : (7a) transcript + matches\n+ conversations
+
+' --- 8: analysis (purple) -----------------------------------------------------
+
+planner -[#8E44AD]-> sqsA : (8) analysis job
+sqsA -[#8E44AD]-> analysis : (8a) matched conversation
+analysis -[#8E44AD]-> llm : (8b) constrained JSON,\nonly after a match
+models .[#8E44AD].> llm : Qwen3 weights
+
+' --- 9-10: results (green) ----------------------------------------------------
+
+analysis -[#2E8B57]-> db : (9) mention + attribution
+analysis -[#2E8B57]-> s3 : (9a) three JSON documents
+operator <-[#2E8B57]- api : (10) dashboard + audio playback
+
+' --- housekeeping (gray) ------------------------------------------------------
+
+cleanup -[#7F8C8D]-> spool : delete disposable only
+sqsT .[#7F8C8D].> dlq
+sqsA .[#7F8C8D].> dlq
+
+legend right
+  |= colour |= stage |
+  | <#1F77B4> | control plane: campaign -> subscriptions |
+  | <#0E8088> | capture: stream -> classified Opus segments |
+  | <#E68A00> | transcription + keyword matching |
+  | <#8E44AD> | LLM analysis (after a confirmed match only) |
+  | <#2E8B57> | durable results: SQLite + S3 -> dashboard |
+  | <#7F8C8D> | housekeeping and dead letters |
+
+  One listener per DISTINCT station, shared by every campaign.
+  One transcription per segment. One analysis per conversation.
+  Attribution to campaigns/keywords is many-to-many in mapping tables.
+endlegend
+
+@enduml
