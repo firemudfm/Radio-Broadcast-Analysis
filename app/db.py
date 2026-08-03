@@ -640,6 +640,98 @@ class Database:
         )
         return mention_id
 
+    # The dashboard read path serves BOTH mention stores through one shape:
+    #
+    #   * the legacy v0.3 `mentions` table (rows written by the old S3 sync);
+    #   * the shared-pipeline tables (`mention_events` + `mention_campaigns` +
+    #     `mention_keywords` + `analysis_results`), which are what production
+    #     actually writes.
+    #
+    # Without the second branch the dashboard read 0 forever while 73 real
+    # mentions accumulated: the refactor kept the API contract and the new
+    # writer, and nothing bridged them. The pipeline branch aliases its columns
+    # to the legacy row shape, so _mention() and every endpoint stay unchanged.
+    # `pipeline_mention` marks which branch a row came from, because the detail
+    # view must NOT run the legacy S3-transcript + on-demand-LLM machinery for
+    # a mention whose analysis the worker already computed.
+    _LEGACY_MENTION_SQL = """
+        SELECT m.id AS id, m.campaign_id AS campaign_id,
+               c.name AS campaign_name, k.value AS keyword_value,
+               m.matched_alias AS matched_alias,
+               m.station_id AS station_id, m.station_name AS station_name,
+               m.station_country_code AS station_country_code,
+               m.station_language_codes_json AS station_language_codes_json,
+               m.context AS context,
+               m.detected_language AS detected_language,
+               m.language_probability AS language_probability,
+               m.sentiment_label AS sentiment_label,
+               m.sentiment_score AS sentiment_score,
+               m.sentiment_margin AS sentiment_margin,
+               m.needs_review AS needs_review,
+               m.broadcast_start_utc AS broadcast_start_utc,
+               m.broadcast_end_utc AS broadcast_end_utc,
+               m.audio_clip_start_utc AS audio_clip_start_utc,
+               m.audio_clip_end_utc AS audio_clip_end_utc,
+               m.audio_s3_key AS audio_s3_key,
+               m.raw_audio_s3_key AS raw_audio_s3_key,
+               m.transcript_s3_key AS transcript_s3_key,
+               NULL AS conversation_id, NULL AS transcript_id,
+               0 AS pipeline_mention
+        FROM mentions m
+        JOIN campaigns c ON c.id=m.campaign_id
+        JOIN campaign_keywords k ON k.id=m.campaign_keyword_id
+    """
+
+    _PIPELINE_MENTION_SQL = """
+        SELECT e.mention_id AS id, mc.campaign_id AS campaign_id,
+               c.name AS campaign_name,
+               COALESCE((SELECT mk.canonical_value FROM mention_keywords mk
+                          WHERE mk.mention_id=e.mention_id
+                            AND mk.campaign_id=mc.campaign_id
+                          ORDER BY mk.confirmed DESC, mk.rowid LIMIT 1), '')
+                 AS keyword_value,
+               (SELECT mk.matched_text FROM mention_keywords mk
+                 WHERE mk.mention_id=e.mention_id
+                   AND mk.campaign_id=mc.campaign_id
+                 ORDER BY mk.confirmed DESC, mk.rowid LIMIT 1) AS matched_alias,
+               e.station_id AS station_id, e.station_name AS station_name,
+               ss.country_code AS station_country_code,
+               COALESCE(ss.language_codes_json, '[]')
+                 AS station_language_codes_json,
+               COALESCE(ar.summary, '') AS context,
+               e.detected_language AS detected_language,
+               e.language_probability AS language_probability,
+               CASE WHEN ar.sentiment IN ('positive', 'negative')
+                    THEN ar.sentiment ELSE 'neutral' END AS sentiment_label,
+               ar.confidence AS sentiment_score,
+               NULL AS sentiment_margin,
+               COALESCE(ar.needs_review, 1) AS needs_review,
+               e.broadcast_start_utc AS broadcast_start_utc,
+               e.broadcast_end_utc AS broadcast_end_utc,
+               e.broadcast_start_utc AS audio_clip_start_utc,
+               COALESCE(e.broadcast_end_utc, e.broadcast_start_utc)
+                 AS audio_clip_end_utc,
+               CASE WHEN e.evidence_available=1 THEN e.evidence_storage_key
+                    END AS audio_s3_key,
+               NULL AS raw_audio_s3_key, NULL AS transcript_s3_key,
+               e.conversation_id AS conversation_id,
+               e.transcript_id AS transcript_id,
+               1 AS pipeline_mention
+        FROM mention_events e
+        JOIN mention_campaigns mc
+          ON mc.mention_id=e.mention_id AND mc.included=1
+        JOIN campaigns c ON c.id=mc.campaign_id
+        LEFT JOIN analysis_results ar ON ar.mention_id=e.mention_id
+        LEFT JOIN station_subscriptions ss ON ss.station_id=e.station_id
+    """
+
+    @property
+    def _mention_union_sql(self) -> str:
+        return (
+            f"SELECT * FROM ({self._LEGACY_MENTION_SQL}"
+            f" UNION ALL {self._PIPELINE_MENTION_SQL}) m"
+        )
+
     def list_mentions(
         self,
         *,
@@ -664,14 +756,12 @@ class Database:
         with self._lock:
             total = int(
                 self._conn().execute(
-                    f"SELECT count(*) FROM mentions m WHERE {where_sql}", values  # nosec B608 (hardcoded predicates; values parameterized)
+                    f"SELECT count(*) FROM ({self._mention_union_sql} WHERE {where_sql})",  # nosec B608 (hardcoded predicates; values parameterized)
+                    values,
                 ).fetchone()[0]
             )
             mention_sql = (
-                "SELECT m.*, c.name AS campaign_name, k.value AS keyword_value"
-                " FROM mentions m"
-                " JOIN campaigns c ON c.id=m.campaign_id"
-                " JOIN campaign_keywords k ON k.id=m.campaign_keyword_id"
+                f"{self._mention_union_sql}"
                 f" WHERE {where_sql}"  # nosec B608 (hardcoded predicates; values parameterized)
                 " ORDER BY m.broadcast_start_utc DESC, m.id DESC"
                 " LIMIT ? OFFSET ?"
@@ -682,13 +772,7 @@ class Database:
     def mention_view_by_id(self, mention_id: str) -> dict[str, Any] | None:
         with self._lock:
             row = self._conn().execute(
-                """
-                SELECT m.*, c.name AS campaign_name, k.value AS keyword_value
-                FROM mentions m
-                JOIN campaigns c ON c.id=m.campaign_id
-                JOIN campaign_keywords k ON k.id=m.campaign_keyword_id
-                WHERE m.id=?
-                """,
+                f"{self._mention_union_sql} WHERE m.id=? LIMIT 1",  # nosec B608 (static SQL, parameterized)
                 (mention_id,),
             ).fetchone()
             return self._mention(row) if row else None
@@ -698,13 +782,13 @@ class Database:
         summary = {"positive": 0, "neutral": 0, "negative": 0, "needs_review": 0}
         with self._lock:
             rows = self._conn().execute(
-                """
+                f"""
                 SELECT sentiment_label, count(*) AS count,
                        sum(CASE WHEN needs_review=1 THEN 1 ELSE 0 END) AS review_count
-                FROM mentions
+                FROM ({self._mention_union_sql})
                 WHERE broadcast_start_utc >= ?
                 GROUP BY sentiment_label
-                """,
+                """,  # nosec B608 (static SQL, parameterized)
                 (cutoff,),
             ).fetchall()
         for row in rows:
@@ -719,13 +803,7 @@ class Database:
         """Return the complete internal mention row needed for transcript assembly."""
         with self._lock:
             row = self._conn().execute(
-                """
-                SELECT m.*, c.name AS campaign_name, k.value AS keyword_value
-                FROM mentions m
-                JOIN campaigns c ON c.id=m.campaign_id
-                JOIN campaign_keywords k ON k.id=m.campaign_keyword_id
-                WHERE m.id=?
-                """,
+                f"{self._mention_union_sql} WHERE m.id=? LIMIT 1",  # nosec B608 (static SQL, parameterized)
                 (mention_id,),
             ).fetchone()
             if row is None:
@@ -735,6 +813,48 @@ class Database:
                 str(record.get("station_language_codes_json") or "[]")
             )
             return record
+
+    # -- pipeline-mention detail helpers ----------------------------------------
+
+    def pipeline_conversation_transcripts(self, conversation_id: str) -> list[dict[str, Any]]:
+        """Transcript rows for one conversation, best pass per segment.
+
+        Pass B re-transcribes a segment more thoroughly after a match; where a
+        segment has both, only pass B is returned so text is never duplicated.
+        """
+        with self._lock:
+            rows = self._conn().execute(
+                """
+                SELECT t.transcript_id, t.segment_id, t.text, t.detected_language,
+                       t.asr_pass, t.created_at_utc
+                FROM transcripts t
+                WHERE t.conversation_id=?
+                  AND NOT (t.asr_pass='a' AND EXISTS (
+                        SELECT 1 FROM transcripts b
+                        WHERE b.segment_id=t.segment_id AND b.asr_pass='b'))
+                ORDER BY t.created_at_utc, t.transcript_id
+                """,
+                (conversation_id,),
+            ).fetchall()
+            return [dict(row) for row in rows]
+
+    def pipeline_mention_keywords(self, mention_id: str) -> list[dict[str, Any]]:
+        with self._lock:
+            rows = self._conn().execute(
+                """
+                SELECT DISTINCT canonical_value, matched_text
+                FROM mention_keywords WHERE mention_id=?
+                """,
+                (mention_id,),
+            ).fetchall()
+            return [dict(row) for row in rows]
+
+    def pipeline_analysis_row(self, mention_id: str) -> dict[str, Any] | None:
+        with self._lock:
+            row = self._conn().execute(
+                "SELECT * FROM analysis_results WHERE mention_id=?", (mention_id,)
+            ).fetchone()
+            return dict(row) if row else None
 
     def analysis_record(self, mention_id: str) -> dict[str, Any] | None:
         with self._lock:

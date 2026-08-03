@@ -39,6 +39,13 @@ class MentionAnalysisService:
         mention = self._database.get_mention_detail_record(mention_id)
         if mention is None:
             return None
+        if mention.get("pipeline_mention"):
+            # A shared-pipeline mention already carries its transcript (SQLite)
+            # and its analysis (computed by the analysis worker). The legacy
+            # machinery below would fetch transcripts from S3 keys this mention
+            # does not have and run a SECOND, on-demand LLM analysis from the
+            # API process -- both wrong here.
+            return self._pipeline_detail(mention)
         conversation = self._conversation.build(mention)
         analysis = (
             self._analysis(mention, conversation, refresh=True)
@@ -58,6 +65,10 @@ class MentionAnalysisService:
         mention = self._database.get_mention_detail_record(mention_id)
         if mention is None:
             return None
+        if mention.get("pipeline_mention"):
+            # The analysis worker owns pipeline analyses; the API never re-runs
+            # them. "Re-analyse" simply returns the worker's result.
+            return self._pipeline_detail(mention)
         conversation = self._conversation.build(mention)
         analysis = self._analysis(mention, conversation, refresh=force)
         mention_view = self._database.mention_view_by_id(mention_id)
@@ -67,6 +78,119 @@ class MentionAnalysisService:
             "mention": mention_view,
             **conversation,
             "analysis": analysis,
+        }
+
+    # -- pipeline mentions -----------------------------------------------------
+
+    def _pipeline_detail(self, mention: dict[str, Any]) -> dict[str, Any] | None:
+        mention_id = str(mention["id"])
+        mention_view = self._database.mention_view_by_id(mention_id)
+        if mention_view is None:
+            return None
+
+        rows = self._database.pipeline_conversation_transcripts(
+            str(mention.get("conversation_id") or "")
+        )
+        segments: list[dict[str, Any]] = []
+        cursor = 0
+        parts: list[str] = []
+        for row in rows:
+            text = str(row.get("text") or "").strip()
+            if not text:
+                continue
+            start = cursor
+            end = start + len(text)
+            segments.append(
+                {
+                    "id": str(row["transcript_id"]),
+                    "text": text,
+                    "start_char": start,
+                    "end_char": end,
+                    "detected_language": row.get("detected_language"),
+                    # The transcript lives in SQLite, not S3; the id is the key.
+                    "source_transcript_key": str(row["transcript_id"]),
+                }
+            )
+            parts.append(text)
+            cursor = end + 1  # the joining newline
+        full_transcript = "\n".join(parts)
+
+        # Highlights are located by searching the committed text for the words
+        # the matcher actually matched -- never invented positions.
+        highlights: list[dict[str, Any]] = []
+        haystack = full_transcript.casefold()
+        for keyword in self._database.pipeline_mention_keywords(mention_id):
+            needle = str(keyword.get("matched_text") or "").strip()
+            if not needle:
+                continue
+            found = haystack.find(needle.casefold())
+            if found < 0:
+                continue
+            highlights.append(
+                {
+                    "start_char": found,
+                    "end_char": found + len(needle),
+                    "text": full_transcript[found : found + len(needle)],
+                    "keyword": str(keyword.get("canonical_value") or needle),
+                    "matched_alias": needle,
+                    "method": "exact",
+                }
+            )
+
+        highlighted = None
+        if highlights:
+            first = highlights[0]
+            line_start = full_transcript.rfind("\n", 0, int(first["start_char"])) + 1
+            line_end = full_transcript.find("\n", int(first["end_char"]))
+            highlighted = full_transcript[
+                line_start : line_end if line_end >= 0 else len(full_transcript)
+            ]
+
+        return {
+            "mention": mention_view,
+            "full_transcript": full_transcript,
+            "highlighted_sentence": highlighted,
+            "transcript_segments": segments,
+            "words": [],
+            "highlights": highlights,
+            "transcript_source_keys": [segment["id"] for segment in segments],
+            "analysis": self._pipeline_analysis_view(mention_id),
+        }
+
+    def _pipeline_analysis_view(self, mention_id: str) -> dict[str, Any]:
+        row = self._database.pipeline_analysis_row(mention_id)
+        if row is None:
+            return self._status_document(status="pending", error=None)
+        raw_status = str(row.get("status") or "ready")
+        # A fallback analysis IS a usable result; needs_review carries the
+        # quality signal. The API status vocabulary has no 'fallback'.
+        status = {"ready": "ready", "fallback": "ready", "disabled": "disabled"}.get(
+            raw_status, "error"
+        )
+        sentiment = str(row.get("sentiment") or "") or None
+        try:
+            key_points = [str(item) for item in json.loads(str(row.get("key_points_json") or "[]"))]
+        except (TypeError, ValueError):
+            key_points = []
+        try:
+            evidence_items = json.loads(str(row.get("evidence_json") or "[]"))
+            evidence = [
+                str(item.get("text") if isinstance(item, dict) else item)
+                for item in evidence_items
+            ]
+        except (TypeError, ValueError):
+            evidence = []
+        return {
+            "status": status,
+            "model": row.get("model"),
+            "summary": str(row.get("summary") or "") or None,
+            "sentiment": sentiment if sentiment in {"positive", "neutral", "negative", "mixed"} else None,
+            "key_points": key_points,
+            "evidence": [text for text in evidence if text],
+            "confidence": row.get("confidence"),
+            "needs_review": bool(row.get("needs_review")),
+            "generated_at_utc": row.get("updated_at_utc"),
+            "error": str(row.get("error") or "") or None,
         }
 
     def _cached_or_pending(
