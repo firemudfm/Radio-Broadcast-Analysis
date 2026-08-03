@@ -209,13 +209,43 @@ if [ -f "${APPLICATION}" ]; then
 
     # Capacity sanity. This host is verified for one unique live station; a
     # value raised without measuring throughput fills the spool and loses audio.
+    #
+    # The ceiling is the DEFAULT, not a wall. The owner can lift it with an
+    # explicit acknowledgement in the same file -- the same idiom as
+    # RADIO_ALLOW_DIRECT_HTTP for the 0.0.0.0 exposure: the dangerous thing is
+    # never done silently, and never refused to someone who has said, in
+    # writing, that they understand what they are accepting. The application
+    # itself still refuses values above 512, which is the hard bound of the
+    # listener's session model, not a policy.
     capacity="$(sed -nE 's/^[[:space:]]*RADIO_MAX_ACTIVE_UNIQUE_STATIONS=([0-9]+).*/\1/p' \
         "${APPLICATION}" | tail -1)"
     if [ -n "${capacity}" ]; then
         max_allowed="${RADIO_MAX_ALLOWED_STATION_CAPACITY:-8}"
+        capacity_ack="$(sed -nE 's/^[[:space:]]*RADIO_ALLOW_UNBENCHMARKED_CAPACITY=(.*)$/\1/p' \
+            "${APPLICATION}" | tail -1)"
+        if [ "${capacity}" -gt 512 ]; then
+            # Not a policy: the Settings model refuses it at container start,
+            # so accepting it here would only move the failure somewhere less
+            # helpful. No acknowledgement changes what the application boots.
+            fail "RADIO_MAX_ACTIVE_UNIQUE_STATIONS=${capacity}: the application refuses values above 512"
+            remediation "set RADIO_MAX_ACTIVE_UNIQUE_STATIONS and RADIO_LISTENER_MAX_SESSIONS to 512 or less in ${APPLICATION}"
+            die "${EXIT_PRECONDITION}" "station capacity above the application's hard bound"
+        fi
         if [ "${capacity}" -gt "${max_allowed}" ]; then
-            die "${EXIT_PRECONDITION}" \
-                "RADIO_MAX_ACTIVE_UNIQUE_STATIONS=${capacity} exceeds the reviewed ceiling of ${max_allowed} for this host"
+            if [ "${capacity_ack}" != "1" ]; then
+                fail "RADIO_MAX_ACTIVE_UNIQUE_STATIONS=${capacity} exceeds the benchmarked ceiling of ${max_allowed} for this host"
+                {
+                    printf '\n'
+                    printf '  Nothing above %s live stations has been measured on this host.\n' "${max_allowed}"
+                    printf '  Beyond it, transcription lag and spool growth are unverified, and a\n'
+                    printf '  full spool drops audio. To accept that risk explicitly, add to %s:\n\n' "${APPLICATION}"
+                    printf '    RADIO_ALLOW_UNBENCHMARKED_CAPACITY=1\n\n'
+                    printf '  The application itself refuses values above 512.\n\n'
+                } >&2
+                die "${EXIT_PRECONDITION}" "unbenchmarked station capacity requires explicit acknowledgement"
+            fi
+            warn "running ${capacity} live-station capacity, above the benchmarked ceiling of ${max_allowed} (explicitly acknowledged)"
+            warn "watch transcription backlog and spool pressure; a full spool drops audio"
         fi
         log "active unique station capacity: ${capacity}"
     fi
