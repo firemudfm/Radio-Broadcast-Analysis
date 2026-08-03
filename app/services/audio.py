@@ -40,8 +40,11 @@ class AudioService:
         reference = self._database.mention_audio(mention_id)
         if reference is None:
             raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Mention not found")
-        audio_key = str(reference["audio_s3_key"])
-        if not is_allowed_audio_key(audio_key):
+        audio_key = str(reference["audio_s3_key"] or "")
+        if not audio_key or not is_allowed_audio_key(audio_key):
+            # Pipeline mentions carry no captured clip yet (evidence capture is
+            # not implemented), and keys outside clean-speech/ are not
+            # streamable. Both mean "this mention has no audio", not "not found".
             raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail="Audio is unavailable")
         expires = int(time.time()) + self._settings.RADIO_AUDIO_TOKEN_TTL_SECONDS
         payload = {"mention_id": mention_id, "audio_key": audio_key, "exp": expires}

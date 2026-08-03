@@ -88,9 +88,8 @@ class MentionAnalysisService:
         if mention_view is None:
             return None
 
-        rows = self._database.pipeline_conversation_transcripts(
-            str(mention.get("conversation_id") or "")
-        )
+        conversation_id = str(mention.get("conversation_id") or "")
+        rows = self._database.pipeline_conversation_transcripts(conversation_id)
         segments: list[dict[str, Any]] = []
         cursor = 0
         parts: list[str] = []
@@ -114,6 +113,24 @@ class MentionAnalysisService:
             parts.append(text)
             cursor = end + 1  # the joining newline
         full_transcript = "\n".join(parts)
+        if not full_transcript and conversation_id:
+            # Per-segment rows can be absent: transcripts written before close
+            # stamping existed carry conversation_id=NULL, and pruned segments
+            # take their transcript rows with them. The conversation itself
+            # keeps the committed text, so serve that instead of an empty page.
+            committed = self._database.pipeline_conversation_text(conversation_id)
+            if committed:
+                full_transcript = committed
+                segments = [
+                    {
+                        "id": conversation_id,
+                        "text": committed,
+                        "start_char": 0,
+                        "end_char": len(committed),
+                        "detected_language": mention.get("detected_language"),
+                        "source_transcript_key": conversation_id,
+                    }
+                ]
 
         # Highlights are located by searching the committed text for the words
         # the matcher actually matched -- never invented positions.
@@ -162,11 +179,15 @@ class MentionAnalysisService:
         if row is None:
             return self._status_document(status="pending", error=None)
         raw_status = str(row.get("status") or "ready")
-        # A fallback analysis IS a usable result; needs_review carries the
-        # quality signal. The API status vocabulary has no 'fallback'.
-        status = {"ready": "ready", "fallback": "ready", "disabled": "disabled"}.get(
-            raw_status, "error"
-        )
+        # A fallback analysis is still a usable record, but its summary is a
+        # transcript excerpt, not a model summary. Surfacing 'fallback' lets
+        # the UI label it honestly instead of presenting the transcript as AI
+        # analysis with 0% confidence.
+        status = {
+            "ready": "ready",
+            "fallback": "fallback",
+            "disabled": "disabled",
+        }.get(raw_status, "error")
         sentiment = str(row.get("sentiment") or "") or None
         try:
             key_points = [str(item) for item in json.loads(str(row.get("key_points_json") or "[]"))]
