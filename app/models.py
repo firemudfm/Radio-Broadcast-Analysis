@@ -9,7 +9,7 @@ CampaignStatus = Literal["active", "paused"]
 SentimentLabel = Literal["positive", "neutral", "negative", "mixed"]
 MatchMode = Literal["tokens", "substring"]
 KeywordType = Literal["brand", "person", "product", "organization", "topic", "concept", "other"]
-AnalysisStatus = Literal["ready", "pending", "disabled", "error"]
+AnalysisStatus = Literal["ready", "fallback", "pending", "disabled", "error"]
 LlmHealth = Literal["ok", "error", "disabled"]
 
 

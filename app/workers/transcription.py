@@ -305,6 +305,19 @@ class TranscriptionWorker(BaseWorker):
                     stamp,
                 ),
             )
+            # Stamp the member transcripts with their conversation. The INSERT
+            # in _store_transcript runs before any conversation exists, so the
+            # column starts NULL; without this stamp the detail view's
+            # "transcripts WHERE conversation_id=?" matches nothing and every
+            # pipeline mention renders an empty full transcript.
+            segment_ids = [segment.segment_id for segment in closed.segments]
+            if segment_ids:
+                placeholders = ",".join("?" for _ in segment_ids)
+                connection.execute(
+                    "UPDATE transcripts SET conversation_id=?"  # nosec B608 (only '?' is interpolated)
+                    f" WHERE segment_id IN ({placeholders})",
+                    (closed.conversation_id, *segment_ids),
+                )
             # Deduplicated on conversation_id by the outbox's UNIQUE constraint,
             # so a redelivered segment cannot produce a second analysis job.
             outbox.enqueue(

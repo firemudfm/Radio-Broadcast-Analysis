@@ -39,6 +39,8 @@ def seed_pipeline_mention(
     status: str = "ready",
     with_analysis: bool = True,
     broadcast_at: datetime | None = None,
+    stamp_transcript_conversation: bool = True,
+    conversation_text: str | None = None,
 ) -> None:
     at = (broadcast_at or NOW).isoformat()
 
@@ -71,9 +73,12 @@ def seed_pipeline_mention(
         connection.execute(
             "INSERT INTO conversation_sessions(conversation_id, station_id,"
             " station_session_id, state, first_sequence_number,"
-            " last_sequence_number, started_at_utc, trace_id, created_at_utc,"
-            " updated_at_utc) VALUES (?,?,?,'closed',1,1,?,?,?,?)",
-            (f"conv-{mention_id}", STATION_ID, f"sess-{mention_id}", at, "trace-1", at, at),
+            " last_sequence_number, started_at_utc, transcript_text, trace_id,"
+            " created_at_utc, updated_at_utc) VALUES (?,?,?,'closed',1,1,?,?,?,?,?)",
+            (
+                f"conv-{mention_id}", STATION_ID, f"sess-{mention_id}", at,
+                conversation_text or "", "trace-1", at, at,
+            ),
         )
         connection.execute(
             "INSERT INTO mention_events(mention_id, conversation_id, station_id,"
@@ -125,7 +130,10 @@ def seed_pipeline_mention(
             " created_at_utc) VALUES (?,?,?,?,?,?,?,?,?)",
             (
                 f"t-{mention_id}", f"seg-{mention_id}", STATION_ID,
-                f"conv-{mention_id}", "a",
+                # Production inserts transcripts BEFORE a conversation exists,
+                # so the column is NULL until the close stamp runs.
+                f"conv-{mention_id}" if stamp_transcript_conversation else None,
+                "a",
                 "Good night everyone, thanks for listening tonight.", "en",
                 "faster-whisper", at,
             ),
@@ -246,6 +254,32 @@ def test_a_pipeline_mention_reports_no_audio_yet(database) -> None:
     assert view["audio_available"] is False
 
 
+def test_mention_audio_resolves_a_pipeline_mention_without_a_clip(database) -> None:
+    """The audio-token route used to 404 on a mention the feed just showed,
+    because mention_audio queried only the legacy table. It must resolve the
+    mention and report the missing clip as None, never the string 'None'."""
+    seed_pipeline_mention(database)
+    reference = database.mention_audio(MENTION_ID)
+    assert reference is not None
+    assert reference["id"] == MENTION_ID
+    assert reference["audio_s3_key"] is None
+
+
+def test_campaign_mentions_7d_counts_pipeline_mentions(database) -> None:
+    """The campaign card said "0 mentions / 7d" while the feed listed pipeline
+    mentions: only the legacy table was counted."""
+    seed_pipeline_mention(database)
+    campaigns = database.list_campaigns()
+    assert campaigns and campaigns[0]["id"] == "c1"
+    assert campaigns[0]["mentions_7d"] == 1
+
+
+def test_campaign_mentions_7d_skips_excluded_pipeline_rows(database) -> None:
+    seed_pipeline_mention(database, included=0)
+    campaigns = database.list_campaigns()
+    assert campaigns and campaigns[0]["mentions_7d"] == 0
+
+
 # =============================================================================
 # The detail view
 # =============================================================================
@@ -280,15 +314,49 @@ def test_detail_serves_the_committed_transcript_and_analysis(settings, database)
     ].casefold() == "night"
 
 
-def test_detail_for_a_fallback_analysis_is_ready_with_review_flag(
+def test_detail_for_a_fallback_analysis_reports_fallback(
     settings, database
 ) -> None:
-    """A fallback analysis IS a usable result; the API vocabulary has no
-    'fallback' status."""
+    """A fallback analysis is still a usable record, but its summary is a
+    transcript excerpt. Mapping it to 'ready' made the UI present the
+    transcript as AI analysis with 0% confidence; the status now says so."""
     seed_pipeline_mention(database, status="fallback")
     result = build_service(settings, database).detail(MENTION_ID)
     assert result is not None
-    assert result["analysis"]["status"] == "ready"
+    assert result["analysis"]["status"] == "fallback"
+
+
+def test_detail_falls_back_to_the_committed_conversation_text(
+    settings, database
+) -> None:
+    """Production wrote transcripts with conversation_id=NULL (the close stamp
+    did not exist), so the per-segment lookup found nothing and every pipeline
+    mention rendered 'transcript no longer available'. The conversation's
+    committed text is the durable copy; the detail view must serve it."""
+    seed_pipeline_mention(
+        database,
+        stamp_transcript_conversation=False,
+        conversation_text="Good night everyone, thanks for listening tonight.",
+    )
+    result = build_service(settings, database).detail(MENTION_ID)
+    assert result is not None
+    assert "Good night everyone" in result["full_transcript"]
+    assert result["transcript_segments"], "the fallback must still render a segment"
+    highlight = result["highlights"][0]
+    assert result["full_transcript"][
+        highlight["start_char"] : highlight["end_char"]
+    ].casefold() == "night"
+
+
+def test_detail_with_no_transcript_anywhere_is_empty_not_an_error(
+    settings, database
+) -> None:
+    seed_pipeline_mention(
+        database, stamp_transcript_conversation=False, conversation_text=None
+    )
+    result = build_service(settings, database).detail(MENTION_ID)
+    assert result is not None
+    assert result["full_transcript"] == ""
 
 
 def test_reanalyse_never_reruns_the_llm_for_pipeline_mentions(settings, database) -> None:

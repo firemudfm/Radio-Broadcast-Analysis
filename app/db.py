@@ -840,6 +840,24 @@ class Database:
             ).fetchall()
             return [dict(row) for row in rows]
 
+    def pipeline_conversation_text(self, conversation_id: str) -> str | None:
+        """The transcript the conversation was committed with.
+
+        The durable copy: written at close and again by the result writer, so
+        it exists even where per-segment transcript rows were never stamped
+        with their conversation (rows from before that stamp existed) or were
+        pruned with their segments.
+        """
+        with self._lock:
+            row = self._conn().execute(
+                "SELECT transcript_text FROM conversation_sessions WHERE conversation_id=?",
+                (conversation_id,),
+            ).fetchone()
+            if row is None:
+                return None
+            text = str(row["transcript_text"] or "").strip()
+            return text or None
+
     def pipeline_mention_keywords(self, mention_id: str) -> list[dict[str, Any]]:
         with self._lock:
             rows = self._conn().execute(
@@ -1071,13 +1089,19 @@ class Database:
             )
 
     def mention_audio(self, mention_id: str) -> dict[str, Any] | None:
+        # Served from the same union as every other mention read: a pipeline
+        # mention must resolve here (else the audio-token route 404s on a
+        # mention the feed just showed) and report its missing clip as
+        # audio_s3_key=None, never as the string "None".
         with self._lock:
             row = self._conn().execute(
-                "SELECT id, audio_s3_key FROM mentions WHERE id=?", (mention_id,)
+                f"{self._mention_union_sql} WHERE m.id=? LIMIT 1",  # nosec B608 (static SQL, parameterized)
+                (mention_id,),
             ).fetchone()
             if row is None:
                 return None
-            return {"id": str(row["id"]), "audio_s3_key": str(row["audio_s3_key"])}
+            key = row["audio_s3_key"]
+            return {"id": str(row["id"]), "audio_s3_key": str(key) if key else None}
 
     def _campaign(self, row: sqlite3.Row) -> dict[str, Any]:
         campaign_id = str(row["id"])
@@ -1090,13 +1114,21 @@ class Database:
             (campaign_id,),
         ).fetchall()
         window_cutoff = iso(utc_now() - timedelta(days=self._mention_window_days))
+        # Both stores, like the feed: the card said "0 mentions / 7d" while the
+        # feed below it listed pipeline mentions, because only the legacy table
+        # was counted here.
         mentions_7d = int(
             self._conn().execute(
                 """
-                SELECT count(*) FROM mentions
-                WHERE campaign_id=? AND broadcast_start_utc >= ?
+                SELECT
+                  (SELECT count(*) FROM mentions
+                    WHERE campaign_id=? AND broadcast_start_utc >= ?)
+                + (SELECT count(*) FROM mention_events e
+                    JOIN mention_campaigns mc
+                      ON mc.mention_id=e.mention_id AND mc.included=1
+                    WHERE mc.campaign_id=? AND e.broadcast_start_utc >= ?)
                 """,
-                (campaign_id, window_cutoff),
+                (campaign_id, window_cutoff, campaign_id, window_cutoff),
             ).fetchone()[0]
         )
         return {
