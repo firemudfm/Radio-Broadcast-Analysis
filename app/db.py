@@ -727,9 +727,11 @@ class Database:
 
     @property
     def _mention_union_sql(self) -> str:
+        # Composed entirely from the two class-level SQL constants above --
+        # no caller input ever reaches the SQL text; every value is bound.
         return (
             f"SELECT * FROM ({self._LEGACY_MENTION_SQL}"
-            f" UNION ALL {self._PIPELINE_MENTION_SQL}) m"
+            f" UNION ALL {self._PIPELINE_MENTION_SQL}) m"  # nosec B608
         )
 
     def list_mentions(
