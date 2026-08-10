@@ -152,6 +152,41 @@ def test_low_confidence_segments_are_kept_but_flagged() -> None:
     assert result.segments[0].is_low_confidence
 
 
+def test_repetition_loops_on_vocal_music_are_dropped() -> None:
+    """Vocal music defeats the no-speech gate and the decoder loops on it.
+
+    Both production shapes: a syllable loop and a phrase loop, each observed
+    verbatim in deployed transcripts. A loop containing a keyword would be a
+    false mention, and its text poisons the analysis prompt.
+    """
+    syllable_loop = ", ".join(["uhe"] * 75)
+    phrase_loop = "ich mag die Musik, " * 18
+    result = build(
+        [
+            RawSegment("Das ist echtes Programm mit Nachrichten.", no_speech_prob=0.02),
+            RawSegment(syllable_loop, no_speech_prob=0.10),
+            RawSegment(phrase_loop, no_speech_prob=0.15),
+        ]
+    )
+    assert result.text == "Das ist echtes Programm mit Nachrichten."
+    assert result.dropped_segments == 2
+
+
+def test_ordinary_speech_is_not_mistaken_for_a_loop() -> None:
+    """News reads repeat jingles and set phrases; variety stays high and
+    compressibility low, so real speech must always pass the loop gate."""
+    news = (
+        "Antenne Bayern, Nachrichten. Bei uns Bayern immer zuerst. Mit Hendrik "
+        "Daum einen schoenen guten Morgen. Seit Anfang Juli koennen Kinder und "
+        "Jugendliche im Freistaat kostenlos Hilfe und Unterstuetzung finden bei "
+        "der neuen Kinderschutz-Hotline. Insgesamt 44 Mal ist dieses Angebot "
+        "auch schon in Anspruch genommen worden."
+    )
+    result = build([RawSegment(news, no_speech_prob=0.03)])
+    assert result.dropped_segments == 0
+    assert result.text == news
+
+
 def test_blank_segments_are_ignored() -> None:
     result = build([RawSegment("   "), RawSegment("content")])
     assert result.text == "content"
