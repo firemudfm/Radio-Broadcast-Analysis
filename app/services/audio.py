@@ -41,7 +41,9 @@ class AudioService:
         if reference is None:
             raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Mention not found")
         audio_key = str(reference["audio_s3_key"] or "")
-        if not audio_key or not is_allowed_audio_key(audio_key):
+        if not audio_key or not is_allowed_audio_key(
+            audio_key, evidence_prefix=self._settings.RADIO_EVIDENCE_PREFIX
+        ):
             # Pipeline mentions carry no captured clip yet (evidence capture is
             # not implemented), and keys outside clean-speech/ are not
             # streamable. Both mean "this mention has no audio", not "not found".
@@ -99,7 +101,9 @@ class AudioService:
             if int(payload.get("exp", 0)) < int(time.time()):
                 raise ValueError("Expired")
             audio_key = str(payload.get("audio_key") or "")
-            if not is_allowed_audio_key(audio_key):
+            if not is_allowed_audio_key(
+                audio_key, evidence_prefix=self._settings.RADIO_EVIDENCE_PREFIX
+            ):
                 raise ValueError("Bad audio key")
             return payload
         except Exception as error:
