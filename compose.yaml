@@ -207,6 +207,9 @@ services:
       - ${RADIO_HOST_DATABASE:-/var/lib/radio/database}:/var/lib/radio/database:rw
       - ${RADIO_HOST_EVIDENCE:-/var/lib/radio/evidence}:/var/lib/radio/evidence:rw
       - ${RADIO_HOST_LOGS:-/var/lib/radio/logs}:/var/lib/radio/logs:rw
+      # Read-only: evidence clips are cut FROM retained spool segments; this
+      # worker must never write to the spool.
+      - ${RADIO_HOST_SPOOL:-/var/lib/radio/spool}:/var/lib/radio/spool:ro
     stop_grace_period: 60s
     healthcheck:
       test: ["CMD", "python", "/app/healthchecks/worker.py"]
