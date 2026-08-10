@@ -3,6 +3,7 @@ from __future__ import annotations
 import hashlib
 import json
 import logging
+import re
 from datetime import UTC, datetime
 from typing import Any
 
@@ -133,16 +134,21 @@ class MentionAnalysisService:
                 ]
 
         # Highlights are located by searching the committed text for the words
-        # the matcher actually matched -- never invented positions.
+        # the matcher actually matched -- never invented positions. The search
+        # runs on the ORIGINAL text: casefolding is one-to-many for German
+        # (each eszett expands to "ss"), so offsets found in a casefolded copy
+        # drift right of every preceding eszett and mark the wrong characters.
         highlights: list[dict[str, Any]] = []
-        haystack = full_transcript.casefold()
         for keyword in self._database.pipeline_mention_keywords(mention_id):
             needle = str(keyword.get("matched_text") or "").strip()
             if not needle:
                 continue
-            found = haystack.find(needle.casefold())
+            found = full_transcript.find(needle)
             if found < 0:
-                continue
+                match = re.search(re.escape(needle), full_transcript, re.IGNORECASE)
+                if match is None:
+                    continue
+                found = match.start()
             highlights.append(
                 {
                     "start_char": found,

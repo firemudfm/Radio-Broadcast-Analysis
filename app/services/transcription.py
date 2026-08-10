@@ -31,6 +31,7 @@ from __future__ import annotations
 import io
 import logging
 import threading
+import zlib
 from collections.abc import Sequence
 from dataclasses import dataclass, field
 from pathlib import Path
@@ -54,6 +55,39 @@ NO_SPEECH_THRESHOLD = 0.85
 #: Below this average log-probability a segment is retained but flagged: it is
 #: still evidence, just weak evidence.
 LOW_CONFIDENCE_LOGPROB = -1.0
+
+#: Repetition-loop detection. Vocal music defeats the no-speech gate: the
+#: decoder locks onto a syllable or phrase and emits it dozens of times
+#: ("uhe, uhe, uhe...", "ich mag die Musik, ich mag die Musik, ..."), which
+#: then pollutes the transcript, the keyword matcher and the analysis prompt.
+#: Whisper's own guard applies zlib compressibility per decode window with a
+#: 2.4 threshold; the same test applied per segment catches the loops the
+#: decoder let through. The word-variety floor catches short-vocabulary loops
+#: that stay under the compression bar.
+LOOP_COMPRESSION_THRESHOLD = 2.4
+LOOP_MIN_CHARACTERS = 60
+LOOP_MIN_WORDS = 12
+LOOP_UNIQUE_WORD_FLOOR = 0.2
+
+
+def looks_like_repetition_loop(text: str) -> bool:
+    """True when a segment reads as a decoder loop rather than speech.
+
+    Deterministic and dependency-free on purpose: the same text always gets
+    the same verdict, in tests and in production.
+    """
+    stripped = text.strip()
+    if len(stripped) >= LOOP_MIN_CHARACTERS:
+        raw = stripped.encode("utf-8")
+        ratio = len(raw) / max(1, len(zlib.compress(raw)))
+        if ratio > LOOP_COMPRESSION_THRESHOLD:
+            return True
+    words = [word for word in stripped.casefold().split() if word]
+    if len(words) >= LOOP_MIN_WORDS:
+        variety = len(set(words)) / len(words)
+        if variety < LOOP_UNIQUE_WORD_FLOOR:
+            return True
+    return False
 
 
 @dataclass(frozen=True)
@@ -327,6 +361,11 @@ def _build_result(
             # Whisper hallucinates fluent text on non-speech audio. A
             # hallucination containing a tracked brand is a false mention, so
             # these are dropped rather than matched.
+            dropped += 1
+            continue
+        if looks_like_repetition_loop(text):
+            # Vocal music passes the no-speech gate and the decoder loops on
+            # it. Looped text is not evidence of anything; drop the segment.
             dropped += 1
             continue
         words = tuple(

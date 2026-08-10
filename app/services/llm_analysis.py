@@ -151,6 +151,9 @@ class AnalysisResult(BaseModel):
     needs_review: bool = False
     status: str = "ready"
     model: str | None = None
+    #: WHY a fallback or disabled record carries no model summary. Persisted so
+    #: an operator reads the cause off the mention instead of hunting logs.
+    error: str | None = Field(default=None, max_length=300)
 
     @field_validator("summary", "translated_summary", mode="before")
     @classmethod
@@ -629,6 +632,7 @@ class ConversationAnalyzer:
             needs_review=True,
             status=status,
             model=None,
+            error=reason[:300],
         )
 
 

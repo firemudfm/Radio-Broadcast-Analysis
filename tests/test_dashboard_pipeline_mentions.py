@@ -359,6 +359,26 @@ def test_detail_with_no_transcript_anywhere_is_empty_not_an_error(
     assert result["full_transcript"] == ""
 
 
+def test_highlight_offsets_survive_german_eszett(settings, database) -> None:
+    """The regression: highlights were located in a casefolded copy of the
+    transcript, and casefolding expands every eszett to "ss", so each match
+    after one marked the wrong characters ("Angebot" highlighted as
+    "ngebot", "Germany" as "many, F"). Offsets must index the original."""
+    text = "Der weiße Gruß an die Straße: night im Radio, gute Nacht."
+    seed_pipeline_mention(
+        database,
+        stamp_transcript_conversation=False,
+        conversation_text=text,
+    )
+    result = build_service(settings, database).detail(MENTION_ID)
+    assert result is not None
+    highlight = result["highlights"][0]
+    span = result["full_transcript"][
+        highlight["start_char"] : highlight["end_char"]
+    ]
+    assert span.casefold() == "night"
+
+
 def test_reanalyse_never_reruns_the_llm_for_pipeline_mentions(settings, database) -> None:
     """The analysis worker owns pipeline analyses. The exploding stand-ins
     prove the API-side LLM path is never touched, even with force."""

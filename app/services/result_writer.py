@@ -317,8 +317,8 @@ class ResultWriter:
               mention_id, analysis_job_id, schema_version, status, model, content_type,
               language, relevant, summary, translated_summary, main_topic, sentiment,
               speaker_stance, urgency, entities_json, key_points_json, evidence_json,
-              confidence, needs_review, created_at_utc, updated_at_utc
-            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+              confidence, needs_review, error, created_at_utc, updated_at_utc
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
             ON CONFLICT(mention_id) DO UPDATE SET
               status=excluded.status,
               model=excluded.model,
@@ -333,6 +333,7 @@ class ResultWriter:
               evidence_json=excluded.evidence_json,
               confidence=excluded.confidence,
               needs_review=excluded.needs_review,
+              error=excluded.error,
               updated_at_utc=excluded.updated_at_utc
             """,
             (
@@ -355,6 +356,7 @@ class ResultWriter:
                 json.dumps([item.model_dump() for item in analysis.evidence], ensure_ascii=False),
                 analysis.confidence,
                 1 if analysis.needs_review else 0,
+                analysis.error,
                 stamp,
                 stamp,
             ),
