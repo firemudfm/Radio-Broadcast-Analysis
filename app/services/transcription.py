@@ -69,6 +69,34 @@ LOOP_MIN_CHARACTERS = 60
 LOOP_MIN_WORDS = 12
 LOOP_UNIQUE_WORD_FLOOR = 0.2
 
+#: The 100 language codes Whisper's tokenizer defines (large-v3 and
+#: large-v3-turbo; earlier checkpoints lack only "yue"). Source of truth:
+#: the LANGUAGES dict in openai/whisper whisper/tokenizer.py. Passing any
+#: other code to faster-whisper raises, so hints are gated on this set.
+WHISPER_LANGUAGE_CODES = frozenset(
+    (
+        "en", "zh", "de", "es", "ru", "ko", "fr", "ja", "pt", "tr", "pl", "ca",
+        "nl", "ar", "sv", "it", "id", "hi", "fi", "vi", "he", "uk", "el", "ms",
+        "cs", "ro", "da", "hu", "ta", "no", "th", "ur", "hr", "bg", "lt", "la",
+        "mi", "ml", "cy", "sk", "te", "fa", "lv", "bn", "sr", "az", "sl", "kn",
+        "et", "mk", "br", "eu", "is", "hy", "ne", "mn", "bs", "kk", "sq", "sw",
+        "gl", "mr", "pa", "si", "km", "sn", "yo", "so", "af", "oc", "ka", "be",
+        "tg", "sd", "gu", "am", "yi", "lo", "uz", "fo", "ht", "ps", "tk", "nn",
+        "mt", "sa", "lb", "my", "bo", "tl", "mg", "as", "tt", "haw", "ln", "ha",
+        "ba", "jw", "su", "yue",
+    )
+)
+
+#: Community catalog tags that mean a supported language but use the wrong
+#: code. Country codes are the recurring offenders.
+_LANGUAGE_TAG_ALIASES = {
+    "vn": "vi",  # Vietnam (country) -> Vietnamese
+    "cz": "cs",  # Czechia (country) -> Czech
+    "gr": "el",  # Greece (country) -> Greek
+    "ua": "uk",  # Ukraine (country) -> Ukrainian
+    "dk": "da",  # Denmark (country) -> Danish
+}
+
 
 def looks_like_repetition_loop(text: str) -> bool:
     """True when a segment reads as a decoder loop rather than speech.
@@ -300,7 +328,22 @@ class FasterWhisperEngine:
                     word_timestamps=options.word_timestamps,
                     language=options.language,
                     initial_prompt=options.initial_prompt,
-                    temperature=options.temperature,
+                    # A LADDER, not a scalar. Whisper's anti-hallucination
+                    # gates (compression ratio, log probability) work by
+                    # RE-decoding a failed window at higher temperatures; a
+                    # scalar temperature disables that fallback entirely, so
+                    # a looping window ("uhe, uhe, uhe...") sailed through
+                    # with its gates unarmed. The schedule is the Whisper
+                    # paper's own long-form robustness configuration.
+                    temperature=[options.temperature, 0.2, 0.4, 0.6, 0.8, 1.0],
+                    # Explicit gate values (the library defaults, pinned so a
+                    # dependency bump cannot silently change decode behavior):
+                    # a window whose text compresses better than 2.4:1 or
+                    # decodes below -1.0 average log probability is re-decoded
+                    # up the temperature ladder instead of being accepted.
+                    compression_ratio_threshold=2.4,
+                    log_prob_threshold=-1.0,
+                    no_speech_threshold=0.6,
                     # VAD filtering is left off: classification already happened
                     # upstream, and a second VAD would silently drop the quiet
                     # speech-over-music the policy deliberately retained.
@@ -550,15 +593,32 @@ class TranscriptionService:
 
     @staticmethod
     def _single_language_hint(hints: Sequence[str]) -> str | None:
-        """Pin the language only when there is exactly one candidate.
+        """Pin the language only when there is exactly one USABLE candidate.
 
         Whisper takes one language, not a list. Forcing the first of several
         hints would break code-switching -- a Hindi-English broadcast pinned to
         ``hi`` loses the English, which is precisely the case this product has
         to handle -- so with two or more hints detection is left to run.
+
+        Station tags come from a community catalog and are not vetted: real
+        rows carry ``vn`` (a country code; the language is ``vi``) and
+        languages Whisper has no token for at all (``ga``, ``fj``, ``sm``,
+        ``to``). Pinning the decoder to such a tag raises inside faster-whisper
+        and permanently fails every segment from that station, so unknown tags
+        fall back to detection instead.
         """
         cleaned = [str(hint).strip().lower() for hint in hints if str(hint).strip()]
-        return cleaned[0] if len(cleaned) == 1 else None
+        if len(cleaned) != 1:
+            return None
+        hint = _LANGUAGE_TAG_ALIASES.get(cleaned[0], cleaned[0])
+        if hint in WHISPER_LANGUAGE_CODES:
+            return hint
+        logger.info(
+            "Ignoring station language tag %r: not a Whisper language; "
+            "leaving detection on",
+            cleaned[0],
+        )
+        return None
 
     def close(self) -> None:
         self._engine.close()

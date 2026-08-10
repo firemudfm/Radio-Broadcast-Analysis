@@ -261,9 +261,13 @@ services:
     expose:
       - "8790"
     environment:
-      RADIO_LLM_MODEL_PATH: /models/qwen/Qwen3-0.6B-Q8_0.gguf
+      RADIO_LLM_MODEL_PATH: ${RADIO_LLM_MODEL_PATH:-/models/qwen/Qwen3-0.6B-Q8_0.gguf}
       RADIO_LLM_PORT: "8790"
-      RADIO_LLM_THREADS: ${RADIO_LLM_THREADS:-2}
+      # 4 of the 8 vCPUs: analysis is the only latency-sensitive inference on
+      # the box, and 2 threads left the 90s request timeout within reach under
+      # load, which opened the circuit breaker and turned mentions into
+      # fallbacks. Override down only on smaller hosts.
+      RADIO_LLM_THREADS: ${RADIO_LLM_THREADS:-4}
       RADIO_LLM_CONTEXT: ${RADIO_LLM_CONTEXT:-4096}
     volumes:
       - ${RADIO_HOST_MODELS:-/var/lib/radio/models}:/models:ro
