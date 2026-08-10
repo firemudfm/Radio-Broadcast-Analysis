@@ -25,6 +25,7 @@ from ..pipeline.factory import ANALYSIS_QUEUE, build_queue, build_s3_client
 from ..pipeline.idempotency import MessageProcessor, ProcessingOutcome
 from ..pipeline.queue import ReceivedMessage
 from ..services.conversation_assembler import ClosedConversation, TranscribedSegment
+from ..services.evidence import EvidenceClipService
 from ..services.keyword_matcher import KeywordMatch
 from ..services.llm_analysis import AnalysisRequest, ConversationAnalyzer
 from ..services.result_writer import MentionContext, ResultWriter
@@ -55,16 +56,27 @@ class AnalysisWorker(BaseWorker):
         analyzer=None,
         result_writer=None,
         s3_client=None,
+        evidence_service=None,
         **kwargs,
     ) -> None:
         super().__init__(settings, database, **kwargs)
         self.queue = queue or build_queue(settings, ANALYSIS_QUEUE)
         self.analyzer = analyzer or ConversationAnalyzer(settings)
+        resolved_s3 = s3_client if s3_client is not None else _optional_s3(settings)
         self.writer = result_writer or ResultWriter(
             settings,
             database,
-            s3_client=s3_client if s3_client is not None else _optional_s3(settings),
+            s3_client=resolved_s3,
         )
+        self.evidence = (
+            evidence_service
+            if evidence_service is not None
+            else _optional_evidence(settings, database, resolved_s3)
+        )
+        # One attempt per mention per process: a clip that cannot be built now
+        # (segments gone, FFmpeg fault) should not be retried every idle tick.
+        # A restart clears the set, which is a deliberately cheap retry policy.
+        self._evidence_attempted: set[str] = set()
         self.processor = MessageProcessor(
             database=database,
             queue=self.queue,
@@ -76,12 +88,13 @@ class AnalysisWorker(BaseWorker):
             max_messages=1,  # LLM work is serial on CPU; batching only adds latency.
             wait_seconds=settings.RADIO_SQS_WAIT_TIME_SECONDS,
         )
-        self.stats = {"analysed": 0, "fallbacks": 0, "published": 0}
+        self.stats = {"analysed": 0, "fallbacks": 0, "published": 0, "evidence": 0}
 
     def tick(self) -> bool:
         result = self.processor.poll_once(self.handle)
         if result["received"] == 0:
             self._publish_backlog()
+            self._evidence_backlog()
             return True
         return False
 
@@ -129,6 +142,10 @@ class AnalysisWorker(BaseWorker):
         # SQLite already holds the record the API serves.
         if self.writer.publish(outcome.mention_id, conversation, analysis, context):
             self.stats["published"] += 1
+
+        # Same posture for the audio clip: built after the mention is durable,
+        # allowed to fail, retried by the idle-time backlog sweep.
+        self._capture_evidence(outcome.mention_id)
 
         logger.info(
             "Mention analysed",
@@ -272,6 +289,38 @@ class AnalysisWorker(BaseWorker):
                 continue
         return policies
 
+    # -- evidence --------------------------------------------------------------
+
+    def _capture_evidence(self, mention_id: str) -> None:
+        """Attach the audio clip for one mention; failure never loses it."""
+        if self.evidence is None or mention_id in self._evidence_attempted:
+            return
+        self._evidence_attempted.add(mention_id)
+        try:
+            if self.evidence.capture(mention_id):
+                self.stats["evidence"] += 1
+        except Exception as error:  # noqa: BLE001 - the mention outlives its clip
+            logger.warning(
+                "Evidence clip capture failed",
+                extra=log_fields(mention_id=mention_id, error=str(error)[:300]),
+            )
+
+    def _evidence_backlog(self) -> None:
+        """Give clip-less mentions their audio during idle time.
+
+        This is also the backfill: mentions created before evidence capture
+        existed satisfy the same query and get clips as soon as a deployed
+        worker has an idle tick, so no operator command is involved.
+        """
+        if self.evidence is None:
+            return
+        rows = self.database.read_all(
+            "SELECT mention_id FROM mention_events WHERE evidence_available=0"
+            " ORDER BY created_at_utc DESC LIMIT 10"
+        )
+        for row in rows:
+            self._capture_evidence(str(row["mention_id"]))
+
     # -- recovery --------------------------------------------------------------
 
     def _publish_backlog(self) -> None:
@@ -295,6 +344,25 @@ def _optional_s3(settings):
     except Exception:  # noqa: BLE001 - absent credentials must not stop analysis
         logger.warning("No S3 client available; mentions will stay local until exported")
         return None
+
+
+def _optional_evidence(settings, database, s3_client):
+    """An evidence clip service when its dependencies exist, else None.
+
+    Needs both an S3 client (the clip destination) and a readable segment
+    store (the clip source). Either being absent disables capture without
+    touching analysis itself.
+    """
+    if s3_client is None:
+        return None
+    try:
+        from ..pipeline.factory import build_segment_store
+
+        store = build_segment_store(settings)
+    except Exception:  # noqa: BLE001 - a broken store must not stop analysis
+        logger.warning("Segment store unavailable; mentions will have no audio clips")
+        return None
+    return EvidenceClipService(settings, database, store, s3_client)
 
 
 def main() -> None:

@@ -17,6 +17,12 @@ def parse_s3_uri(value: str, expected_bucket: str | None = None) -> str | None:
     return parsed.path.lstrip("/") or None
 
 
+# clean-speech/ carries the legacy v0.4.1 pipeline's clips; evidence/ carries
+# the shared pipeline's mention clips (EvidenceClipService). Nothing else in
+# the bucket is audio a caller may stream.
+_ALLOWED_AUDIO_PREFIXES = ("clean-speech/", "evidence/")
+
+
 def is_allowed_audio_key(key: str) -> bool:
     normalized = key.strip().lstrip("/")
-    return normalized.startswith("clean-speech/") and not normalized.endswith("/")
+    return normalized.startswith(_ALLOWED_AUDIO_PREFIXES) and not normalized.endswith("/")
