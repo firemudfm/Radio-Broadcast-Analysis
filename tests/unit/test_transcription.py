@@ -78,6 +78,28 @@ def test_several_hints_leave_detection_on_for_code_switching(
     assert service.engine.calls[-1].language is None
 
 
+def test_a_country_code_language_tag_is_remapped(service: TranscriptionService) -> None:
+    """Catalog rows tag Vietnamese stations 'vn' (the country code). Pinning
+    the decoder to 'vn' raises inside faster-whisper; the hint must arrive as
+    the real language code instead."""
+    assert service._single_language_hint(["vn"]) == "vi"  # noqa: SLF001
+
+
+def test_an_unsupported_language_tag_falls_back_to_detection(
+    service: TranscriptionService,
+) -> None:
+    """Fijian, Samoan, Tongan and Irish stations exist in the catalog but
+    Whisper has no token for them; pinning would permanently fail every
+    segment from those stations."""
+    for tag in ("fj", "sm", "to", "ga", "nonsense"):
+        assert service._single_language_hint([tag]) is None  # noqa: SLF001
+
+
+def test_a_supported_language_tag_still_pins(service: TranscriptionService) -> None:
+    assert service._single_language_hint(["de"]) == "de"  # noqa: SLF001
+    assert service._single_language_hint(["MI "]) == "mi"  # noqa: SLF001
+
+
 def test_empty_hints_leave_detection_on(service: TranscriptionService) -> None:
     service.transcribe(AUDIO, language_hints=[])
     assert service.engine.calls[-1].language is None
