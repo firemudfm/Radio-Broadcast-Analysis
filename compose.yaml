@@ -197,6 +197,11 @@ services:
     <<: *worker
     profiles: [pipeline, integration]
     command: ["analysis"]
+    # Larger than the shared 64m default: evidence capture stages a whole
+    # conversation's segments plus the combined clip under /tmp, and a long
+    # WAV-fallback conversation is ~2 MB per minute of audio.
+    tmpfs:
+      - /tmp:rw,noexec,nosuid,size=256m
     environment:
       <<: *worker-env
       RADIO_WORKER_ROLE: analysis

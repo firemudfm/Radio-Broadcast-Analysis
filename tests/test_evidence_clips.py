@@ -11,7 +11,7 @@ from __future__ import annotations
 
 import sqlite3
 import subprocess
-from datetime import UTC, datetime
+from datetime import UTC, datetime, timedelta
 from uuid import uuid4
 
 import pytest
@@ -204,18 +204,32 @@ def test_capture_resolves_segments_through_the_final_transcript(
     assert view is not None and view["audio_available"] is True
 
 
+def fake_ffmpeg_writing(payload: bytes):
+    """A stand-in for subprocess.run that writes the command's output file.
+
+    FFmpeg is invoked with cwd=<workdir> and a bare output filename as the
+    final argument; real muxing needs a seekable file (WAV rewrites its RIFF
+    sizes on close), so the fake honours the same contract.
+    """
+    captured_commands: list[list[str]] = []
+
+    def run(command, **kwargs):
+        captured_commands.append(list(command))
+        from pathlib import Path
+
+        (Path(kwargs["cwd"]) / command[-1]).write_bytes(payload)
+        return subprocess.CompletedProcess(command, 0, stdout=b"", stderr=b"")
+
+    return run, captured_commands
+
+
 def test_multi_segment_clips_are_concatenated_losslessly(
     settings, database, store, fake_s3, monkeypatch
 ) -> None:
     mention_id = str(uuid4())
     seed_mention_with_segments(database, store, mention_id=mention_id, segment_count=3)
 
-    captured_commands: list[list[str]] = []
-
-    def fake_run(command, **kwargs):
-        captured_commands.append(list(command))
-        return subprocess.CompletedProcess(command, 0, stdout=b"CONCATENATED", stderr=b"")
-
+    fake_run, captured_commands = fake_ffmpeg_writing(b"CONCATENATED")
     monkeypatch.setattr("app.services.evidence.subprocess.run", fake_run)
     service = EvidenceClipService(settings, database, store, fake_s3)
     assert service.capture(mention_id) is True
@@ -225,6 +239,11 @@ def test_multi_segment_clips_are_concatenated_losslessly(
     command = captured_commands[0]
     assert "concat" in command
     assert "copy" in command  # same-format segments are stream-copied, not re-encoded
+    # A file, never a pipe: piped WAV output cannot rewrite its RIFF sizes and
+    # would upload a permanently corrupt clip.
+    assert command[-1] != "pipe:1"
+    # Bare filenames resolved against cwd: no path ever needs concat quoting.
+    assert "segments.txt" in command
 
 
 def test_capture_without_segments_leaves_the_mention_clipless(
@@ -245,6 +264,88 @@ def test_capture_without_segments_leaves_the_mention_clipless(
     assert view is not None and view["audio_available"] is False
 
 
+def test_the_transcript_fallback_refuses_a_partial_tail_clip(
+    settings, database, store, fake_s3
+) -> None:
+    """Pre-stamping mentions resolve only the LAST segment. When the broadcast
+    window is much longer than that segment, the clip would be the wrong
+    audio; wrong evidence must be refused, not attached."""
+    mention_id = str(uuid4())
+    seed_mention_with_segments(
+        database, store, mention_id=mention_id, stamp_conversation=False
+    )
+    # The seeded segment is 60s; stretch the broadcast window to 5 minutes.
+    opened = NOW.replace(microsecond=0)
+    closed = opened + timedelta(minutes=5)
+    database.write(
+        lambda connection: connection.execute(
+            "UPDATE mention_events SET broadcast_start_utc=?, broadcast_end_utc=?"
+            " WHERE mention_id=?",
+            (
+                opened.isoformat().replace("+00:00", "Z"),
+                closed.isoformat().replace("+00:00", "Z"),
+                mention_id,
+            ),
+        )
+    )
+    service = EvidenceClipService(settings, database, store, fake_s3)
+    with pytest.raises(EvidenceCaptureError):
+        service.capture(mention_id)
+    assert not fake_s3.objects
+
+
+# =============================================================================
+# The backlog sweep must not starve behind failures
+# =============================================================================
+
+
+def test_backlog_sweep_reaches_mentions_behind_a_wall_of_failures(
+    settings, database, store, fake_s3
+) -> None:
+    """Ten newest mentions that cannot be captured must not block older
+    mentions from being backfilled: the sweep pages past known failures."""
+    from app.workers.analysis import AnalysisWorker
+
+    old_id = str(uuid4())
+    seed_mention_with_segments(database, store, mention_id=old_id)
+    database.write(
+        lambda connection: connection.execute(
+            "UPDATE mention_events SET created_at_utc='2026-01-01T00:00:00Z'"
+            " WHERE mention_id=?",
+            (old_id,),
+        )
+    )
+    broken: list[str] = []
+    for _ in range(10):
+        mention_id = str(uuid4())
+        seed_mention_with_segments(database, store, mention_id=mention_id)
+        broken.append(mention_id)
+    database.write(
+        lambda connection: connection.execute(
+            "UPDATE audio_segments SET disposition='deleted' WHERE segment_id IN ("
+            " SELECT t.segment_id FROM transcripts t"
+            " JOIN mention_events e ON e.conversation_id = t.conversation_id"
+            f" WHERE e.mention_id IN ({','.join('?' for _ in broken)}))",
+            tuple(broken),
+        )
+    )
+
+    worker = AnalysisWorker(
+        settings,
+        database,
+        queue=object(),
+        analyzer=object(),
+        result_writer=object(),
+        s3_client=fake_s3,
+        evidence_service=EvidenceClipService(settings, database, store, fake_s3),
+    )
+    worker._evidence_backlog()
+
+    view = database.mention_view_by_id(old_id)
+    assert view is not None and view["audio_available"] is True
+    assert len(worker._evidence_failed) == 10
+
+
 # =============================================================================
 # The streaming allowlist
 # =============================================================================
@@ -256,3 +357,15 @@ def test_evidence_keys_are_streamable_and_nothing_else_new_is() -> None:
     assert is_allowed_audio_key("evidence/") is False
     assert is_allowed_audio_key("mentions/2026/08/10/abc/metadata.json") is False
     assert is_allowed_audio_key("temp-speech/rb-1/seg.opus") is False
+
+
+def test_a_renamed_evidence_prefix_stays_streamable() -> None:
+    """The allowlist follows RADIO_EVIDENCE_PREFIX instead of hardcoding it,
+    so a renamed prefix cannot strand uploaded clips as unstreamable."""
+    assert (
+        is_allowed_audio_key(
+            "brand-evidence/2026/08/10/abc.opus", evidence_prefix="brand-evidence/"
+        )
+        is True
+    )
+    assert is_allowed_audio_key("brand-evidence/2026/08/10/abc.opus") is False

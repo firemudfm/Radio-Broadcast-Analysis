@@ -73,10 +73,12 @@ class AnalysisWorker(BaseWorker):
             if evidence_service is not None
             else _optional_evidence(settings, database, resolved_s3)
         )
-        # One attempt per mention per process: a clip that cannot be built now
-        # (segments gone, FFmpeg fault) should not be retried every idle tick.
-        # A restart clears the set, which is a deliberately cheap retry policy.
-        self._evidence_attempted: set[str] = set()
+        # One attempt per FAILING mention per process: a clip that cannot be
+        # built now (segments gone, FFmpeg fault) should not be retried every
+        # idle tick. Successes need no entry, the evidence_available flag
+        # already excludes them. A restart clears the set, which is a
+        # deliberately cheap retry policy.
+        self._evidence_failed: set[str] = set()
         self.processor = MessageProcessor(
             database=database,
             queue=self.queue,
@@ -291,19 +293,32 @@ class AnalysisWorker(BaseWorker):
 
     # -- evidence --------------------------------------------------------------
 
-    def _capture_evidence(self, mention_id: str) -> None:
+    #: Captures per idle sweep. Each one may spend real time in FFmpeg and S3,
+    #: and the sweep runs inside a tick, so the batch stays small to keep
+    #: heartbeats fresh and shutdown prompt.
+    EVIDENCE_SWEEP_BATCH = 3
+
+    #: Bound on the per-process failure memo. Clearing it simply re-allows one
+    #: retry of old failures, which capture() makes safe.
+    EVIDENCE_FAILED_MEMO_LIMIT = 5000
+
+    def _capture_evidence(self, mention_id: str) -> bool:
         """Attach the audio clip for one mention; failure never loses it."""
-        if self.evidence is None or mention_id in self._evidence_attempted:
-            return
-        self._evidence_attempted.add(mention_id)
+        if self.evidence is None or mention_id in self._evidence_failed:
+            return False
         try:
             if self.evidence.capture(mention_id):
                 self.stats["evidence"] += 1
+                return True
         except Exception as error:  # noqa: BLE001 - the mention outlives its clip
+            if len(self._evidence_failed) >= self.EVIDENCE_FAILED_MEMO_LIMIT:
+                self._evidence_failed.clear()
+            self._evidence_failed.add(mention_id)
             logger.warning(
                 "Evidence clip capture failed",
                 extra=log_fields(mention_id=mention_id, error=str(error)[:300]),
             )
+        return False
 
     def _evidence_backlog(self) -> None:
         """Give clip-less mentions their audio during idle time.
@@ -311,15 +326,39 @@ class AnalysisWorker(BaseWorker):
         This is also the backfill: mentions created before evidence capture
         existed satisfy the same query and get clips as soon as a deployed
         worker has an idle tick, so no operator command is involved.
+
+        Pages past known failures instead of re-reading only the newest rows:
+        a head of permanently un-clippable mentions must not starve every
+        older mention behind it. Work is bounded per sweep and the loop backs
+        off between captures so heartbeats stay fresh and stop stays prompt.
         """
         if self.evidence is None:
             return
-        rows = self.database.read_all(
-            "SELECT mention_id FROM mention_events WHERE evidence_available=0"
-            " ORDER BY created_at_utc DESC LIMIT 10"
-        )
-        for row in rows:
-            self._capture_evidence(str(row["mention_id"]))
+        captured = 0
+        offset = 0
+        page_size = 25
+        while captured < self.EVIDENCE_SWEEP_BATCH and not self.should_stop:
+            rows = self.database.read_all(
+                "SELECT mention_id FROM mention_events WHERE evidence_available=0"
+                " ORDER BY created_at_utc DESC LIMIT ? OFFSET ?",
+                (page_size, offset),
+            )
+            if not rows:
+                return
+            for row in rows:
+                if self.should_stop:
+                    return
+                mention_id = str(row["mention_id"])
+                if mention_id in self._evidence_failed:
+                    continue
+                if self._capture_evidence(mention_id):
+                    captured += 1
+                    self.beat(status="ok", detail={"evidence_backfill": captured})
+                    if captured >= self.EVIDENCE_SWEEP_BATCH:
+                        return
+            if len(rows) < page_size:
+                return
+            offset += page_size
 
     # -- recovery --------------------------------------------------------------
 

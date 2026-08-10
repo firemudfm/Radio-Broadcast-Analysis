@@ -82,7 +82,7 @@ class EvidenceClipService:
         """
         row = self._database.read_one(
             "SELECT mention_id, conversation_id, transcript_id,"
-            " broadcast_start_utc, evidence_available"
+            " broadcast_start_utc, broadcast_end_utc, evidence_available"
             " FROM mention_events WHERE mention_id=?",
             (mention_id,),
         )
@@ -92,7 +92,12 @@ class EvidenceClipService:
             return True
 
         segments = self._segment_rows(
-            str(row["conversation_id"] or ""), str(row["transcript_id"] or "")
+            str(row["conversation_id"] or ""),
+            str(row["transcript_id"] or ""),
+            broadcast_span_ms=self._span_ms(
+                str(row["broadcast_start_utc"] or ""),
+                str(row["broadcast_end_utc"] or ""),
+            ),
         )
         if not segments:
             raise EvidenceCaptureError(
@@ -147,12 +152,21 @@ class EvidenceClipService:
 
     # -- resolution ------------------------------------------------------------
 
-    def _segment_rows(self, conversation_id: str, transcript_id: str) -> list[Any]:
+    def _segment_rows(
+        self,
+        conversation_id: str,
+        transcript_id: str,
+        *,
+        broadcast_span_ms: int | None,
+    ) -> list[Any]:
         """The conversation's segments, oldest first.
 
         Transcripts written before close-stamping existed carry
         ``conversation_id=NULL``; those mentions still know their final
-        transcript, which resolves at least the matching segment.
+        transcript. That resolves only the conversation's LAST segment, so it
+        is used solely when that one segment covers (almost) the whole
+        broadcast window. A tail clip presented as the mention's recording
+        would be wrong evidence, and wrong evidence is worse than none.
         """
         if conversation_id:
             rows = self._database.read_all(
@@ -171,16 +185,40 @@ class EvidenceClipService:
                 return rows
         if not transcript_id:
             return []
-        return self._database.read_all(
+        rows = self._database.read_all(
             """
             SELECT s.segment_id, s.storage_backend, s.storage_path,
-                   s.storage_bucket, s.storage_key, s.sha256, s.size_bytes
+                   s.storage_bucket, s.storage_key, s.sha256, s.size_bytes,
+                   s.duration_ms
             FROM transcripts t
             JOIN audio_segments s ON s.segment_id = t.segment_id
             WHERE t.transcript_id=? AND s.disposition != 'deleted'
             """,
             (transcript_id,),
         )
+        if not rows:
+            return []
+        if broadcast_span_ms is None:
+            return rows
+        segment_ms = int(rows[0]["duration_ms"] or 0)
+        if segment_ms and segment_ms >= broadcast_span_ms * 0.9:
+            return rows
+        raise EvidenceCaptureError(
+            "The conversation spans several segments and only the last is"
+            " resolvable; refusing to attach a partial clip as evidence"
+        )
+
+    @staticmethod
+    def _span_ms(start: str, end: str) -> int | None:
+        if not start or not end:
+            return None
+        try:
+            opened = datetime.fromisoformat(start.replace("Z", "+00:00"))
+            closed = datetime.fromisoformat(end.replace("Z", "+00:00"))
+        except ValueError:
+            return None
+        span = (closed - opened).total_seconds() * 1000
+        return int(span) if span > 0 else None
 
     @staticmethod
     def _extension_of(descriptor: StorageDescriptor) -> str:
@@ -216,61 +254,82 @@ class EvidenceClipService:
             return self._concat_copy(parts, extension), extension
         # Mixed formats only occur across an encoder fallback boundary; decode
         # and re-encode with the pipeline's own speech settings.
-        return self._concat_reencode(parts), "opus"
+        return self._concat_reencode(parts)
 
     def _concat_copy(self, parts: list[tuple[str, bytes]], extension: str) -> bytes:
-        """Lossless concatenation of same-format segments via the demuxer."""
-        container = "ogg" if extension == "opus" else extension
+        """Lossless concatenation of same-format segments via the demuxer.
+
+        The output is a file, never a pipe: WAV (and other seekable
+        containers) need FFmpeg to rewrite size headers on close, which is
+        impossible on a pipe and silently produces 0xFFFFFFFF sizes. The
+        listing carries bare filenames resolved against ``cwd``, so no path
+        from any environment ever needs concat-demuxer quoting.
+        """
         with tempfile.TemporaryDirectory(prefix="evidence-") as workdir:
             root = Path(workdir)
             listing = root / "segments.txt"
             lines = []
             for index, (_, data) in enumerate(parts):
-                path = root / f"segment-{index:04d}.{extension}"
-                path.write_bytes(data)
-                # Paths are our own tempdir names: no quotes, no newlines.
-                lines.append(f"file '{path.as_posix()}'")
+                name = f"segment-{index:04d}.{extension}"
+                (root / name).write_bytes(data)
+                lines.append(f"file '{name}'")
             listing.write_text("\n".join(lines), encoding="utf-8")
+            output = f"clip.{extension}"
             command = [
                 self._ffmpeg_binary,
                 "-nostdin",
                 "-hide_banner",
                 "-loglevel", "error",
                 "-f", "concat",
-                "-safe", "0",
-                "-i", str(listing),
+                "-i", "segments.txt",
                 "-c", "copy",
-                "-f", container,
-                "pipe:1",
+                output,
             ]
-            return self._run_ffmpeg(command)
+            self._run_ffmpeg(command, cwd=root, output=root / output)
+            return (root / output).read_bytes()
 
-    def _concat_reencode(self, parts: list[tuple[str, bytes]]) -> bytes:
-        """Concatenate mixed-format segments by decoding through the filter."""
+    def _concat_reencode(self, parts: list[tuple[str, bytes]]) -> tuple[bytes, str]:
+        """Concatenate mixed-format segments by decoding through the filter.
+
+        Tries Opus first; a spool only holds mixed formats after an Opus
+        encoder fault, so the very box that needs this path may lack libopus.
+        Lossless WAV is the fallback, exactly like the segment encoder's own.
+        """
         with tempfile.TemporaryDirectory(prefix="evidence-") as workdir:
             root = Path(workdir)
-            command = [self._ffmpeg_binary, "-nostdin", "-hide_banner", "-loglevel", "error"]
+            inputs: list[str] = []
             for index, (extension, data) in enumerate(parts):
-                path = root / f"segment-{index:04d}.{extension}"
-                path.write_bytes(data)
-                command.extend(["-i", str(path)])
-            command.extend(
-                [
-                    "-filter_complex", f"concat=n={len(parts)}:v=0:a=1",
-                    "-c:a", "libopus",
-                    "-b:a", "24k",
-                    "-application", "voip",
-                    "-vn",
-                    "-f", "ogg",
-                    "pipe:1",
-                ]
-            )
-            return self._run_ffmpeg(command)
+                name = f"segment-{index:04d}.{extension}"
+                (root / name).write_bytes(data)
+                inputs.extend(["-i", name])
+            base = [self._ffmpeg_binary, "-nostdin", "-hide_banner", "-loglevel", "error"]
+            filtergraph = ["-filter_complex", f"concat=n={len(parts)}:v=0:a=1", "-vn"]
+            try:
+                opus_output = "clip.opus"
+                self._run_ffmpeg(
+                    [
+                        *base, *inputs, *filtergraph,
+                        "-c:a", "libopus", "-b:a", "24k", "-application", "voip",
+                        opus_output,
+                    ],
+                    cwd=root,
+                    output=root / opus_output,
+                )
+                return (root / opus_output).read_bytes(), "opus"
+            except EvidenceCaptureError:
+                wav_output = "clip.wav"
+                self._run_ffmpeg(
+                    [*base, *inputs, *filtergraph, "-c:a", "pcm_s16le", wav_output],
+                    cwd=root,
+                    output=root / wav_output,
+                )
+                return (root / wav_output).read_bytes(), "wav"
 
-    def _run_ffmpeg(self, command: list[str]) -> bytes:
+    def _run_ffmpeg(self, command: list[str], *, cwd: Path, output: Path) -> None:
         try:
             completed = subprocess.run(  # noqa: S603 - fixed binary, validated args, no shell
                 command,
+                cwd=str(cwd),
                 capture_output=True,
                 timeout=self._timeout,
                 check=False,
@@ -281,9 +340,10 @@ class EvidenceClipService:
             ) from error
         except subprocess.TimeoutExpired as error:
             raise EvidenceCaptureError("Clip concatenation timed out") from error
-        if completed.returncode != 0 or not completed.stdout:
+        if completed.returncode != 0:
             detail = completed.stderr.decode("utf-8", "replace")[:300]
             raise EvidenceCaptureError(
                 f"FFmpeg exited {completed.returncode}: {detail}"
             )
-        return completed.stdout
+        if not output.exists() or output.stat().st_size == 0:
+            raise EvidenceCaptureError("FFmpeg produced no output file")
