@@ -362,6 +362,18 @@ class ResultWriter:
             ),
         )
 
+    def refresh_analysis(self, mention_id: str, analysis: AnalysisResult) -> None:
+        """Replace one mention's analysis row in place.
+
+        Used by the healing sweep: a mention that fell back while the model
+        server was down gets its real analysis once the server returns. The
+        upsert in _write_analysis makes this safe to repeat.
+        """
+        stamp = _iso(self._clock())
+        self._database.write(
+            lambda connection: self._write_analysis(connection, mention_id, analysis, stamp)
+        )
+
     # -- S3 -------------------------------------------------------------------
 
     def publish(
