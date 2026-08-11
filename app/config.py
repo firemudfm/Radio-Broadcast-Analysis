@@ -462,6 +462,13 @@ class Settings(BaseSettings):
     RADIO_SQS_WAIT_TIME_SECONDS: int = 20
     RADIO_SQS_MAX_MESSAGES_PER_RECEIVE: int = 5
 
+    #: A transcription job older than this is acknowledged without decoding.
+    #: Monitoring is about NOW: when a backlog builds (ASR slower than capture,
+    #: a worker outage), decoding day-old segments starves the fresh ones
+    #: behind them and the queue never drains. Skipped segments are marked
+    #: abandoned and disposable, so cleanup reclaims their audio.
+    RADIO_TRANSCRIPTION_MAX_AGE_HOURS: int = 6
+
     RADIO_OUTBOX_ENABLED: bool = True
     RADIO_OUTBOX_POLL_SECONDS: float = 2.0
     RADIO_OUTBOX_BATCH_SIZE: int = 25
@@ -680,6 +687,13 @@ class Settings(BaseSettings):
         # SQS returns at most 10 messages per ReceiveMessage call.
         if not 1 <= value <= 10:
             raise ValueError("RADIO_SQS_MAX_MESSAGES_PER_RECEIVE must be between 1 and 10")
+        return value
+
+    @field_validator("RADIO_TRANSCRIPTION_MAX_AGE_HOURS")
+    @classmethod
+    def validate_transcription_max_age(cls, value: int) -> int:
+        if not 1 <= value <= 72:
+            raise ValueError("RADIO_TRANSCRIPTION_MAX_AGE_HOURS must be between 1 and 72")
         return value
 
     @field_validator("RADIO_OUTBOX_BATCH_SIZE")

@@ -22,7 +22,7 @@ from __future__ import annotations
 
 import logging
 import sqlite3
-from datetime import UTC, datetime
+from datetime import UTC, datetime, timedelta
 
 from ..observability import log_fields, trace_context
 from ..pipeline import outbox
@@ -92,7 +92,7 @@ class TranscriptionWorker(BaseWorker):
             wait_seconds=settings.RADIO_SQS_WAIT_TIME_SECONDS,
         )
         self._matchers: dict[tuple[str, int], KeywordMatcher] = {}
-        self.stats = {"segments": 0, "matched": 0, "conversations": 0}
+        self.stats = {"segments": 0, "matched": 0, "conversations": 0, "stale_skipped": 0}
 
     def tick(self) -> bool:
         result = self.processor.poll_once(self.handle)
@@ -117,6 +117,8 @@ class TranscriptionWorker(BaseWorker):
             return self._handle_job(job, message)
 
     def _handle_job(self, job, message: ReceivedMessage) -> ProcessingOutcome:
+        if self._job_is_stale(job):
+            return self._skip_stale_job(job, message)
         # read() verifies the digest recorded at write time before returning
         # bytes, so corruption or tampering fails closed here.
         audio = self.store.read(job.storage)
@@ -159,6 +161,54 @@ class TranscriptionWorker(BaseWorker):
         self._mark_job(job.segment_id, status="succeeded")
         self._mark_disposition(job.segment_id, retained=bool(matches))
         return ProcessingOutcome(handled=True, result_reference=transcript_id)
+
+    # -- backlog freshness -----------------------------------------------------
+
+    def _job_is_stale(self, job) -> bool:
+        age = datetime.now(UTC) - job.created_at
+        return age > timedelta(hours=self.settings.RADIO_TRANSCRIPTION_MAX_AGE_HOURS)
+
+    def _skip_stale_job(self, job, message: ReceivedMessage) -> ProcessingOutcome:
+        """Acknowledge an expired job without paying for a decode.
+
+        Monitoring is about NOW. When a backlog builds, spending 5-10 seconds
+        of CPU on every day-old segment starves the fresh ones behind it and
+        the queue can never drain. The segment's audio is released to cleanup;
+        the inbox row makes a redelivery of the same message a no-op.
+        """
+        stamp = _iso(datetime.now(UTC))
+
+        def write(connection: sqlite3.Connection) -> None:
+            connection.execute(
+                "UPDATE transcription_jobs SET status='abandoned',"
+                " attempts=attempts+1, worker_id=?, updated_at_utc=?"
+                " WHERE segment_id=?",
+                (self.worker_id, stamp, job.segment_id),
+            )
+            connection.execute(
+                "UPDATE audio_segments SET disposition='disposable',"
+                " updated_at_utc=? WHERE segment_id=?"
+                " AND disposition NOT IN ('retained', 'deleted')",
+                (stamp, job.segment_id),
+            )
+            self.processor.inbox.record_processed(
+                connection, message, result_reference="stale-skip", trace_id=job.trace_id
+            )
+
+        self.database.write(write)
+        self.stats["stale_skipped"] += 1
+        logger.info(
+            "Skipped a stale transcription job",
+            extra=log_fields(
+                segment_id=job.segment_id,
+                station_id=job.station_id,
+                age_hours=round(
+                    (datetime.now(UTC) - job.created_at).total_seconds() / 3600, 1
+                ),
+                trace_id=job.trace_id,
+            ),
+        )
+        return ProcessingOutcome(handled=True, result_reference="stale-skip")
 
     # -- persistence -----------------------------------------------------------
 

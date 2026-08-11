@@ -179,6 +179,10 @@ services:
     environment:
       <<: *worker-env
       RADIO_WORKER_ROLE: transcription
+      # 4 of the 8 vCPUs: ASR is the pipeline's throughput bottleneck, and the
+      # 2-thread default decoded slower than the listener captured, so the
+      # transcription queue only ever grew. Override down on smaller hosts.
+      RADIO_ASR_CPU_THREADS: ${RADIO_ASR_CPU_THREADS:-4}
     volumes:
       - ${RADIO_HOST_DATABASE:-/var/lib/radio/database}:/var/lib/radio/database:rw
       - ${RADIO_HOST_SPOOL:-/var/lib/radio/spool}:/var/lib/radio/spool:rw
