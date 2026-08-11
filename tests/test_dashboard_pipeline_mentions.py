@@ -359,6 +359,129 @@ def test_detail_with_no_transcript_anywhere_is_empty_not_an_error(
     assert result["full_transcript"] == ""
 
 
+def test_fallback_analyses_heal_when_the_model_returns(settings, database) -> None:
+    """A mention analysed during a model outage carries a grey fallback row
+    forever; the idle sweep must replace it with the real analysis once the
+    server answers its health probe."""
+    from app.services.llm_analysis import AnalysisResult
+    from app.services.result_writer import ResultWriter
+    from app.workers.analysis import AnalysisWorker
+
+    seed_pipeline_mention(
+        database,
+        status="fallback",
+        conversation_text="Good night everyone, thanks for listening tonight.",
+    )
+
+    class HealingAnalyzer:
+        def __init__(self) -> None:
+            self.requests: list = []
+
+        def healthy(self) -> bool:
+            return True
+
+        def analyze(self, request):
+            self.requests.append(request)
+            return AnalysisResult(
+                summary="A real model summary.",
+                sentiment="positive",
+                confidence=0.9,
+                needs_review=False,
+                status="ready",
+                model="test-model",
+            )
+
+    analyzer = HealingAnalyzer()
+    worker = AnalysisWorker(
+        settings,
+        database,
+        queue=object(),
+        analyzer=analyzer,
+        result_writer=ResultWriter(settings, database, s3_client=None),
+    )
+    worker._analysis_backlog()
+
+    assert len(analyzer.requests) == 1
+    assert "Good night everyone" in analyzer.requests[0].transcript
+    view = database.mention_view_by_id(MENTION_ID)
+    assert view is not None
+    assert view["sentiment"]["label"] == "positive"
+    assert view["sentiment"]["score"] == 0.9
+    assert view["context"] == "A real model summary."
+    row = database.pipeline_analysis_row(MENTION_ID)
+    assert row is not None and row["status"] == "ready"
+
+
+def test_healing_waits_for_a_healthy_model(settings, database) -> None:
+    from app.services.result_writer import ResultWriter
+    from app.workers.analysis import AnalysisWorker
+
+    seed_pipeline_mention(
+        database, status="fallback", conversation_text="Some committed speech."
+    )
+
+    class DownAnalyzer:
+        def __init__(self) -> None:
+            self.requests: list = []
+
+        def healthy(self) -> bool:
+            return False
+
+        def analyze(self, request):  # pragma: no cover - must never run
+            self.requests.append(request)
+            raise AssertionError("analyze must not run while unhealthy")
+
+    analyzer = DownAnalyzer()
+    worker = AnalysisWorker(
+        settings,
+        database,
+        queue=object(),
+        analyzer=analyzer,
+        result_writer=ResultWriter(settings, database, s3_client=None),
+    )
+    worker._analysis_backlog()
+    assert analyzer.requests == []
+    row = database.pipeline_analysis_row(MENTION_ID)
+    assert row is not None and row["status"] == "fallback"
+
+
+def test_a_failed_retry_is_not_hammered(settings, database) -> None:
+    """A healthy probe followed by a failing request must stop the sweep and
+    not retry the same mention every idle tick."""
+    from app.services.llm_analysis import AnalysisResult
+    from app.services.result_writer import ResultWriter
+    from app.workers.analysis import AnalysisWorker
+
+    seed_pipeline_mention(
+        database, status="fallback", conversation_text="Some committed speech."
+    )
+
+    class StillBrokenAnalyzer:
+        def __init__(self) -> None:
+            self.requests: list = []
+
+        def healthy(self) -> bool:
+            return True
+
+        def analyze(self, request):
+            self.requests.append(request)
+            return AnalysisResult(status="fallback", summary="excerpt")
+
+    analyzer = StillBrokenAnalyzer()
+    worker = AnalysisWorker(
+        settings,
+        database,
+        queue=object(),
+        analyzer=analyzer,
+        result_writer=ResultWriter(settings, database, s3_client=None),
+    )
+    worker._analysis_backlog()
+    worker._analysis_backlog()
+    assert len(analyzer.requests) == 1
+    row = database.pipeline_analysis_row(MENTION_ID)
+    assert row is not None and row["status"] == "fallback"
+
+
 def test_highlight_offsets_survive_german_eszett(settings, database) -> None:
     """The regression: highlights were located in a casefolded copy of the
     transcript, and casefolding expands every eszett to "ss", so each match

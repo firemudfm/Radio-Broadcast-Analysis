@@ -90,13 +90,23 @@ class AnalysisWorker(BaseWorker):
             max_messages=1,  # LLM work is serial on CPU; batching only adds latency.
             wait_seconds=settings.RADIO_SQS_WAIT_TIME_SECONDS,
         )
-        self.stats = {"analysed": 0, "fallbacks": 0, "published": 0, "evidence": 0}
+        self.stats = {
+            "analysed": 0,
+            "fallbacks": 0,
+            "published": 0,
+            "evidence": 0,
+            "healed": 0,
+        }
+        # Same shape as the evidence memo: one retry per FAILING mention per
+        # process, cleared on restart and when the cap is reached.
+        self._analysis_retry_failed: set[str] = set()
 
     def tick(self) -> bool:
         result = self.processor.poll_once(self.handle)
         if result["received"] == 0:
             self._publish_backlog()
             self._evidence_backlog()
+            self._analysis_backlog()
             return True
         return False
 
@@ -359,6 +369,110 @@ class AnalysisWorker(BaseWorker):
             if len(rows) < page_size:
                 return
             offset += page_size
+
+    #: Fallback re-analyses per idle sweep. Each one is a full model call, so
+    #: the batch stays small; convergence comes from repetition, not size.
+    ANALYSIS_RETRY_BATCH = 2
+
+    def _analysis_backlog(self) -> None:
+        """Heal mentions that fell back while the model server was down.
+
+        A mention analysed during an outage carries a fallback row (neutral,
+        zero confidence, transcript excerpt) and nothing used to revisit it:
+        the outage became permanent grey mentions. During idle time, when the
+        server answers its health probe, this sweep re-runs the newest
+        fallbacks and replaces their rows with real analyses. It stops at the
+        first non-ready result, because that means the server is unhealthy
+        again and further attempts this tick would only churn.
+        """
+        probe = getattr(self.analyzer, "healthy", None)
+        if not callable(probe) or not probe():
+            return
+        healed = 0
+        offset = 0
+        page_size = 25
+        while healed < self.ANALYSIS_RETRY_BATCH and not self.should_stop:
+            rows = self.database.read_all(
+                "SELECT ar.mention_id, e.conversation_id, e.station_name"
+                " FROM analysis_results ar"
+                " JOIN mention_events e ON e.mention_id = ar.mention_id"
+                " WHERE ar.status = 'fallback'"
+                " ORDER BY e.created_at_utc DESC LIMIT ? OFFSET ?",
+                (page_size, offset),
+            )
+            if not rows:
+                return
+            for row in rows:
+                if self.should_stop:
+                    return
+                mention_id = str(row["mention_id"])
+                if mention_id in self._analysis_retry_failed:
+                    continue
+                outcome = self._retry_analysis(
+                    mention_id,
+                    str(row["conversation_id"] or ""),
+                    str(row["station_name"] or ""),
+                )
+                if outcome is False:
+                    # The server just failed a real request; stop the sweep
+                    # rather than burning the batch against a dead model.
+                    return
+                if outcome:
+                    healed += 1
+                    self.stats["healed"] += 1
+                    self.beat(status="ok", detail={"analysis_healed": healed})
+                    if healed >= self.ANALYSIS_RETRY_BATCH:
+                        return
+            if len(rows) < page_size:
+                return
+            offset += page_size
+
+    def _retry_analysis(
+        self, mention_id: str, conversation_id: str, station_name: str
+    ) -> bool | None:
+        """One re-analysis.
+
+        True: the row was replaced with a real result. None: this mention can
+        never heal (no transcript) and the sweep should move on. False: the
+        model failed a real request and the sweep should stop.
+        """
+        if len(self._analysis_retry_failed) >= self.EVIDENCE_FAILED_MEMO_LIMIT:
+            self._analysis_retry_failed.clear()
+        conversation = self.database.read_one(
+            "SELECT transcript_text, detected_language, content_type, duration_ms"
+            " FROM conversation_sessions WHERE conversation_id=?",
+            (conversation_id,),
+        )
+        transcript = str(conversation["transcript_text"] or "").strip() if conversation else ""
+        if not transcript:
+            self._analysis_retry_failed.add(mention_id)
+            return None
+        keywords = self.database.read_all(
+            "SELECT DISTINCT canonical_value FROM mention_keywords WHERE mention_id=?",
+            (mention_id,),
+        )
+        result = self.analyzer.analyze(
+            AnalysisRequest(
+                conversation_id=conversation_id,
+                transcript=transcript,
+                language=conversation["detected_language"],
+                content_type=str(conversation["content_type"] or "unknown"),  # type: ignore[arg-type]
+                duration_ms=int(conversation["duration_ms"] or 0),
+                matched_keywords=tuple(
+                    str(item["canonical_value"]) for item in keywords
+                ),
+                station_name=station_name,
+            )
+        )
+        if result.status != "ready":
+            self._analysis_retry_failed.add(mention_id)
+            return False
+        self.writer.refresh_analysis(mention_id, result)
+        logger.info(
+            "Fallback analysis healed",
+            extra=log_fields(mention_id=mention_id, sentiment=result.sentiment),
+        )
+        return True
 
     # -- recovery --------------------------------------------------------------
 

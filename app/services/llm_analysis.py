@@ -483,6 +483,20 @@ class ConversationAnalyzer:
     def breaker(self) -> CircuitBreaker:
         return self._breaker
 
+    def healthy(self) -> bool:
+        """Whether a retry is worth attempting right now.
+
+        Advisory gate for the worker's fallback-healing sweep: a probe, not a
+        guarantee. False while the breaker is open so recovery never floods a
+        server that just came back.
+        """
+        if self._breaker.is_open:
+            return False
+        try:
+            return bool(self._client.health())
+        except Exception:  # noqa: BLE001 - health is advisory, never fatal
+            return False
+
     def analyze(self, request: AnalysisRequest) -> AnalysisResult:
         """Analyse one conversation. Always returns a usable result."""
         if not self._settings.RADIO_LLM_ENABLED:
