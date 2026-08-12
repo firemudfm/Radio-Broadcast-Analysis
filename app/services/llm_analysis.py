@@ -580,7 +580,13 @@ class ConversationAnalyzer:
             "Return JSON with: content_type, language, relevant, summary, "
             "translated_summary (English), main_topic, sentiment, speaker_stance, "
             "urgency, entities, key_points, evidence (verbatim quotes with "
-            "start_ms/end_ms), confidence."
+            "start_ms/end_ms), confidence. "
+            # Latency control, not a style preference: output length is decode
+            # time on a shared CPU, and an unbounded summary is what let a
+            # response outlive the request timeout. Two tight summaries plus a
+            # couple of key points fit comfortably inside the token budget.
+            "Keep summary and translated_summary under 50 words each, at most "
+            "3 key_points, and at most 2 evidence quotes."
         )
         if repair:
             instruction = (
