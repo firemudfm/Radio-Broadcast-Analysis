@@ -35,6 +35,7 @@ echo "    syntax OK"
 
 echo "==> Auditing the resolved configuration"
 python3 - "${RESOLVED}" <<'PYTHON'
+import os
 import re
 import sys
 
@@ -119,9 +120,15 @@ for note in notes:
 
 if total_memory:
     print(f"    total memory limits: {total_memory} MiB")
-    if total_memory > 7168:
+    # The pilot host grew from 8 GiB to 16 GiB (c7g/c8g.2xlarge class); the
+    # budget leaves ~6 GiB for the kernel, page cache and the SQLite WAL.
+    # RADIO_HOST_MEMORY_MIB overrides for differently sized hosts.
+    host_mib = int(os.environ.get("RADIO_HOST_MEMORY_MIB", "16384"))
+    budget = host_mib - 6144
+    if total_memory > budget:
         problems.append(
-            f"memory limits total {total_memory} MiB, leaving too little of an 8 GiB host"
+            f"memory limits total {total_memory} MiB, over the {budget} MiB budget"
+            f" of a {host_mib} MiB host (override with RADIO_HOST_MEMORY_MIB)"
         )
 
 if problems:
