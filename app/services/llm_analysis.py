@@ -517,7 +517,13 @@ class ConversationAnalyzer:
                 )
             except AnalysisFailedError as error:
                 self._breaker.record_failure()
+                # Keep the wrapped cause: "request failed" alone cannot tell a
+                # crashed server (connection reset) from a slow one (timeout)
+                # from a network fault (connection refused), and that
+                # distinction is exactly what an operator needs off the UI.
                 last_error = f"{error.code}: {error.message}"
+                if error.detail:
+                    last_error = f"{last_error} ({str(error.detail)[:180]})"
                 continue
             except Exception as error:  # noqa: BLE001 - never let the worker die here
                 self._breaker.record_failure()
@@ -542,6 +548,23 @@ class ConversationAnalyzer:
             return result
 
         self._breaker.record_failure()
+        # The most diagnostic single bit for an operator: a server that answers
+        # its health probe right after failing a real request is crashing or
+        # hanging ON requests, not down. Without this line the two failure
+        # modes are indistinguishable from the mention record alone.
+        try:
+            answers_health = bool(self._client.health())
+        except Exception:  # noqa: BLE001 - the probe itself must never raise here
+            answers_health = False
+        if answers_health:
+            logger.warning(
+                "Model server answers /health but failed the request; it is "
+                "likely crashing or timing out on inference",
+                extra=log_fields(
+                    conversation_id=request.conversation_id, reason=last_error[:200]
+                ),
+            )
+            last_error = f"{last_error} [server answers health but fails requests]"
         return self._fallback(request, status="fallback", reason=last_error)
 
     # -- prompt ---------------------------------------------------------------
