@@ -1,23 +1,41 @@
-# Production overlay for the 4 vCPU / 8 GiB ARM64 target.
+# Production overlay for the 8 vCPU / 16 GiB aarch64 target (c7g/c8g.2xlarge
+# class). The architecture is load-bearing: the deployment toolchain pins
+# aarch64 binaries and the host gate refuses anything else.
 #
 #   docker compose -f compose.yaml -f compose.prod.yaml --profile core --profile pipeline up -d
 #
-# The memory limits below are a **conservative starting allocation**, not a
-# benchmarked optimum. They are chosen so the sum cannot exceed the host, which
-# is the property that matters: an unbounded container on an 8 GiB box takes the
-# whole machine down with it, and the OOM killer picks its victim by score, not
-# by importance -- it is as likely to kill the API as the worker that grew.
+# HISTORY: this file was originally sized for a 4 vCPU / 8 GiB host and was
+# deployed unchanged onto the twice-as-large pilot box. The result looked like
+# three unrelated bugs but was one file: the llm cap of cpus "0.75" made a
+# 0.6B model generate at 2.5 tokens/s, so every analysis timed out at 90s and
+# every mention surfaced neutral with zero confidence; the transcription caps
+# decoded slower than the listener captured, so the transcription queue grew
+# to ~20k messages; and five host cores sat idle while both starved. The
+# limits below are sized for the real host.
+#
+# The memory limits are a **conservative starting allocation**, not a
+# benchmarked optimum. They are chosen so the sum cannot exceed the host,
+# which is the property that matters: an unbounded container takes the whole
+# machine down with it, and the OOM killer picks its victim by score, not by
+# importance -- it is as likely to kill the API as the worker that grew.
 #
 #   api                    512 MiB
 #   planner                256 MiB
 #   listener             1 024 MiB   (ring buffers: ~1.83 MiB per station)
-#   transcription-worker 2 048 MiB   (small int8 model + decode)
+#   transcription-worker 3 072 MiB   (int8 model + decode)
 #   analysis-worker        512 MiB
 #   cleanup-worker         256 MiB
-#   llm                  1 536 MiB   (610 MiB weights + KV cache)
+#   llm                  4 096 MiB   (sized so a ~2.5 GiB 4B-class GGUF swap
+#                                    is an env change, not a limits change)
 #   --------------------------------
-#   total                6 144 MiB   leaving ~2 GiB for the kernel, page cache
+#   total                9 728 MiB   leaving ~6 GiB for the kernel, page cache
 #                                    and the SQLite WAL
+#
+# CPU limits deliberately overcommit the 8 vCPUs (the original file did too,
+# relative to its 4 vCPU target): they are ceilings against a runaway
+# container, not reservations, and the llm only bursts when a mention needs
+# analysis. Thread counts match their container's CPU ceiling; more threads
+# than quota just adds context-switch thrash.
 #
 # Re-measure with `docker stats` under real load before raising any of these;
 # see docs/OPERATIONS.md.
@@ -56,30 +74,32 @@ services:
       resources:
         limits:
           memory: 1024M
-          # Decoding several streams is genuinely parallel work, so the listener
-          # gets the largest CPU share after transcription.
+          # Decoding several streams is genuinely parallel work; capture must
+          # never lose to batch work, so the listener keeps a full share.
           cpus: "1.5"
 
   transcription-worker:
     deploy:
       resources:
         limits:
-          memory: 2048M
-          cpus: "2.0"
+          memory: 3072M
+          cpus: "3.0"
     environment:
       RADIO_ASR_DEVICE: cpu
       RADIO_ASR_COMPUTE_TYPE: int8
-      # Two threads, not four. CTranslate2 scales poorly past a couple of cores
-      # on a small model, and taking all four starves the listener -- which
-      # drops live audio that can never be recovered, unlike a slower queue.
-      RADIO_ASR_CPU_THREADS: "2"
+      # Matches the CPU ceiling. Three threads on this host decode faster than
+      # the listener captures, which is the property that keeps the queue near
+      # zero; the listener's own ceiling protects live capture regardless.
+      RADIO_ASR_CPU_THREADS: "3"
 
   analysis-worker:
     deploy:
       resources:
         limits:
           memory: 512M
-          cpus: "0.5"
+          # Above the old 0.5: this worker now also cuts evidence clips with
+          # FFmpeg, and starving that only delays audio, never capture.
+          cpus: "0.75"
 
   cleanup-worker:
     deploy:
@@ -92,7 +112,14 @@ services:
     deploy:
       resources:
         limits:
-          memory: 1536M
-          # Below 1.0 on purpose: analysis is the only part of the pipeline that
-          # can wait. Live capture cannot.
-          cpus: "0.75"
+          memory: 4096M
+          # THE incident line. This was "0.75" from the 4 vCPU sizing: a 0.6B
+          # model under that cap generated 2.5 tokens/s, every request hit the
+          # 90s timeout at ~200 of 480 tokens, and every mention fell back to
+          # neutral. Three cores decode a 0.6B at interactive speed and keep a
+          # future 4B-class model inside the request timeout.
+          cpus: "3.0"
+    environment:
+      # Matches the CPU ceiling; four threads inside a three-core quota only
+      # add context-switch thrash.
+      RADIO_LLM_THREADS: "3"
