@@ -209,16 +209,67 @@ class HeartbeatReader:
 class StaleJobSweeper:
     """Returns leased jobs whose worker died back to ``pending``."""
 
+    #: Pending transcription jobs older than this are orphans: SQS FIFO
+    #: retains a message for at most 4 days, so a pending row this old has no
+    #: message left to deliver -- no worker will ever receive it, and the
+    #: receive-side stale-skip can never fire. Production accumulated ~20k of
+    #: these from a backlog that outlived retention. Aligned to retention, not
+    #: to the receive-side 6-hour skip: a younger row's message may still
+    #: arrive, and the skip handles it there.
+    ORPHAN_PENDING_HOURS = 96
+
     def __init__(self, database: Any, *, max_attempts: int = 5) -> None:
         self._database = database
         self._max_attempts = max_attempts
 
     def sweep(self, *, now: datetime | None = None) -> dict[str, int]:
-        reference = _iso(now or datetime.now(UTC))
+        moment = now or datetime.now(UTC)
+        reference = _iso(moment)
         results: dict[str, int] = {}
         for table, _id_column in LEASED_JOB_TABLES:
             results[table] = self._sweep_table(table, reference)
+        results["orphaned_pending"] = self._sweep_orphaned_pending(moment)
         return results
+
+    def _sweep_orphaned_pending(self, now: datetime) -> int:
+        """Abandon pending transcription jobs whose message outlived SQS.
+
+        Transcription only: an analysis job is a mention waiting to exist and
+        is never discarded by age here. The orphan's segment is released to
+        cleanup unless it is retained evidence.
+        """
+        stamp = _iso(now)
+        cutoff = _iso(now - timedelta(hours=self.ORPHAN_PENDING_HOURS))
+
+        def sweep(connection: sqlite3.Connection) -> int:
+            cursor = connection.execute(
+                "UPDATE transcription_jobs SET status='abandoned',"
+                " last_error_code='message_retention_expired', updated_at_utc=?"
+                " WHERE status='pending' AND created_at_utc <= ?",
+                (stamp, cutoff),
+            )
+            abandoned = int(cursor.rowcount or 0)
+            if abandoned:
+                connection.execute(
+                    "UPDATE audio_segments SET disposition='disposable',"
+                    " updated_at_utc=?"
+                    " WHERE disposition NOT IN ('retained', 'deleted')"
+                    " AND segment_id IN (SELECT segment_id FROM transcription_jobs"
+                    "   WHERE status='abandoned'"
+                    "   AND last_error_code='message_retention_expired')",
+                    (stamp,),
+                )
+            return abandoned
+
+        abandoned = self._database.write(sweep)
+        if abandoned:
+            logger.warning(
+                "Abandoned %d orphaned pending transcription jobs older than %dh"
+                " (SQS retention outlived); their audio is released to cleanup",
+                abandoned,
+                self.ORPHAN_PENDING_HOURS,
+            )
+        return abandoned
 
     def _sweep_table(self, table: str, reference: str) -> int:
         def sweep(connection: sqlite3.Connection) -> int:

@@ -308,3 +308,110 @@ def test_configure_logging_is_idempotent() -> None:
     logging.getLogger("test").info("hello", extra={"station_id": "rb-abc"})
     assert json.loads(stream.getvalue().strip())["station_id"] == "rb-abc"
     configure_logging(level="INFO", log_format="text")
+
+
+# --- orphaned pending jobs ----------------------------------------------------
+#
+# SQS FIFO retains a message for at most 4 days. A pending transcription row
+# older than that has no message left to deliver: no worker will ever receive
+# it, and the receive-side stale-skip can never fire. Production accumulated
+# ~20k of these from a backlog that outlived retention.
+
+
+def _insert_transcription_job(
+    database: Database, *, segment_id: str, created: datetime, disposition: str = "pending"
+) -> None:
+    stamp = created.isoformat()
+
+    def write(connection) -> None:
+        connection.execute(
+            "INSERT INTO station_sessions(station_session_id, station_id,"
+            " generation, shard_index, status, started_at_utc)"
+            " VALUES (?, 'st-1', 1, 0, 'streaming', ?)"
+            " ON CONFLICT(station_session_id) DO NOTHING",
+            (f"sess-{segment_id}", stamp),
+        )
+        connection.execute(
+            "INSERT INTO audio_segments(segment_id, station_id,"
+            " station_session_id, sequence_number, started_at_utc, ended_at_utc,"
+            " duration_ms, content_class, storage_backend, storage_path, sha256,"
+            " size_bytes, disposition, trace_id, created_at_utc, updated_at_utc)"
+            " VALUES (?, 'st-1', ?, 1, ?, ?, 1000, 'speech', 'local', 'x.opus',"
+            " 'd', 1, ?, 'tr', ?, ?)",
+            (segment_id, f"sess-{segment_id}", stamp, stamp, disposition, stamp, stamp),
+        )
+        connection.execute(
+            "INSERT INTO transcription_jobs(segment_id, station_id, status,"
+            " attempts, trace_id, created_at_utc, updated_at_utc)"
+            " VALUES (?, 'st-1', 'pending', 0, 'tr', ?, ?)",
+            (segment_id, stamp, stamp),
+        )
+
+    database.write(write)
+
+
+def test_a_pending_job_older_than_retention_is_abandoned(
+    pipeline_database: Database,
+) -> None:
+    _insert_transcription_job(
+        pipeline_database, segment_id="seg-old", created=NOW - timedelta(hours=97)
+    )
+    results = StaleJobSweeper(pipeline_database).sweep(now=NOW)
+    assert results["orphaned_pending"] == 1
+    row = pipeline_database.read_one(
+        "SELECT status, last_error_code FROM transcription_jobs WHERE segment_id='seg-old'"
+    )
+    assert str(row["status"]) == "abandoned"
+    assert str(row["last_error_code"]) == "message_retention_expired"
+    segment = pipeline_database.read_one(
+        "SELECT disposition FROM audio_segments WHERE segment_id='seg-old'"
+    )
+    assert str(segment["disposition"]) == "disposable", "the audio is released to cleanup"
+
+
+def test_a_younger_pending_job_is_left_for_the_queue(
+    pipeline_database: Database,
+) -> None:
+    """Its message may still arrive; the receive-side skip owns that case."""
+    _insert_transcription_job(
+        pipeline_database, segment_id="seg-new", created=NOW - timedelta(hours=95)
+    )
+    results = StaleJobSweeper(pipeline_database).sweep(now=NOW)
+    assert results["orphaned_pending"] == 0
+    row = pipeline_database.read_one(
+        "SELECT status FROM transcription_jobs WHERE segment_id='seg-new'"
+    )
+    assert str(row["status"]) == "pending"
+
+
+def test_retained_evidence_survives_the_orphan_sweep(
+    pipeline_database: Database,
+) -> None:
+    _insert_transcription_job(
+        pipeline_database,
+        segment_id="seg-kept",
+        created=NOW - timedelta(hours=200),
+        disposition="retained",
+    )
+    StaleJobSweeper(pipeline_database).sweep(now=NOW)
+    segment = pipeline_database.read_one(
+        "SELECT disposition FROM audio_segments WHERE segment_id='seg-kept'"
+    )
+    assert str(segment["disposition"]) == "retained", "evidence is never released by age"
+
+
+def test_analysis_jobs_are_never_abandoned_by_age(pipeline_database: Database) -> None:
+    """An analysis job is a mention waiting to exist."""
+    _insert_job(pipeline_database, attempts=0, lease=NOW + timedelta(hours=1))
+    pipeline_database.write(
+        lambda connection: connection.execute(
+            "UPDATE analysis_jobs SET status='pending', lease_expires_at_utc=NULL,"
+            " created_at_utc=? WHERE analysis_job_id='j1'",
+            ((NOW - timedelta(days=30)).isoformat(),),
+        )
+    )
+    StaleJobSweeper(pipeline_database).sweep(now=NOW)
+    row = pipeline_database.read_one(
+        "SELECT status FROM analysis_jobs WHERE analysis_job_id='j1'"
+    )
+    assert str(row["status"]) == "pending"
