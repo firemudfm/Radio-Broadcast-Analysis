@@ -1,0 +1,1226 @@
+<mxfile host="app.diagrams.net" agent="Radio Broadcast Analysis" type="device" pages="3">
+  <diagram id="page-arch" name="1. AWS architecture">
+    <mxGraphModel dx="1600" dy="900" grid="1" gridSize="10" guides="1" tooltips="1" connect="1" arrows="1" fold="1" page="1" pageScale="1" pageWidth="2960" pageHeight="2010" math="0" shadow="0" background="#FFFFFF">
+      <root>
+        <mxCell id="0" />
+        <mxCell id="1" parent="0" />
+        <mxCell id="p1-title" value="Radio Broadcast Analysis &amp;mdash; AWS architecture &amp;amp; backend pipeline" style="text;html=1;strokeColor=none;fillColor=none;align=left;verticalAlign=middle;whiteSpace=wrap;rounded=0;fontSize=26;fontStyle=1;fontColor=#232F3E;" vertex="1" parent="1">
+          <mxGeometry x="24" y="14" width="1900" height="34" as="geometry" />
+        </mxCell>
+        <mxCell id="p1-sub" value="One EC2 instance &amp;middot; 7 Docker Compose services &amp;middot; 2 SQS FIFO queues &amp;middot; SQLite (WAL) on EBS + S3 &amp;middot; deploy via GitHub OIDC &amp;rarr; SSM (no SSH)&lt;br&gt;&lt;b&gt;Black badges 1&amp;ndash;22&lt;/b&gt; = runtime data pipeline &amp;nbsp;&amp;nbsp;&lt;b&gt;Blue badges D1&amp;ndash;D6&lt;/b&gt; = deployment chain &amp;nbsp;&amp;nbsp;Every label is taken verbatim from the repository at v0.4.1." style="text;html=1;strokeColor=none;fillColor=none;align=left;verticalAlign=middle;whiteSpace=wrap;rounded=0;fontSize=12;fontStyle=0;fontColor=#232F3E;" vertex="1" parent="1">
+          <mxGeometry x="24" y="50" width="2200" height="46" as="geometry" />
+        </mxCell>
+        <mxCell id="p1-exthdr" value="OUTSIDE AWS" style="text;html=1;strokeColor=none;fillColor=none;align=left;verticalAlign=middle;whiteSpace=wrap;rounded=0;fontSize=12;fontStyle=1;fontColor=#5A6C86;" vertex="1" parent="1">
+          <mxGeometry x="24" y="108" width="316" height="22" as="geometry" />
+        </mxCell>
+        <mxCell id="p1-gh" value="GitHub" style="rounded=1;arcSize=6;whiteSpace=wrap;html=1;fillColor=#F7F8FA;strokeColor=#5A6C86;fontColor=#5A6C86;fontSize=13;fontStyle=1;align=left;verticalAlign=top;spacingLeft=8;spacingRight=8;spacingTop=4;dashed=0;" vertex="1" parent="1">
+          <mxGeometry x="24" y="136" width="316" height="252" as="geometry" />
+        </mxCell>
+        <mxCell id="p1-gh1" value="&lt;b&gt;repository &amp;middot; branch &lt;code&gt;main&lt;/code&gt;&lt;/b&gt;&lt;br&gt;the only deployment source" style="rounded=1;arcSize=6;whiteSpace=wrap;html=1;fillColor=#FFFFFF;strokeColor=#D5DBE3;fontColor=#232F3E;fontSize=10;fontStyle=0;align=left;verticalAlign=top;spacingLeft=8;spacingRight=8;spacingTop=4;dashed=0;" vertex="1" parent="1">
+          <mxGeometry x="44" y="172" width="276" height="46" as="geometry" />
+        </mxCell>
+        <mxCell id="p1-gh2" value="&lt;b&gt;CI&lt;/b&gt; &amp;mdash; ruff &amp;middot; pytest 3.11 &amp;amp; 3.12&lt;br&gt;bandit -ll &amp;middot; pip-audit" style="rounded=1;arcSize=6;whiteSpace=wrap;html=1;fillColor=#FFFFFF;strokeColor=#D5DBE3;fontColor=#232F3E;fontSize=10;fontStyle=0;align=left;verticalAlign=top;spacingLeft=8;spacingRight=8;spacingTop=4;dashed=0;" vertex="1" parent="1">
+          <mxGeometry x="44" y="224" width="276" height="46" as="geometry" />
+        </mxCell>
+        <mxCell id="p1-gh3" value="&lt;b&gt;CodeQL&lt;/b&gt; &amp;mdash; Analyze Python" style="rounded=1;arcSize=6;whiteSpace=wrap;html=1;fillColor=#FFFFFF;strokeColor=#D5DBE3;fontColor=#232F3E;fontSize=10;fontStyle=0;align=left;verticalAlign=top;spacingLeft=8;spacingRight=8;spacingTop=4;dashed=0;" vertex="1" parent="1">
+          <mxGeometry x="44" y="276" width="276" height="40" as="geometry" />
+        </mxCell>
+        <mxCell id="p1-gh4" value="&lt;b&gt;deploy-main.yml&lt;/b&gt;&lt;br&gt;workflow_run &amp;rarr; OIDC &amp;rarr; SSM&lt;br&gt;gate: all 5 checks green on that SHA" style="rounded=1;arcSize=6;whiteSpace=wrap;html=1;fillColor=#FFFFFF;strokeColor=#D5DBE3;fontColor=#232F3E;fontSize=10;fontStyle=0;align=left;verticalAlign=top;spacingLeft=8;spacingRight=8;spacingTop=4;dashed=0;" vertex="1" parent="1">
+          <mxGeometry x="44" y="322" width="276" height="52" as="geometry" />
+        </mxCell>
+        <mxCell id="p1-streams" value="&lt;b&gt;Live radio streams&lt;/b&gt;&lt;br&gt;internet stations &amp;middot; MP3 / AAC / HLS / Ogg&lt;br&gt;URLs are UNTRUSTED &amp;mdash; SSRF-validated on&lt;br&gt;every connect and every redirect hop" style="rounded=1;arcSize=6;whiteSpace=wrap;html=1;fillColor=#FFFFFF;strokeColor=#7D8998;fontColor=#232F3E;fontSize=10;fontStyle=0;align=left;verticalAlign=top;spacingLeft=8;spacingRight=8;spacingTop=4;dashed=0;" vertex="1" parent="1">
+          <mxGeometry x="24" y="412" width="316" height="118" as="geometry" />
+        </mxCell>
+        <mxCell id="p1-inet" value="" style="sketch=0;outlineConnect=0;fontColor=#232F3E;gradientColor=none;fillColor=#232F3D;strokeColor=none;dashed=0;verticalLabelPosition=bottom;verticalAlign=top;align=center;html=1;fontSize=11;fontStyle=0;aspect=fixed;pointerEvents=1;shape=mxgraph.aws4.internet_alt1;" vertex="1" parent="1">
+          <mxGeometry x="246" y="432" width="78" height="48" as="geometry" />
+        </mxCell>
+        <mxCell id="p1-rb" value="&lt;b&gt;Radio Browser API&lt;/b&gt;&lt;br&gt;community catalogue &amp;middot; mirror pool&lt;br&gt;SRV discovery &amp;middot; &lt;code&gt;/json/url/&amp;lt;uuid&amp;gt;&lt;/code&gt;&lt;br&gt;resolved URL is cached &amp;mdash; asked once per station" style="rounded=1;arcSize=6;whiteSpace=wrap;html=1;fillColor=#FFFFFF;strokeColor=#7D8998;fontColor=#232F3E;fontSize=10;fontStyle=0;align=left;verticalAlign=top;spacingLeft=8;spacingRight=8;spacingTop=4;dashed=0;" vertex="1" parent="1">
+          <mxGeometry x="24" y="550" width="316" height="118" as="geometry" />
+        </mxCell>
+        <mxCell id="p1-cons" value="Consumers" style="rounded=1;arcSize=6;whiteSpace=wrap;html=1;fillColor=#F7F8FA;strokeColor=#5A6C86;fontColor=#5A6C86;fontSize=13;fontStyle=1;align=left;verticalAlign=top;spacingLeft=8;spacingRight=8;spacingTop=4;dashed=0;" vertex="1" parent="1">
+          <mxGeometry x="24" y="688" width="316" height="176" as="geometry" />
+        </mxCell>
+        <mxCell id="p1-user" value="" style="sketch=0;outlineConnect=0;fontColor=#232F3E;gradientColor=none;fillColor=#232F3D;strokeColor=none;dashed=0;verticalLabelPosition=bottom;verticalAlign=top;align=center;html=1;fontSize=11;fontStyle=0;aspect=fixed;pointerEvents=1;shape=mxgraph.aws4.user;" vertex="1" parent="1">
+          <mxGeometry x="54" y="726" width="78" height="78" as="geometry" />
+        </mxCell>
+        <mxCell id="p1-cons1" value="&lt;b&gt;Dashboard&lt;/b&gt;&lt;br&gt;browser SPA (CORS)" style="rounded=1;arcSize=6;whiteSpace=wrap;html=1;fillColor=#FFFFFF;strokeColor=#D5DBE3;fontColor=#232F3E;fontSize=10;fontStyle=0;align=left;verticalAlign=top;spacingLeft=8;spacingRight=8;spacingTop=4;dashed=0;" vertex="1" parent="1">
+          <mxGeometry x="148" y="726" width="172" height="46" as="geometry" />
+        </mxCell>
+        <mxCell id="p1-cons2" value="&lt;b&gt;Operator&lt;/b&gt;&lt;br&gt;curl / Swagger &lt;code&gt;/docs&lt;/code&gt;" style="rounded=1;arcSize=6;whiteSpace=wrap;html=1;fillColor=#FFFFFF;strokeColor=#D5DBE3;fontColor=#232F3E;fontSize=10;fontStyle=0;align=left;verticalAlign=top;spacingLeft=8;spacingRight=8;spacingTop=4;dashed=0;" vertex="1" parent="1">
+          <mxGeometry x="148" y="780" width="172" height="46" as="geometry" />
+        </mxCell>
+        <mxCell id="p1-cons3" value="pilot is unauthenticated (&lt;code&gt;auth_mode: none&lt;/code&gt;) &amp;mdash; reachable only from the security-group CIDR" style="text;html=1;strokeColor=none;fillColor=none;align=left;verticalAlign=middle;whiteSpace=wrap;rounded=0;fontSize=9;fontStyle=0;fontColor=#DD3522;" vertex="1" parent="1">
+          <mxGeometry x="44" y="830" width="286" height="26" as="geometry" />
+        </mxCell>
+        <mxCell id="p1-leg" value="Legend" style="rounded=1;arcSize=6;whiteSpace=wrap;html=1;fillColor=#F7F8FA;strokeColor=#5A6C86;fontColor=#5A6C86;fontSize=13;fontStyle=1;align=left;verticalAlign=top;spacingLeft=8;spacingRight=8;spacingTop=4;dashed=0;" vertex="1" parent="1">
+          <mxGeometry x="24" y="886" width="316" height="452" as="geometry" />
+        </mxCell>
+        <mxCell id="p1-legb1" value="7" style="ellipse;whiteSpace=wrap;html=1;fillColor=#232F3E;strokeColor=#ffffff;strokeWidth=2;fontColor=#ffffff;fontSize=12;fontStyle=1;align=center;verticalAlign=middle;" vertex="1" parent="1">
+          <mxGeometry x="44" y="922" width="28" height="28" as="geometry" />
+        </mxCell>
+        <mxCell id="p1-legt1" value="runtime pipeline step (1&amp;ndash;22)" style="text;html=1;strokeColor=none;fillColor=none;align=left;verticalAlign=middle;whiteSpace=wrap;rounded=0;fontSize=10;fontStyle=0;fontColor=#232F3E;" vertex="1" parent="1">
+          <mxGeometry x="82" y="922" width="248" height="28" as="geometry" />
+        </mxCell>
+        <mxCell id="p1-legb2" value="D" style="ellipse;whiteSpace=wrap;html=1;fillColor=#3334B9;strokeColor=#ffffff;strokeWidth=2;fontColor=#ffffff;fontSize=12;fontStyle=1;align=center;verticalAlign=middle;" vertex="1" parent="1">
+          <mxGeometry x="44" y="958" width="28" height="28" as="geometry" />
+        </mxCell>
+        <mxCell id="p1-legt2" value="deployment step (D1&amp;ndash;D6)" style="text;html=1;strokeColor=none;fillColor=none;align=left;verticalAlign=middle;whiteSpace=wrap;rounded=0;fontSize=10;fontStyle=0;fontColor=#232F3E;" vertex="1" parent="1">
+          <mxGeometry x="82" y="958" width="248" height="28" as="geometry" />
+        </mxCell>
+        <mxCell id="p1-legl1" value="&lt;b&gt;&amp;#9473;&amp;#9473;&lt;/b&gt; data path (audio, messages, rows)" style="text;html=1;strokeColor=none;fillColor=none;align=left;verticalAlign=middle;whiteSpace=wrap;rounded=0;fontSize=10;fontStyle=0;fontColor=#232F3E;" vertex="1" parent="1">
+          <mxGeometry x="44" y="998" width="286" height="22" as="geometry" />
+        </mxCell>
+        <mxCell id="p1-legl2" value="&lt;b&gt;&amp;#9476;&amp;#9476;&lt;/b&gt; control / deploy path" style="text;html=1;strokeColor=none;fillColor=none;align=left;verticalAlign=middle;whiteSpace=wrap;rounded=0;fontSize=10;fontStyle=0;fontColor=#3334B9;" vertex="1" parent="1">
+          <mxGeometry x="44" y="1022" width="286" height="22" as="geometry" />
+        </mxCell>
+        <mxCell id="p1-legl3" value="&lt;b&gt;&amp;#9473;&amp;#9473;&lt;/b&gt; S3 export / read-back" style="text;html=1;strokeColor=none;fillColor=none;align=left;verticalAlign=middle;whiteSpace=wrap;rounded=0;fontSize=10;fontStyle=0;fontColor=#7AA116;" vertex="1" parent="1">
+          <mxGeometry x="44" y="1046" width="286" height="22" as="geometry" />
+        </mxCell>
+        <mxCell id="p1-legtx" value="&lt;b&gt;ONE TXN&lt;/b&gt; marks a single SQLite transaction. Business rows and the outbox row commit together &amp;mdash; that is the whole reliability argument (ADR-009)." style="rounded=1;arcSize=6;whiteSpace=wrap;html=1;fillColor=#FFFFFF;strokeColor=#D5DBE3;fontColor=#232F3E;fontSize=9;fontStyle=0;align=left;verticalAlign=top;spacingLeft=8;spacingRight=8;spacingTop=4;dashed=0;" vertex="1" parent="1">
+          <mxGeometry x="44" y="1078" width="286" height="60" as="geometry" />
+        </mxCell>
+        <mxCell id="p1-legsec" value="&lt;b&gt;Every container:&lt;/b&gt; non-root &amp;middot; &lt;code&gt;cap_drop: ALL&lt;/code&gt; &amp;middot; &lt;code&gt;no-new-privileges&lt;/code&gt; &amp;middot; read-only root fs &amp;middot; tmpfs &lt;code&gt;/tmp&lt;/code&gt; &amp;middot; &lt;code&gt;pids: 256&lt;/code&gt; &amp;middot; rotated json-file logs. Never privileged, never host networking, never the Docker socket." style="rounded=1;arcSize=6;whiteSpace=wrap;html=1;fillColor=#FFFFFF;strokeColor=#D5DBE3;fontColor=#232F3E;fontSize=9;fontStyle=0;align=left;verticalAlign=top;spacingLeft=8;spacingRight=8;spacingTop=4;dashed=0;" vertex="1" parent="1">
+          <mxGeometry x="44" y="1146" width="286" height="76" as="geometry" />
+        </mxCell>
+        <mxCell id="p1-legcap" value="&lt;b&gt;Capacity &amp;mdash; four different numbers&lt;/b&gt;&lt;br&gt;catalogue stations 1,000+&lt;br&gt;&lt;b&gt;requested&lt;/b&gt; unique stations 1,000 (load-proven)&lt;br&gt;&lt;b&gt;active&lt;/b&gt; unique stations 1 by code default; 512 in the prod template with &lt;code&gt;RADIO_ALLOW_UNBENCHMARKED_CAPACITY=1&lt;/code&gt;&lt;br&gt;real-time ASR throughput &lt;b&gt;never benchmarked&lt;/b&gt;" style="rounded=1;arcSize=6;whiteSpace=wrap;html=1;fillColor=#FFFFFF;strokeColor=#D5DBE3;fontColor=#232F3E;fontSize=9;fontStyle=0;align=left;verticalAlign=top;spacingLeft=8;spacingRight=8;spacingTop=4;dashed=0;" vertex="1" parent="1">
+          <mxGeometry x="44" y="1230" width="286" height="96" as="geometry" />
+        </mxCell>
+        <mxCell id="p1-facts" value="Runtime facts" style="rounded=1;arcSize=6;whiteSpace=wrap;html=1;fillColor=#F7F8FA;strokeColor=#5A6C86;fontColor=#5A6C86;fontSize=13;fontStyle=1;align=left;verticalAlign=top;spacingLeft=8;spacingRight=8;spacingTop=4;dashed=0;" vertex="1" parent="1">
+          <mxGeometry x="24" y="1358" width="316" height="542" as="geometry" />
+        </mxCell>
+        <mxCell id="p1-f1" value="&lt;b&gt;Host&lt;/b&gt;&lt;br&gt;EC2 Graviton, aarch64, 8 vCPU / 16 GiB&lt;br&gt;(c7g / c8g.2xlarge class)&lt;br&gt;deploy refuses any non-aarch64 host&lt;br&gt;instance role supplies AWS credentials" style="rounded=1;arcSize=6;whiteSpace=wrap;html=1;fillColor=#FFFFFF;strokeColor=#D5DBE3;fontColor=#232F3E;fontSize=9;fontStyle=0;align=left;verticalAlign=top;spacingLeft=8;spacingRight=8;spacingTop=4;dashed=0;" vertex="1" parent="1">
+          <mxGeometry x="44" y="1394" width="276" height="88" as="geometry" />
+        </mxCell>
+        <mxCell id="p1-f2" value="&lt;b&gt;Container limits (compose.prod.yaml)&lt;/b&gt;&lt;br&gt;api 1.0 CPU / 512 MiB&lt;br&gt;planner 0.5 / 256&lt;br&gt;listener 1.5 / 1024&lt;br&gt;transcription-worker 3.0 / 3072&lt;br&gt;analysis-worker 0.75 / 512&lt;br&gt;cleanup-worker 0.25 / 256&lt;br&gt;llm 3.0 / 4096 &amp;nbsp;&amp;mdash;&amp;nbsp; total 9,728 MiB" style="rounded=1;arcSize=6;whiteSpace=wrap;html=1;fillColor=#FFFFFF;strokeColor=#D5DBE3;fontColor=#232F3E;fontSize=9;fontStyle=0;align=left;verticalAlign=top;spacingLeft=8;spacingRight=8;spacingTop=4;dashed=0;" vertex="1" parent="1">
+          <mxGeometry x="44" y="1490" width="276" height="132" as="geometry" />
+        </mxCell>
+        <mxCell id="p1-f3" value="&lt;b&gt;Models (never in an image, never auto-downloaded)&lt;/b&gt;&lt;br&gt;ASR &lt;code&gt;Systran/faster-whisper-small&lt;/code&gt;&lt;br&gt;&amp;nbsp;&amp;nbsp;CTranslate2, int8, CPU, beam 1&lt;br&gt;VAD &lt;code&gt;silero_vad.onnx&lt;/code&gt;&lt;br&gt;LLM &lt;code&gt;Qwen3-0.6B-Q8_0.gguf&lt;/code&gt;&lt;br&gt;pinned + digest-verified via models.lock.json" style="rounded=1;arcSize=6;whiteSpace=wrap;html=1;fillColor=#FFFFFF;strokeColor=#D5DBE3;fontColor=#232F3E;fontSize=9;fontStyle=0;align=left;verticalAlign=top;spacingLeft=8;spacingRight=8;spacingTop=4;dashed=0;" vertex="1" parent="1">
+          <mxGeometry x="44" y="1630" width="276" height="116" as="geometry" />
+        </mxCell>
+        <mxCell id="p1-f4" value="&lt;b&gt;Known gaps &amp;mdash; documented, not defects&lt;/b&gt;&lt;br&gt;&amp;bull; ASR &lt;b&gt;pass B&lt;/b&gt; exists and is unit-tested but &lt;b&gt;no worker calls it&lt;/b&gt;, so fuzzy/phonetic candidates are never re-decoded&lt;br&gt;&amp;bull; &lt;code&gt;_publish_backlog&lt;/code&gt; logs only; it does not re-publish&lt;br&gt;&amp;bull; nothing writes &lt;code&gt;campaign_content_policies&lt;/code&gt;&lt;br&gt;&amp;bull; &lt;code&gt;temp-transcripts/&lt;/code&gt; and &lt;code&gt;config/&lt;/code&gt; prefixes are dead settings" style="rounded=1;arcSize=6;whiteSpace=wrap;html=1;fillColor=#FFF6F6;strokeColor=#DD3522;fontColor=#232F3E;fontSize=9;fontStyle=0;align=left;verticalAlign=top;spacingLeft=8;spacingRight=8;spacingTop=4;dashed=0;" vertex="1" parent="1">
+          <mxGeometry x="44" y="1754" width="276" height="130" as="geometry" />
+        </mxCell>
+        <mxCell id="p1-cloud" value="AWS Cloud" style="points=[[0,0],[0.25,0],[0.5,0],[0.75,0],[1,0],[1,0.25],[1,0.5],[1,0.75],[1,1],[0.75,1],[0.5,1],[0.25,1],[0,1],[0,0.75],[0,0.5],[0,0.25]];outlineConnect=0;gradientColor=none;html=1;whiteSpace=wrap;fontSize=13;fontStyle=1;container=0;pointerEvents=0;collapsible=0;recursiveResize=0;shape=mxgraph.aws4.group;grIcon=mxgraph.aws4.group_aws_cloud_alt;strokeColor=#232F3E;fillColor=none;verticalAlign=top;align=left;spacingLeft=34;fontColor=#232F3E;dashed=0;" vertex="1" parent="1">
+          <mxGeometry x="370" y="110" width="2150" height="1840" as="geometry" />
+        </mxCell>
+        <mxCell id="p1-region" value="Region &amp;mdash; eu-north-1 (default)" style="points=[[0,0],[0.25,0],[0.5,0],[0.75,0],[1,0],[1,0.25],[1,0.5],[1,0.75],[1,1],[0.75,1],[0.5,1],[0.25,1],[0,1],[0,0.75],[0,0.5],[0,0.25]];outlineConnect=0;gradientColor=none;html=1;whiteSpace=wrap;fontSize=13;fontStyle=1;container=0;pointerEvents=0;collapsible=0;recursiveResize=0;shape=mxgraph.aws4.group;grIcon=mxgraph.aws4.group_region;strokeColor=#00A4A6;fillColor=none;verticalAlign=top;align=left;spacingLeft=34;fontColor=#147EBA;dashed=1;" vertex="1" parent="1">
+          <mxGeometry x="400" y="155" width="2090" height="1770" as="geometry" />
+        </mxCell>
+        <mxCell id="p1-laned" value="Deployment &amp;mdash; GitHub OIDC &amp;rarr; fixed SSM document &amp;rarr; immutable release &amp;nbsp;|&amp;nbsp; no SSH, no port 22, no EC2 key pair, no static AWS credential" style="rounded=1;arcSize=6;whiteSpace=wrap;html=1;fillColor=#F5F5FE;strokeColor=#3334B9;fontColor=#3334B9;fontSize=13;fontStyle=1;align=left;verticalAlign=top;spacingLeft=8;spacingRight=8;spacingTop=4;dashed=1;" vertex="1" parent="1">
+          <mxGeometry x="430" y="200" width="2030" height="210" as="geometry" />
+        </mxCell>
+        <mxCell id="p1-d1" value="" style="sketch=0;points=[[0,0,0],[0.25,0,0],[0.5,0,0],[0.75,0,0],[1,0,0],[0,1,0],[0.25,1,0],[0.5,1,0],[0.75,1,0],[1,1,0],[0,0.25,0],[0,0.5,0],[0,0.75,0],[1,0.25,0],[1,0.5,0],[1,0.75,0]];outlineConnect=0;fontColor=#232F3E;fillColor=#DD344C;strokeColor=#ffffff;dashed=0;verticalLabelPosition=bottom;verticalAlign=top;align=center;html=1;fontSize=11;fontStyle=0;aspect=fixed;shape=mxgraph.aws4.resourceIcon;resIcon=mxgraph.aws4.identity_and_access_management;" vertex="1" parent="1">
+          <mxGeometry x="520" y="244" width="78" height="78" as="geometry" />
+        </mxCell>
+        <mxCell id="p1-d1lbl" value="&lt;b&gt;IAM &amp;middot; OIDC provider&lt;/b&gt;&lt;br&gt;&lt;code&gt;token.actions.githubusercontent.com&lt;/code&gt;&lt;br&gt;ClientId &lt;code&gt;sts.amazonaws.com&lt;/code&gt;" style="rounded=1;arcSize=6;whiteSpace=wrap;html=1;fillColor=#FFFFFF;strokeColor=#D5DBE3;fontColor=#232F3E;fontSize=9;fontStyle=0;align=left;verticalAlign=top;spacingLeft=8;spacingRight=8;spacingTop=4;dashed=0;" vertex="1" parent="1">
+          <mxGeometry x="440" y="328" width="238" height="74" as="geometry" />
+        </mxCell>
+        <mxCell id="p1-d1b" value="D1" style="ellipse;whiteSpace=wrap;html=1;fillColor=#3334B9;strokeColor=#ffffff;strokeWidth=2;fontColor=#ffffff;fontSize=10;fontStyle=1;align=center;verticalAlign=middle;" vertex="1" parent="1">
+          <mxGeometry x="486" y="246" width="28" height="28" as="geometry" />
+        </mxCell>
+        <mxCell id="p1-d2" value="" style="sketch=0;outlineConnect=0;fontColor=#232F3E;gradientColor=none;fillColor=#DD344C;strokeColor=none;dashed=0;verticalLabelPosition=bottom;verticalAlign=top;align=center;html=1;fontSize=11;fontStyle=0;aspect=fixed;pointerEvents=1;shape=mxgraph.aws4.role;" vertex="1" parent="1">
+          <mxGeometry x="830" y="261" width="78" height="44" as="geometry" />
+        </mxCell>
+        <mxCell id="p1-d2lbl" value="&lt;b&gt;GitHubActionsRadioDeployRole&lt;/b&gt;&lt;br&gt;sts:AssumeRoleWithWebIdentity&lt;br&gt;sub pinned to &lt;code&gt;&amp;hellip;:environment:production&lt;/code&gt;&lt;br&gt;DENY StartSession / RunShellScript / iam:*" style="rounded=1;arcSize=6;whiteSpace=wrap;html=1;fillColor=#FFFFFF;strokeColor=#D5DBE3;fontColor=#232F3E;fontSize=9;fontStyle=0;align=left;verticalAlign=top;spacingLeft=8;spacingRight=8;spacingTop=4;dashed=0;" vertex="1" parent="1">
+          <mxGeometry x="750" y="328" width="238" height="74" as="geometry" />
+        </mxCell>
+        <mxCell id="p1-d2b" value="D2" style="ellipse;whiteSpace=wrap;html=1;fillColor=#3334B9;strokeColor=#ffffff;strokeWidth=2;fontColor=#ffffff;fontSize=10;fontStyle=1;align=center;verticalAlign=middle;" vertex="1" parent="1">
+          <mxGeometry x="796" y="246" width="28" height="28" as="geometry" />
+        </mxCell>
+        <mxCell id="p1-d3" value="" style="sketch=0;points=[[0,0,0],[0.25,0,0],[0.5,0,0],[0.75,0,0],[1,0,0],[0,1,0],[0.25,1,0],[0.5,1,0],[0.75,1,0],[1,1,0],[0,0.25,0],[0,0.5,0],[0,0.75,0],[1,0.25,0],[1,0.5,0],[1,0.75,0]];outlineConnect=0;fontColor=#232F3E;fillColor=#E7157B;strokeColor=#ffffff;dashed=0;verticalLabelPosition=bottom;verticalAlign=top;align=center;html=1;fontSize=11;fontStyle=0;aspect=fixed;shape=mxgraph.aws4.resourceIcon;resIcon=mxgraph.aws4.systems_manager;" vertex="1" parent="1">
+          <mxGeometry x="1140" y="244" width="78" height="78" as="geometry" />
+        </mxCell>
+        <mxCell id="p1-d3lbl" value="&lt;b&gt;AWS Systems Manager&lt;/b&gt;&lt;br&gt;ssm:SendCommand only&lt;br&gt;max-concurrency 1 &amp;middot; max-errors 0" style="rounded=1;arcSize=6;whiteSpace=wrap;html=1;fillColor=#FFFFFF;strokeColor=#D5DBE3;fontColor=#232F3E;fontSize=9;fontStyle=0;align=left;verticalAlign=top;spacingLeft=8;spacingRight=8;spacingTop=4;dashed=0;" vertex="1" parent="1">
+          <mxGeometry x="1060" y="328" width="238" height="74" as="geometry" />
+        </mxCell>
+        <mxCell id="p1-d3b" value="D3" style="ellipse;whiteSpace=wrap;html=1;fillColor=#3334B9;strokeColor=#ffffff;strokeWidth=2;fontColor=#ffffff;fontSize=10;fontStyle=1;align=center;verticalAlign=middle;" vertex="1" parent="1">
+          <mxGeometry x="1106" y="246" width="28" height="28" as="geometry" />
+        </mxCell>
+        <mxCell id="p1-d4" value="" style="sketch=0;outlineConnect=0;fontColor=#232F3E;gradientColor=none;fillColor=#E7157B;strokeColor=none;dashed=0;verticalLabelPosition=bottom;verticalAlign=top;align=center;html=1;fontSize=11;fontStyle=0;aspect=fixed;pointerEvents=1;shape=mxgraph.aws4.documents;" vertex="1" parent="1">
+          <mxGeometry x="1457" y="244" width="64" height="78" as="geometry" />
+        </mxCell>
+        <mxCell id="p1-d4lbl" value="&lt;b&gt;RadioBroadcastDeployMain&lt;/b&gt;&lt;br&gt;one parameter: &lt;code&gt;CommitSha ^[0-9a-f]{40}$&lt;/code&gt;&lt;br&gt;numeric version pinned &amp;mdash; never $LATEST" style="rounded=1;arcSize=6;whiteSpace=wrap;html=1;fillColor=#FFFFFF;strokeColor=#D5DBE3;fontColor=#232F3E;fontSize=9;fontStyle=0;align=left;verticalAlign=top;spacingLeft=8;spacingRight=8;spacingTop=4;dashed=0;" vertex="1" parent="1">
+          <mxGeometry x="1370" y="328" width="238" height="74" as="geometry" />
+        </mxCell>
+        <mxCell id="p1-d4b" value="D4" style="ellipse;whiteSpace=wrap;html=1;fillColor=#3334B9;strokeColor=#ffffff;strokeWidth=2;fontColor=#ffffff;fontSize=10;fontStyle=1;align=center;verticalAlign=middle;" vertex="1" parent="1">
+          <mxGeometry x="1416" y="246" width="28" height="28" as="geometry" />
+        </mxCell>
+        <mxCell id="p1-d5" value="" style="sketch=0;points=[[0,0,0],[0.25,0,0],[0.5,0,0],[0.75,0,0],[1,0,0],[0,1,0],[0.25,1,0],[0.5,1,0],[0.75,1,0],[1,1,0],[0,0.25,0],[0,0.5,0],[0,0.75,0],[1,0.25,0],[1,0.5,0],[1,0.75,0]];outlineConnect=0;fontColor=#232F3E;fillColor=#ED7100;strokeColor=#ffffff;dashed=0;verticalLabelPosition=bottom;verticalAlign=top;align=center;html=1;fontSize=11;fontStyle=0;aspect=fixed;shape=mxgraph.aws4.resourceIcon;resIcon=mxgraph.aws4.ec2;" vertex="1" parent="1">
+          <mxGeometry x="1760" y="244" width="78" height="78" as="geometry" />
+        </mxCell>
+        <mxCell id="p1-d5lbl" value="&lt;b&gt;SSM Agent on the EC2 host&lt;/b&gt;&lt;br&gt;git fetch only &amp;middot; merge-base --is-ancestor origin/main&lt;br&gt;git archive &amp;rarr; &lt;code&gt;main-auto-deploy.sh&lt;/code&gt; (9 stages)" style="rounded=1;arcSize=6;whiteSpace=wrap;html=1;fillColor=#FFFFFF;strokeColor=#D5DBE3;fontColor=#232F3E;fontSize=9;fontStyle=0;align=left;verticalAlign=top;spacingLeft=8;spacingRight=8;spacingTop=4;dashed=0;" vertex="1" parent="1">
+          <mxGeometry x="1680" y="328" width="238" height="74" as="geometry" />
+        </mxCell>
+        <mxCell id="p1-d5b" value="D5" style="ellipse;whiteSpace=wrap;html=1;fillColor=#3334B9;strokeColor=#ffffff;strokeWidth=2;fontColor=#ffffff;fontSize=10;fontStyle=1;align=center;verticalAlign=middle;" vertex="1" parent="1">
+          <mxGeometry x="1726" y="246" width="28" height="28" as="geometry" />
+        </mxCell>
+        <mxCell id="p1-d6" value="" style="sketch=0;points=[[0,0,0],[0.25,0,0],[0.5,0,0],[0.75,0,0],[1,0,0],[0,1,0],[0.25,1,0],[0.5,1,0],[0.75,1,0],[1,1,0],[0,0.25,0],[0,0.5,0],[0,0.75,0],[1,0.25,0],[1,0.5,0],[1,0.75,0]];outlineConnect=0;fontColor=#232F3E;fillColor=#7AA116;strokeColor=#ffffff;dashed=0;verticalLabelPosition=bottom;verticalAlign=top;align=center;html=1;fontSize=11;fontStyle=0;aspect=fixed;shape=mxgraph.aws4.resourceIcon;resIcon=mxgraph.aws4.elastic_block_store;" vertex="1" parent="1">
+          <mxGeometry x="2120" y="244" width="78" height="78" as="geometry" />
+        </mxCell>
+        <mxCell id="p1-d6lbl" value="&lt;b&gt;Immutable release&lt;/b&gt;&lt;br&gt;&lt;code&gt;/var/lib/radio/releases/&amp;lt;sha&amp;gt;/&amp;lt;stage&amp;gt;&lt;/code&gt;&lt;br&gt;stages api &amp;rarr; core &amp;rarr; full &amp;middot; symlinks current / previous" style="rounded=1;arcSize=6;whiteSpace=wrap;html=1;fillColor=#FFFFFF;strokeColor=#D5DBE3;fontColor=#232F3E;fontSize=9;fontStyle=0;align=left;verticalAlign=top;spacingLeft=8;spacingRight=8;spacingTop=4;dashed=0;" vertex="1" parent="1">
+          <mxGeometry x="2040" y="328" width="238" height="74" as="geometry" />
+        </mxCell>
+        <mxCell id="p1-d6b" value="D6" style="ellipse;whiteSpace=wrap;html=1;fillColor=#3334B9;strokeColor=#ffffff;strokeWidth=2;fontColor=#ffffff;fontSize=10;fontStyle=1;align=center;verticalAlign=middle;" vertex="1" parent="1">
+          <mxGeometry x="2086" y="246" width="28" height="28" as="geometry" />
+        </mxCell>
+        <mxCell id="p1-de1" value="" style="edgeStyle=orthogonalEdgeStyle;rounded=1;arcSize=8;orthogonalLoop=1;jettySize=auto;html=1;exitX=1;exitY=0.5;exitDx=0;exitDy=0;exitPerimeter=0;entryX=0;entryY=0.5;entryDx=0;entryDy=0;entryPerimeter=0;strokeColor=#3334B9;strokeWidth=2;endArrow=blockThin;endFill=1;dashed=1;dashPattern=6 4;jumpStyle=arc;jumpSize=6;fontSize=10;fontColor=#3334B9;labelBackgroundColor=#FFFFFF;" edge="1" parent="1" source="p1-d1" target="p1-d2">
+          <mxGeometry relative="1" as="geometry">
+          </mxGeometry>
+        </mxCell>
+        <mxCell id="p1-de2" value="" style="edgeStyle=orthogonalEdgeStyle;rounded=1;arcSize=8;orthogonalLoop=1;jettySize=auto;html=1;exitX=1;exitY=0.5;exitDx=0;exitDy=0;exitPerimeter=0;entryX=0;entryY=0.5;entryDx=0;entryDy=0;entryPerimeter=0;strokeColor=#3334B9;strokeWidth=2;endArrow=blockThin;endFill=1;dashed=1;dashPattern=6 4;jumpStyle=arc;jumpSize=6;fontSize=10;fontColor=#3334B9;labelBackgroundColor=#FFFFFF;" edge="1" parent="1" source="p1-d2" target="p1-d3">
+          <mxGeometry relative="1" as="geometry">
+          </mxGeometry>
+        </mxCell>
+        <mxCell id="p1-de3" value="" style="edgeStyle=orthogonalEdgeStyle;rounded=1;arcSize=8;orthogonalLoop=1;jettySize=auto;html=1;exitX=1;exitY=0.5;exitDx=0;exitDy=0;exitPerimeter=0;entryX=0;entryY=0.5;entryDx=0;entryDy=0;entryPerimeter=0;strokeColor=#3334B9;strokeWidth=2;endArrow=blockThin;endFill=1;dashed=1;dashPattern=6 4;jumpStyle=arc;jumpSize=6;fontSize=10;fontColor=#3334B9;labelBackgroundColor=#FFFFFF;" edge="1" parent="1" source="p1-d3" target="p1-d4">
+          <mxGeometry relative="1" as="geometry">
+          </mxGeometry>
+        </mxCell>
+        <mxCell id="p1-de4" value="" style="edgeStyle=orthogonalEdgeStyle;rounded=1;arcSize=8;orthogonalLoop=1;jettySize=auto;html=1;exitX=1;exitY=0.5;exitDx=0;exitDy=0;exitPerimeter=0;entryX=0;entryY=0.5;entryDx=0;entryDy=0;entryPerimeter=0;strokeColor=#3334B9;strokeWidth=2;endArrow=blockThin;endFill=1;dashed=1;dashPattern=6 4;jumpStyle=arc;jumpSize=6;fontSize=10;fontColor=#3334B9;labelBackgroundColor=#FFFFFF;" edge="1" parent="1" source="p1-d4" target="p1-d5">
+          <mxGeometry relative="1" as="geometry">
+          </mxGeometry>
+        </mxCell>
+        <mxCell id="p1-de5" value="" style="edgeStyle=orthogonalEdgeStyle;rounded=1;arcSize=8;orthogonalLoop=1;jettySize=auto;html=1;exitX=1;exitY=0.5;exitDx=0;exitDy=0;exitPerimeter=0;entryX=0;entryY=0.5;entryDx=0;entryDy=0;entryPerimeter=0;strokeColor=#3334B9;strokeWidth=2;endArrow=blockThin;endFill=1;dashed=1;dashPattern=6 4;jumpStyle=arc;jumpSize=6;fontSize=10;fontColor=#3334B9;labelBackgroundColor=#FFFFFF;" edge="1" parent="1" source="p1-d5" target="p1-d6">
+          <mxGeometry relative="1" as="geometry">
+          </mxGeometry>
+        </mxCell>
+        <mxCell id="p1-vpc" value="VPC &amp;mdash; single AZ, no NAT gateway, no load balancer" style="points=[[0,0],[0.25,0],[0.5,0],[0.75,0],[1,0],[1,0.25],[1,0.5],[1,0.75],[1,1],[0.75,1],[0.5,1],[0.25,1],[0,1],[0,0.75],[0,0.5],[0,0.25]];outlineConnect=0;gradientColor=none;html=1;whiteSpace=wrap;fontSize=13;fontStyle=1;container=0;pointerEvents=0;collapsible=0;recursiveResize=0;shape=mxgraph.aws4.group;grIcon=mxgraph.aws4.group_vpc2;strokeColor=#8C4FFF;fillColor=none;verticalAlign=top;align=left;spacingLeft=34;fontColor=#8C4FFF;dashed=0;" vertex="1" parent="1">
+          <mxGeometry x="430" y="445" width="1632" height="790" as="geometry" />
+        </mxCell>
+        <mxCell id="p1-subnet" value="Public subnet" style="points=[[0,0],[0.25,0],[0.5,0],[0.75,0],[1,0],[1,0.25],[1,0.5],[1,0.75],[1,1],[0.75,1],[0.5,1],[0.25,1],[0,1],[0,0.75],[0,0.5],[0,0.25]];outlineConnect=0;gradientColor=none;html=1;whiteSpace=wrap;fontSize=13;fontStyle=1;container=0;pointerEvents=0;collapsible=0;recursiveResize=0;shape=mxgraph.aws4.group;grIcon=mxgraph.aws4.group_security_group;strokeColor=#7AA116;fillColor=#F8FBF2;verticalAlign=top;align=left;spacingLeft=34;fontColor=#248814;dashed=0;grStroke=0;" vertex="1" parent="1">
+          <mxGeometry x="458" y="476" width="1574" height="734" as="geometry" />
+        </mxCell>
+        <mxCell id="p1-sg" value="Security group &amp;mdash; inbound tcp/8788 from the operator CIDR only (API bound to 127.0.0.1 by default; 0.0.0.0 needs two explicit flags)" style="rounded=0;arcSize=6;whiteSpace=wrap;html=1;fillColor=none;strokeColor=#DD3522;fontColor=#DD3522;fontSize=12;fontStyle=1;align=left;verticalAlign=top;spacingLeft=10;spacingRight=10;spacingTop=4;dashed=0;" vertex="1" parent="1">
+          <mxGeometry x="484" y="518" width="1520" height="672" as="geometry" />
+        </mxCell>
+        <mxCell id="p1-ec2" value="EC2 instance &amp;mdash; Graviton aarch64, 8 vCPU / 16 GiB &amp;middot; EBS data volume mounted at /var/lib/radio" style="points=[[0,0],[0.25,0],[0.5,0],[0.75,0],[1,0],[1,0.25],[1,0.5],[1,0.75],[1,1],[0.75,1],[0.5,1],[0.25,1],[0,1],[0,0.75],[0,0.5],[0,0.25]];outlineConnect=0;gradientColor=none;html=1;whiteSpace=wrap;fontSize=13;fontStyle=1;container=0;pointerEvents=0;collapsible=0;recursiveResize=0;shape=mxgraph.aws4.group;grIcon=mxgraph.aws4.group_ec2_instance_contents;strokeColor=#D86613;fillColor=none;verticalAlign=top;align=left;spacingLeft=34;fontColor=#D86613;dashed=0;" vertex="1" parent="1">
+          <mxGeometry x="508" y="570" width="1470" height="596" as="geometry" />
+        </mxCell>
+        <mxCell id="p1-compose" value="Docker Compose project &lt;code&gt;radio-prod&lt;/code&gt; &amp;mdash; bridge network &lt;code&gt;radio&lt;/code&gt;" style="rounded=1;arcSize=6;whiteSpace=wrap;html=1;fillColor=#FFFFFF;strokeColor=#D5DBE3;fontColor=#5A6C86;fontSize=12;fontStyle=1;align=left;verticalAlign=top;spacingLeft=8;spacingRight=8;spacingTop=4;dashed=0;" vertex="1" parent="1">
+          <mxGeometry x="528" y="612" width="1230" height="512" as="geometry" />
+        </mxCell>
+        <mxCell id="p1-listener" value="" style="rounded=1;arcSize=6;whiteSpace=wrap;html=1;fillColor=#FFF8F2;strokeColor=#ED7100;fontColor=#232F3E;fontSize=11;fontStyle=0;align=left;verticalAlign=top;spacingLeft=8;spacingRight=8;spacingTop=4;dashed=0;" vertex="1" parent="1">
+          <mxGeometry x="548" y="656" width="372" height="244" as="geometry" />
+        </mxCell>
+        <mxCell id="p1-listeneri" value="" style="sketch=0;points=[[0,0,0],[0.25,0,0],[0.5,0,0],[0.75,0,0],[1,0,0],[0,1,0],[0.25,1,0],[0.5,1,0],[0.75,1,0],[1,1,0],[0,0.25,0],[0,0.5,0],[0,0.75,0],[1,0.25,0],[1,0.5,0],[1,0.75,0]];outlineConnect=0;fontColor=#232F3E;fillColor=#ED7100;strokeColor=#ffffff;dashed=0;verticalLabelPosition=bottom;verticalAlign=top;align=center;html=1;fontSize=11;fontStyle=0;aspect=fixed;shape=mxgraph.aws4.resourceIcon;resIcon=mxgraph.aws4.ecs;" vertex="1" parent="1">
+          <mxGeometry x="560" y="666" width="36" height="36" as="geometry" />
+        </mxCell>
+        <mxCell id="p1-listenert" value="&lt;b&gt;listener&lt;/b&gt;" style="text;html=1;strokeColor=none;fillColor=none;align=left;verticalAlign=middle;whiteSpace=wrap;rounded=0;fontSize=13;fontStyle=0;fontColor=#232F3E;" vertex="1" parent="1">
+          <mxGeometry x="604" y="668" width="306" height="26" as="geometry" />
+        </mxCell>
+        <mxCell id="p1-listenerb" value="one async session per &lt;b&gt;DISTINCT&lt;/b&gt; station&lt;br&gt;&amp;#9679; SSRF re-validate &amp;rarr; ffmpeg &amp;rarr; 16 kHz mono s16le&lt;br&gt;&amp;nbsp;&amp;nbsp;&lt;code&gt;-reconnect 0&lt;/code&gt;, &lt;code&gt;-protocol_whitelist&lt;/code&gt; (no file/concat)&lt;br&gt;&amp;#9679; ring buffer 60 s = 1,920,000 B / station&lt;br&gt;&amp;nbsp;&amp;nbsp;timestamps from sample count, not wall clock&lt;br&gt;&amp;#9679; VAD + energy classifier, 3 s windows&lt;br&gt;&amp;nbsp;&amp;nbsp;silence / music / singing discarded &lt;b&gt;in RAM&lt;/b&gt;&lt;br&gt;&amp;nbsp;&amp;nbsp;uncertain is KEPT (recall &amp;gt; CPU)&lt;br&gt;&amp;#9679; 20 s segments, 1 s overlap &amp;rarr; Opus 24k voip&lt;br&gt;&amp;#9679; spool write: tmp &amp;rarr; fsync &amp;rarr; os.replace &amp;rarr; sha256&lt;br&gt;&lt;i&gt;1.5 CPU &amp;middot; 1024 MiB &amp;middot; stop_grace 30 s&lt;/i&gt;" style="text;html=1;strokeColor=none;fillColor=none;align=left;verticalAlign=middle;whiteSpace=wrap;rounded=0;fontSize=9;fontStyle=0;fontColor=#232F3E;" vertex="1" parent="1">
+          <mxGeometry x="560" y="704" width="348" height="188" as="geometry" />
+        </mxCell>
+        <mxCell id="p1-transcription" value="" style="rounded=1;arcSize=6;whiteSpace=wrap;html=1;fillColor=#FFF8F2;strokeColor=#ED7100;fontColor=#232F3E;fontSize=11;fontStyle=0;align=left;verticalAlign=top;spacingLeft=8;spacingRight=8;spacingTop=4;dashed=0;" vertex="1" parent="1">
+          <mxGeometry x="958" y="656" width="372" height="244" as="geometry" />
+        </mxCell>
+        <mxCell id="p1-transcriptioni" value="" style="sketch=0;points=[[0,0,0],[0.25,0,0],[0.5,0,0],[0.75,0,0],[1,0,0],[0,1,0],[0.25,1,0],[0.5,1,0],[0.75,1,0],[1,1,0],[0,0.25,0],[0,0.5,0],[0,0.75,0],[1,0.25,0],[1,0.5,0],[1,0.75,0]];outlineConnect=0;fontColor=#232F3E;fillColor=#ED7100;strokeColor=#ffffff;dashed=0;verticalLabelPosition=bottom;verticalAlign=top;align=center;html=1;fontSize=11;fontStyle=0;aspect=fixed;shape=mxgraph.aws4.resourceIcon;resIcon=mxgraph.aws4.ecs;" vertex="1" parent="1">
+          <mxGeometry x="970" y="666" width="36" height="36" as="geometry" />
+        </mxCell>
+        <mxCell id="p1-transcriptiont" value="&lt;b&gt;transcription-worker&lt;/b&gt;" style="text;html=1;strokeColor=none;fillColor=none;align=left;verticalAlign=middle;whiteSpace=wrap;rounded=0;fontSize=13;fontStyle=0;fontColor=#232F3E;" vertex="1" parent="1">
+          <mxGeometry x="1014" y="668" width="306" height="26" as="geometry" />
+        </mxCell>
+        <mxCell id="p1-transcriptionb" value="&amp;#9679; receive &amp;le;5 &amp;middot; long-poll 20 s&lt;br&gt;&amp;nbsp;&amp;nbsp;visibility 300 s, heartbeat every 60 s, cap 1800 s&lt;br&gt;&amp;#9679; inbox pre-check &amp;rarr; duplicate deleted, not decoded&lt;br&gt;&amp;#9679; job older than 6 h &amp;rarr; &lt;code&gt;abandoned&lt;/code&gt;, no decode&lt;br&gt;&amp;#9679; &lt;b&gt;SHA-256 verified before any decoder sees bytes&lt;/b&gt;&lt;br&gt;&amp;#9679; ASR pass A &amp;mdash; faster-whisper small, int8, beam 1&lt;br&gt;&amp;#9679; Aho-Corasick scan &lt;b&gt;once&lt;/b&gt; vs the station's&lt;br&gt;&amp;nbsp;&amp;nbsp;COMBINED index &amp;rarr; every campaign attributed&lt;br&gt;&amp;#9679; conversation assembler: 30 s pre-roll, closes on&lt;br&gt;&amp;nbsp;&amp;nbsp;12 s gap / 300 s / disconnect / shutdown&lt;br&gt;&lt;i&gt;3.0 CPU &amp;middot; 3072 MiB &amp;middot; 3 ASR threads&lt;/i&gt;" style="text;html=1;strokeColor=none;fillColor=none;align=left;verticalAlign=middle;whiteSpace=wrap;rounded=0;fontSize=9;fontStyle=0;fontColor=#232F3E;" vertex="1" parent="1">
+          <mxGeometry x="970" y="704" width="348" height="188" as="geometry" />
+        </mxCell>
+        <mxCell id="p1-analysis" value="" style="rounded=1;arcSize=6;whiteSpace=wrap;html=1;fillColor=#FFF8F2;strokeColor=#ED7100;fontColor=#232F3E;fontSize=11;fontStyle=0;align=left;verticalAlign=top;spacingLeft=8;spacingRight=8;spacingTop=4;dashed=0;" vertex="1" parent="1">
+          <mxGeometry x="1368" y="656" width="370" height="244" as="geometry" />
+        </mxCell>
+        <mxCell id="p1-analysisi" value="" style="sketch=0;points=[[0,0,0],[0.25,0,0],[0.5,0,0],[0.75,0,0],[1,0,0],[0,1,0],[0.25,1,0],[0.5,1,0],[0.75,1,0],[1,1,0],[0,0.25,0],[0,0.5,0],[0,0.75,0],[1,0.25,0],[1,0.5,0],[1,0.75,0]];outlineConnect=0;fontColor=#232F3E;fillColor=#ED7100;strokeColor=#ffffff;dashed=0;verticalLabelPosition=bottom;verticalAlign=top;align=center;html=1;fontSize=11;fontStyle=0;aspect=fixed;shape=mxgraph.aws4.resourceIcon;resIcon=mxgraph.aws4.ecs;" vertex="1" parent="1">
+          <mxGeometry x="1380" y="666" width="36" height="36" as="geometry" />
+        </mxCell>
+        <mxCell id="p1-analysist" value="&lt;b&gt;analysis-worker&lt;/b&gt;" style="text;html=1;strokeColor=none;fillColor=none;align=left;verticalAlign=middle;whiteSpace=wrap;rounded=0;fontSize=13;fontStyle=0;fontColor=#232F3E;" vertex="1" parent="1">
+          <mxGeometry x="1424" y="668" width="304" height="26" as="geometry" />
+        </mxCell>
+        <mxCell id="p1-analysisb" value="&amp;#9679; receive exactly &lt;b&gt;1&lt;/b&gt; (LLM is serial on CPU)&lt;br&gt;&amp;#9679; conversation reloaded from SQLite &amp;mdash; transcripts&lt;br&gt;&amp;nbsp;&amp;nbsp;travel by &lt;b&gt;reference&lt;/b&gt;, never inside a message&lt;br&gt;&amp;#9679; LLM chain &amp;rarr; validated JSON; evidence must be a&lt;br&gt;&amp;nbsp;&amp;nbsp;&lt;b&gt;verbatim transcript substring&lt;/b&gt; or it is dropped&lt;br&gt;&amp;#9679; fan-out 1 mention : N campaigns : N keywords&lt;br&gt;&amp;#9679; evidence clip cut from retained spool segments&lt;br&gt;&amp;#9679; idle sweeps: clip backfill (3/tick) and&lt;br&gt;&amp;nbsp;&amp;nbsp;fallback re-analysis healing (2/tick)&lt;br&gt;&amp;#9679; never fails a message &amp;mdash; degrades to fallback&lt;br&gt;&lt;i&gt;0.75 CPU &amp;middot; 512 MiB &amp;middot; tmpfs /tmp 256 MiB&lt;/i&gt;" style="text;html=1;strokeColor=none;fillColor=none;align=left;verticalAlign=middle;whiteSpace=wrap;rounded=0;fontSize=9;fontStyle=0;fontColor=#232F3E;" vertex="1" parent="1">
+          <mxGeometry x="1380" y="704" width="346" height="188" as="geometry" />
+        </mxCell>
+        <mxCell id="p1-api" value="" style="rounded=1;arcSize=6;whiteSpace=wrap;html=1;fillColor=#FFF8F2;strokeColor=#ED7100;fontColor=#232F3E;fontSize=11;fontStyle=0;align=left;verticalAlign=top;spacingLeft=8;spacingRight=8;spacingTop=4;dashed=0;" vertex="1" parent="1">
+          <mxGeometry x="548" y="936" width="268" height="104" as="geometry" />
+        </mxCell>
+        <mxCell id="p1-apii" value="" style="sketch=0;points=[[0,0,0],[0.25,0,0],[0.5,0,0],[0.75,0,0],[1,0,0],[0,1,0],[0.25,1,0],[0.5,1,0],[0.75,1,0],[1,1,0],[0,0.25,0],[0,0.5,0],[0,0.75,0],[1,0.25,0],[1,0.5,0],[1,0.75,0]];outlineConnect=0;fontColor=#232F3E;fillColor=#ED7100;strokeColor=#ffffff;dashed=0;verticalLabelPosition=bottom;verticalAlign=top;align=center;html=1;fontSize=11;fontStyle=0;aspect=fixed;shape=mxgraph.aws4.resourceIcon;resIcon=mxgraph.aws4.ecs;" vertex="1" parent="1">
+          <mxGeometry x="558" y="944" width="28" height="28" as="geometry" />
+        </mxCell>
+        <mxCell id="p1-apit" value="&lt;b&gt;api&lt;/b&gt;" style="text;html=1;strokeColor=none;fillColor=none;align=left;verticalAlign=middle;whiteSpace=wrap;rounded=0;fontSize=12;fontStyle=0;fontColor=#232F3E;" vertex="1" parent="1">
+          <mxGeometry x="592" y="944" width="216" height="22" as="geometry" />
+        </mxCell>
+        <mxCell id="p1-apib" value="FastAPI / uvicorn &lt;b&gt;:8788&lt;/b&gt; &amp;mdash; the only&lt;br&gt;published port (loopback by default)&lt;br&gt;campaigns &amp;middot; mentions &amp;middot; dashboard &amp;middot; catalogue&lt;br&gt;monitoring &amp;middot; preview &amp;middot; HMAC audio token&lt;br&gt;applies schema migrations at lifespan&lt;br&gt;&lt;i&gt;1.0 CPU &amp;middot; 512 MiB&lt;/i&gt;" style="text;html=1;strokeColor=none;fillColor=none;align=left;verticalAlign=middle;whiteSpace=wrap;rounded=0;fontSize=8;fontStyle=0;fontColor=#232F3E;" vertex="1" parent="1">
+          <mxGeometry x="558" y="974" width="248" height="60" as="geometry" />
+        </mxCell>
+        <mxCell id="p1-planner" value="" style="rounded=1;arcSize=6;whiteSpace=wrap;html=1;fillColor=#FFF8F2;strokeColor=#ED7100;fontColor=#232F3E;fontSize=11;fontStyle=0;align=left;verticalAlign=top;spacingLeft=8;spacingRight=8;spacingTop=4;dashed=0;" vertex="1" parent="1">
+          <mxGeometry x="856" y="936" width="268" height="104" as="geometry" />
+        </mxCell>
+        <mxCell id="p1-planneri" value="" style="sketch=0;points=[[0,0,0],[0.25,0,0],[0.5,0,0],[0.75,0,0],[1,0,0],[0,1,0],[0.25,1,0],[0.5,1,0],[0.75,1,0],[1,1,0],[0,0.25,0],[0,0.5,0],[0,0.75,0],[1,0.25,0],[1,0.5,0],[1,0.75,0]];outlineConnect=0;fontColor=#232F3E;fillColor=#ED7100;strokeColor=#ffffff;dashed=0;verticalLabelPosition=bottom;verticalAlign=top;align=center;html=1;fontSize=11;fontStyle=0;aspect=fixed;shape=mxgraph.aws4.resourceIcon;resIcon=mxgraph.aws4.ecs;" vertex="1" parent="1">
+          <mxGeometry x="866" y="944" width="28" height="28" as="geometry" />
+        </mxCell>
+        <mxCell id="p1-plannert" value="&lt;b&gt;planner&lt;/b&gt;" style="text;html=1;strokeColor=none;fillColor=none;align=left;verticalAlign=middle;whiteSpace=wrap;rounded=0;fontSize=12;fontStyle=0;fontColor=#232F3E;" vertex="1" parent="1">
+          <mxGeometry x="900" y="944" width="216" height="22" as="geometry" />
+        </mxCell>
+        <mxCell id="p1-plannerb" value="every 5 s: campaigns &amp;rarr; one subscription&lt;br&gt;per DISTINCT station (BLAKE2b sharding)&lt;br&gt;publishes the combined keyword index&lt;br&gt;&lt;b&gt;the ONLY process that sends to SQS&lt;/b&gt;&lt;br&gt;sweeps stale job leases + prunes tables&lt;br&gt;&lt;i&gt;0.5 CPU &amp;middot; 256 MiB&lt;/i&gt;" style="text;html=1;strokeColor=none;fillColor=none;align=left;verticalAlign=middle;whiteSpace=wrap;rounded=0;fontSize=8;fontStyle=0;fontColor=#232F3E;" vertex="1" parent="1">
+          <mxGeometry x="866" y="974" width="248" height="60" as="geometry" />
+        </mxCell>
+        <mxCell id="p1-llm" value="" style="rounded=1;arcSize=6;whiteSpace=wrap;html=1;fillColor=#FFF8F2;strokeColor=#ED7100;fontColor=#232F3E;fontSize=11;fontStyle=0;align=left;verticalAlign=top;spacingLeft=8;spacingRight=8;spacingTop=4;dashed=0;" vertex="1" parent="1">
+          <mxGeometry x="1164" y="936" width="268" height="104" as="geometry" />
+        </mxCell>
+        <mxCell id="p1-llmi" value="" style="sketch=0;points=[[0,0,0],[0.25,0,0],[0.5,0,0],[0.75,0,0],[1,0,0],[0,1,0],[0.25,1,0],[0.5,1,0],[0.75,1,0],[1,1,0],[0,0.25,0],[0,0.5,0],[0,0.75,0],[1,0.25,0],[1,0.5,0],[1,0.75,0]];outlineConnect=0;fontColor=#232F3E;fillColor=#ED7100;strokeColor=#ffffff;dashed=0;verticalLabelPosition=bottom;verticalAlign=top;align=center;html=1;fontSize=11;fontStyle=0;aspect=fixed;shape=mxgraph.aws4.resourceIcon;resIcon=mxgraph.aws4.ecs;" vertex="1" parent="1">
+          <mxGeometry x="1174" y="944" width="28" height="28" as="geometry" />
+        </mxCell>
+        <mxCell id="p1-llmt" value="&lt;b&gt;llm&lt;/b&gt;" style="text;html=1;strokeColor=none;fillColor=none;align=left;verticalAlign=middle;whiteSpace=wrap;rounded=0;fontSize=12;fontStyle=0;fontColor=#232F3E;" vertex="1" parent="1">
+          <mxGeometry x="1208" y="944" width="216" height="22" as="geometry" />
+        </mxCell>
+        <mxCell id="p1-llmb" value="llama.cpp &lt;code&gt;llama-server&lt;/code&gt; &lt;b&gt;:8790&lt;/b&gt;&lt;br&gt;Qwen3-0.6B-Q8_0.gguf&lt;br&gt;GBNF grammar-constrained JSON&lt;br&gt;&lt;b&gt;expose only &amp;mdash; never published&lt;/b&gt;&lt;br&gt;only volume: /models (read-only)&lt;br&gt;&lt;i&gt;3.0 CPU &amp;middot; 4096 MiB&lt;/i&gt;" style="text;html=1;strokeColor=none;fillColor=none;align=left;verticalAlign=middle;whiteSpace=wrap;rounded=0;fontSize=8;fontStyle=0;fontColor=#232F3E;" vertex="1" parent="1">
+          <mxGeometry x="1174" y="974" width="248" height="60" as="geometry" />
+        </mxCell>
+        <mxCell id="p1-cleanup" value="" style="rounded=1;arcSize=6;whiteSpace=wrap;html=1;fillColor=#FFF8F2;strokeColor=#ED7100;fontColor=#232F3E;fontSize=11;fontStyle=0;align=left;verticalAlign=top;spacingLeft=8;spacingRight=8;spacingTop=4;dashed=0;" vertex="1" parent="1">
+          <mxGeometry x="1472" y="936" width="266" height="104" as="geometry" />
+        </mxCell>
+        <mxCell id="p1-cleanupi" value="" style="sketch=0;points=[[0,0,0],[0.25,0,0],[0.5,0,0],[0.75,0,0],[1,0,0],[0,1,0],[0.25,1,0],[0.5,1,0],[0.75,1,0],[1,1,0],[0,0.25,0],[0,0.5,0],[0,0.75,0],[1,0.25,0],[1,0.5,0],[1,0.75,0]];outlineConnect=0;fontColor=#232F3E;fillColor=#ED7100;strokeColor=#ffffff;dashed=0;verticalLabelPosition=bottom;verticalAlign=top;align=center;html=1;fontSize=11;fontStyle=0;aspect=fixed;shape=mxgraph.aws4.resourceIcon;resIcon=mxgraph.aws4.ecs;" vertex="1" parent="1">
+          <mxGeometry x="1482" y="944" width="28" height="28" as="geometry" />
+        </mxCell>
+        <mxCell id="p1-cleanupt" value="&lt;b&gt;cleanup-worker&lt;/b&gt;" style="text;html=1;strokeColor=none;fillColor=none;align=left;verticalAlign=middle;whiteSpace=wrap;rounded=0;fontSize=12;fontStyle=0;fontColor=#232F3E;" vertex="1" parent="1">
+          <mxGeometry x="1516" y="944" width="214" height="22" as="geometry" />
+        </mxCell>
+        <mxCell id="p1-cleanupb" value="every 60 s: deletes ONLY segments whose&lt;br&gt;SQLite job state proves it safe&lt;br&gt;&lt;code&gt;pending&lt;/code&gt; and &lt;code&gt;retained&lt;/code&gt; are never deleted,&lt;br&gt;at any watermark &amp;mdash; batch 200&lt;br&gt;prunes inbox + deleted segment rows&lt;br&gt;&lt;i&gt;0.25 CPU &amp;middot; 256 MiB&lt;/i&gt;" style="text;html=1;strokeColor=none;fillColor=none;align=left;verticalAlign=middle;whiteSpace=wrap;rounded=0;fontSize=8;fontStyle=0;fontColor=#232F3E;" vertex="1" parent="1">
+          <mxGeometry x="1482" y="974" width="246" height="60" as="geometry" />
+        </mxCell>
+        <mxCell id="p1-store" value="EBS gp3&lt;br&gt;/var/lib/radio" style="rounded=1;arcSize=6;whiteSpace=wrap;html=1;fillColor=#F4F8EC;strokeColor=#7AA116;fontColor=#248814;fontSize=11;fontStyle=1;align=center;verticalAlign=top;spacingLeft=2;spacingRight=2;spacingTop=4;dashed=0;" vertex="1" parent="1">
+          <mxGeometry x="1790" y="612" width="172" height="388" as="geometry" />
+        </mxCell>
+        <mxCell id="p1-vdb" value="" style="sketch=0;outlineConnect=0;fontColor=#232F3E;gradientColor=none;fillColor=#7AA116;strokeColor=none;dashed=0;verticalLabelPosition=bottom;verticalAlign=top;align=center;html=1;fontSize=8;fontStyle=0;aspect=fixed;pointerEvents=1;shape=mxgraph.aws4.volume;" vertex="1" parent="1">
+          <mxGeometry x="1806" y="662" width="34" height="43" as="geometry" />
+        </mxCell>
+        <mxCell id="p1-vdbt" value="database/&lt;br&gt;radio.db&lt;br&gt;&lt;i&gt;SQLite WAL&lt;/i&gt;" style="text;html=1;strokeColor=none;fillColor=none;align=left;verticalAlign=middle;whiteSpace=wrap;rounded=0;fontSize=8;fontStyle=0;fontColor=#232F3E;" vertex="1" parent="1">
+          <mxGeometry x="1846" y="658" width="110" height="52" as="geometry" />
+        </mxCell>
+        <mxCell id="p1-vspool" value="" style="sketch=0;outlineConnect=0;fontColor=#232F3E;gradientColor=none;fillColor=#7AA116;strokeColor=none;dashed=0;verticalLabelPosition=bottom;verticalAlign=top;align=center;html=1;fontSize=8;fontStyle=0;aspect=fixed;pointerEvents=1;shape=mxgraph.aws4.volume;" vertex="1" parent="1">
+          <mxGeometry x="1806" y="728" width="34" height="43" as="geometry" />
+        </mxCell>
+        <mxCell id="p1-vspoolt" value="spool/&lt;br&gt;&lt;i&gt;Opus segments&lt;/i&gt;" style="text;html=1;strokeColor=none;fillColor=none;align=left;verticalAlign=middle;whiteSpace=wrap;rounded=0;fontSize=8;fontStyle=0;fontColor=#232F3E;" vertex="1" parent="1">
+          <mxGeometry x="1846" y="724" width="110" height="52" as="geometry" />
+        </mxCell>
+        <mxCell id="p1-vmodels" value="" style="sketch=0;outlineConnect=0;fontColor=#232F3E;gradientColor=none;fillColor=#7AA116;strokeColor=none;dashed=0;verticalLabelPosition=bottom;verticalAlign=top;align=center;html=1;fontSize=8;fontStyle=0;aspect=fixed;pointerEvents=1;shape=mxgraph.aws4.volume;" vertex="1" parent="1">
+          <mxGeometry x="1806" y="794" width="34" height="43" as="geometry" />
+        </mxCell>
+        <mxCell id="p1-vmodelst" value="models/&lt;br&gt;&lt;i&gt;&amp;rarr; /models :ro&lt;/i&gt;" style="text;html=1;strokeColor=none;fillColor=none;align=left;verticalAlign=middle;whiteSpace=wrap;rounded=0;fontSize=8;fontStyle=0;fontColor=#232F3E;" vertex="1" parent="1">
+          <mxGeometry x="1846" y="790" width="110" height="52" as="geometry" />
+        </mxCell>
+        <mxCell id="p1-vevid" value="" style="sketch=0;outlineConnect=0;fontColor=#232F3E;gradientColor=none;fillColor=#7AA116;strokeColor=none;dashed=0;verticalLabelPosition=bottom;verticalAlign=top;align=center;html=1;fontSize=8;fontStyle=0;aspect=fixed;pointerEvents=1;shape=mxgraph.aws4.volume;" vertex="1" parent="1">
+          <mxGeometry x="1806" y="860" width="34" height="43" as="geometry" />
+        </mxCell>
+        <mxCell id="p1-vevidt" value="evidence/" style="text;html=1;strokeColor=none;fillColor=none;align=left;verticalAlign=middle;whiteSpace=wrap;rounded=0;fontSize=8;fontStyle=0;fontColor=#232F3E;" vertex="1" parent="1">
+          <mxGeometry x="1846" y="856" width="110" height="52" as="geometry" />
+        </mxCell>
+        <mxCell id="p1-vlogs" value="" style="sketch=0;outlineConnect=0;fontColor=#232F3E;gradientColor=none;fillColor=#7AA116;strokeColor=none;dashed=0;verticalLabelPosition=bottom;verticalAlign=top;align=center;html=1;fontSize=8;fontStyle=0;aspect=fixed;pointerEvents=1;shape=mxgraph.aws4.volume;" vertex="1" parent="1">
+          <mxGeometry x="1806" y="926" width="34" height="43" as="geometry" />
+        </mxCell>
+        <mxCell id="p1-vlogst" value="logs/ &amp;middot; backups/&lt;br&gt;releases/" style="text;html=1;strokeColor=none;fillColor=none;align=left;verticalAlign=middle;whiteSpace=wrap;rounded=0;fontSize=8;fontStyle=0;fontColor=#232F3E;" vertex="1" parent="1">
+          <mxGeometry x="1846" y="922" width="110" height="52" as="geometry" />
+        </mxCell>
+        <mxCell id="p1-gaps" value="&lt;b&gt;Not deployed today&lt;/b&gt; &amp;mdash; verified absent from the repo, listed so nobody assumes otherwise&lt;br&gt;&amp;#10007; ALB / NLB &amp;nbsp; &amp;#10007; Route 53 &amp;nbsp; &amp;#10007; ACM / TLS&lt;br&gt;&amp;#10007; CloudFront &amp;nbsp; &amp;#10007; API Gateway&lt;br&gt;&amp;#10007; CloudWatch agent, Logs or metrics&lt;br&gt;&amp;#10007; Lambda &amp;middot; DynamoDB &amp;middot; RDS &amp;middot; ECS / EKS / ECR&lt;br&gt;&amp;#10007; Secrets Manager / Parameter Store &amp;nbsp; &amp;#10007; KMS&lt;br&gt;&amp;#10007; Auto Scaling &amp;nbsp; &amp;#10007; multi-AZ&lt;br&gt;TLS termination is deferred work; logs go to the Docker &lt;code&gt;json-file&lt;/code&gt; driver on EBS." style="rounded=1;arcSize=6;whiteSpace=wrap;html=1;fillColor=#FFFFFF;strokeColor=#5A6C86;fontColor=#5A6C86;fontSize=9;fontStyle=0;align=left;verticalAlign=top;spacingLeft=8;spacingRight=8;spacingTop=4;dashed=1;" vertex="1" parent="1">
+          <mxGeometry x="2090" y="445" width="380" height="165" as="geometry" />
+        </mxCell>
+        <mxCell id="p1-s3" value="Amazon S3 &amp;mdash; one bucket (RADIO_S3_BUCKET)" style="rounded=1;arcSize=6;whiteSpace=wrap;html=1;fillColor=#F4F8EC;strokeColor=#7AA116;fontColor=#248814;fontSize=12;fontStyle=1;align=left;verticalAlign=top;spacingLeft=8;spacingRight=8;spacingTop=4;dashed=0;" vertex="1" parent="1">
+          <mxGeometry x="2090" y="640" width="380" height="612" as="geometry" />
+        </mxCell>
+        <mxCell id="p1-s3i" value="" style="sketch=0;points=[[0,0,0],[0.25,0,0],[0.5,0,0],[0.75,0,0],[1,0,0],[0,1,0],[0.25,1,0],[0.5,1,0],[0.75,1,0],[1,1,0],[0,0.25,0],[0,0.5,0],[0,0.75,0],[1,0.25,0],[1,0.5,0],[1,0.75,0]];outlineConnect=0;fontColor=#232F3E;fillColor=#7AA116;strokeColor=#ffffff;dashed=0;verticalLabelPosition=bottom;verticalAlign=top;align=center;html=1;fontSize=11;fontStyle=0;aspect=fixed;shape=mxgraph.aws4.resourceIcon;resIcon=mxgraph.aws4.s3;" vertex="1" parent="1">
+          <mxGeometry x="2118" y="676" width="58" height="58" as="geometry" />
+        </mxCell>
+        <mxCell id="p1-s3n" value="SSE-S3 &lt;code&gt;AES256&lt;/code&gt; on every put&lt;br&gt;deterministic keys &amp;rarr; a retry overwrites&lt;br&gt;&lt;b&gt;presigned URLs are never generated&lt;/b&gt;" style="text;html=1;strokeColor=none;fillColor=none;align=left;verticalAlign=middle;whiteSpace=wrap;rounded=0;fontSize=9;fontStyle=0;fontColor=#232F3E;" vertex="1" parent="1">
+          <mxGeometry x="2190" y="678" width="262" height="56" as="geometry" />
+        </mxCell>
+        <mxCell id="p1-p0" value="&lt;b&gt;mentions/YYYY/MM/DD/&amp;lt;id&amp;gt;/&lt;/b&gt;&lt;br&gt;metadata + transcript + analysis JSON" style="rounded=1;arcSize=6;whiteSpace=wrap;html=1;fillColor=#FFFFFF;strokeColor=#D5DBE3;fontColor=#232F3E;fontSize=8;fontStyle=0;align=left;verticalAlign=top;spacingLeft=8;spacingRight=8;spacingTop=4;dashed=0;" vertex="1" parent="1">
+          <mxGeometry x="2112" y="746" width="336" height="40" as="geometry" />
+        </mxCell>
+        <mxCell id="p1-p1" value="&lt;b&gt;evidence/YYYY/MM/DD/&amp;lt;id&amp;gt;.opus&lt;/b&gt;&lt;br&gt;the playable mention clip" style="rounded=1;arcSize=6;whiteSpace=wrap;html=1;fillColor=#FFFFFF;strokeColor=#D5DBE3;fontColor=#232F3E;fontSize=8;fontStyle=0;align=left;verticalAlign=top;spacingLeft=8;spacingRight=8;spacingTop=4;dashed=0;" vertex="1" parent="1">
+          <mxGeometry x="2112" y="792" width="336" height="40" as="geometry" />
+        </mxCell>
+        <mxCell id="p1-p2" value="&lt;b&gt;results/conversation-analysis/&lt;/b&gt;&lt;br&gt;legacy v0.4 analysis documents" style="rounded=1;arcSize=6;whiteSpace=wrap;html=1;fillColor=#FFFFFF;strokeColor=#D5DBE3;fontColor=#232F3E;fontSize=8;fontStyle=0;align=left;verticalAlign=top;spacingLeft=8;spacingRight=8;spacingTop=4;dashed=0;" vertex="1" parent="1">
+          <mxGeometry x="2112" y="838" width="336" height="40" as="geometry" />
+        </mxCell>
+        <mxCell id="p1-p3" value="&lt;b&gt;results/semantic-matches/&lt;/b&gt;&lt;br&gt;cross-language semantic hits" style="rounded=1;arcSize=6;whiteSpace=wrap;html=1;fillColor=#FFFFFF;strokeColor=#D5DBE3;fontColor=#232F3E;fontSize=8;fontStyle=0;align=left;verticalAlign=top;spacingLeft=8;spacingRight=8;spacingTop=4;dashed=0;" vertex="1" parent="1">
+          <mxGeometry x="2112" y="884" width="336" height="40" as="geometry" />
+        </mxCell>
+        <mxCell id="p1-p4" value="&lt;b&gt;config/keywords/keywords.json&lt;/b&gt;&lt;br&gt;published entity/keyword document" style="rounded=1;arcSize=6;whiteSpace=wrap;html=1;fillColor=#FFFFFF;strokeColor=#D5DBE3;fontColor=#232F3E;fontSize=8;fontStyle=0;align=left;verticalAlign=top;spacingLeft=8;spacingRight=8;spacingTop=4;dashed=0;" vertex="1" parent="1">
+          <mxGeometry x="2112" y="930" width="336" height="40" as="geometry" />
+        </mxCell>
+        <mxCell id="p1-p5" value="&lt;b&gt;backups/sqlite/&lt;/b&gt;&lt;br&gt;hardcoded in backup-sqlite.sh" style="rounded=1;arcSize=6;whiteSpace=wrap;html=1;fillColor=#FFFFFF;strokeColor=#D5DBE3;fontColor=#232F3E;fontSize=8;fontStyle=0;align=left;verticalAlign=top;spacingLeft=8;spacingRight=8;spacingTop=4;dashed=0;" vertex="1" parent="1">
+          <mxGeometry x="2112" y="976" width="336" height="40" as="geometry" />
+        </mxCell>
+        <mxCell id="p1-p6" value="&lt;b&gt;temp-speech/&lt;/b&gt;&lt;br&gt;only when RADIO_SEGMENT_STORE=s3" style="rounded=1;arcSize=6;whiteSpace=wrap;html=1;fillColor=#F7F8FA;strokeColor=#5A6C86;fontColor=#232F3E;fontSize=8;fontStyle=0;align=left;verticalAlign=top;spacingLeft=8;spacingRight=8;spacingTop=4;dashed=1;" vertex="1" parent="1">
+          <mxGeometry x="2112" y="1022" width="336" height="40" as="geometry" />
+        </mxCell>
+        <mxCell id="p1-p7" value="&lt;b&gt;results/intelligence/&lt;/b&gt;&lt;br&gt;READ / LIST only &amp;mdash; never written here" style="rounded=1;arcSize=6;whiteSpace=wrap;html=1;fillColor=#F7F8FA;strokeColor=#5A6C86;fontColor=#232F3E;fontSize=8;fontStyle=0;align=left;verticalAlign=top;spacingLeft=8;spacingRight=8;spacingTop=4;dashed=1;" vertex="1" parent="1">
+          <mxGeometry x="2112" y="1068" width="336" height="40" as="geometry" />
+        </mxCell>
+        <mxCell id="p1-p8" value="&lt;b&gt;transcripts/&lt;/b&gt;&lt;br&gt;READ / LIST only (semantic scan)" style="rounded=1;arcSize=6;whiteSpace=wrap;html=1;fillColor=#F7F8FA;strokeColor=#5A6C86;fontColor=#232F3E;fontSize=8;fontStyle=0;align=left;verticalAlign=top;spacingLeft=8;spacingRight=8;spacingTop=4;dashed=1;" vertex="1" parent="1">
+          <mxGeometry x="2112" y="1114" width="336" height="40" as="geometry" />
+        </mxCell>
+        <mxCell id="p1-p9" value="&lt;b&gt;raw-audio/&lt;/b&gt;&lt;br&gt;legacy; role deliberately lacks ListBucket" style="rounded=1;arcSize=6;whiteSpace=wrap;html=1;fillColor=#F7F8FA;strokeColor=#5A6C86;fontColor=#232F3E;fontSize=8;fontStyle=0;align=left;verticalAlign=top;spacingLeft=8;spacingRight=8;spacingTop=4;dashed=1;" vertex="1" parent="1">
+          <mxGeometry x="2112" y="1160" width="336" height="40" as="geometry" />
+        </mxCell>
+        <mxCell id="p1-s3f" value="SQLite is the system of record; S3 is an &lt;b&gt;export&lt;/b&gt;. A row with no object is retryable; an object with no row is invisible." style="text;html=1;strokeColor=none;fillColor=none;align=left;verticalAlign=middle;whiteSpace=wrap;rounded=0;fontSize=8;fontStyle=0;fontColor=#232F3E;" vertex="1" parent="1">
+          <mxGeometry x="2112" y="1206" width="336" height="34" as="geometry" />
+        </mxCell>
+        <mxCell id="p1-hosted" value="Hosted LLM tiers &amp;mdash; optional, OFF by default" style="rounded=1;arcSize=6;whiteSpace=wrap;html=1;fillColor=#FFFFFF;strokeColor=#7D8998;fontColor=#5A6C86;fontSize=12;fontStyle=1;align=left;verticalAlign=top;spacingLeft=8;spacingRight=8;spacingTop=4;dashed=0;" vertex="1" parent="1">
+          <mxGeometry x="2550" y="300" width="320" height="280" as="geometry" />
+        </mxCell>
+        <mxCell id="p1-t0" value="&lt;b&gt;1.&lt;/b&gt; NVIDIA &amp;nbsp;&lt;i&gt;nemotron-3.5-lightning-30b-a3b&lt;/i&gt;" style="rounded=1;arcSize=6;whiteSpace=wrap;html=1;fillColor=#F7F8FA;strokeColor=#D5DBE3;fontColor=#232F3E;fontSize=9;fontStyle=0;align=left;verticalAlign=top;spacingLeft=8;spacingRight=8;spacingTop=4;dashed=0;" vertex="1" parent="1">
+          <mxGeometry x="2570" y="336" width="280" height="30" as="geometry" />
+        </mxCell>
+        <mxCell id="p1-t1" value="&lt;b&gt;2.&lt;/b&gt; Ollama cloud &amp;nbsp;&lt;i&gt;gemma4:31b&lt;/i&gt;" style="rounded=1;arcSize=6;whiteSpace=wrap;html=1;fillColor=#F7F8FA;strokeColor=#D5DBE3;fontColor=#232F3E;fontSize=9;fontStyle=0;align=left;verticalAlign=top;spacingLeft=8;spacingRight=8;spacingTop=4;dashed=0;" vertex="1" parent="1">
+          <mxGeometry x="2570" y="372" width="280" height="30" as="geometry" />
+        </mxCell>
+        <mxCell id="p1-t2" value="&lt;b&gt;3.&lt;/b&gt; Groq &amp;nbsp;&lt;i&gt;qwen/qwen3.6-27b&lt;/i&gt;" style="rounded=1;arcSize=6;whiteSpace=wrap;html=1;fillColor=#F7F8FA;strokeColor=#D5DBE3;fontColor=#232F3E;fontSize=9;fontStyle=0;align=left;verticalAlign=top;spacingLeft=8;spacingRight=8;spacingTop=4;dashed=0;" vertex="1" parent="1">
+          <mxGeometry x="2570" y="408" width="280" height="30" as="geometry" />
+        </mxCell>
+        <mxCell id="p1-t3" value="&lt;b&gt;4.&lt;/b&gt; Mistral &amp;nbsp;&lt;i&gt;ministral-8b-latest&lt;/i&gt;" style="rounded=1;arcSize=6;whiteSpace=wrap;html=1;fillColor=#F7F8FA;strokeColor=#D5DBE3;fontColor=#232F3E;fontSize=9;fontStyle=0;align=left;verticalAlign=top;spacingLeft=8;spacingRight=8;spacingTop=4;dashed=0;" vertex="1" parent="1">
+          <mxGeometry x="2570" y="444" width="280" height="30" as="geometry" />
+        </mxCell>
+        <mxCell id="p1-t4" value="&lt;b&gt;5.&lt;/b&gt; Gemini &amp;nbsp;&lt;i&gt;gemini-flash-latest&lt;/i&gt;" style="rounded=1;arcSize=6;whiteSpace=wrap;html=1;fillColor=#F7F8FA;strokeColor=#D5DBE3;fontColor=#232F3E;fontSize=9;fontStyle=0;align=left;verticalAlign=top;spacingLeft=8;spacingRight=8;spacingTop=4;dashed=0;" vertex="1" parent="1">
+          <mxGeometry x="2570" y="480" width="280" height="30" as="geometry" />
+        </mxCell>
+        <mxCell id="p1-hostedn" value="Any error &amp;mdash; or a 200 with unparseable content &amp;mdash; cascades to the next tier &lt;b&gt;inside the same call&lt;/b&gt;; the failed tier rests 2 h. The local model is the end of the chain." style="text;html=1;strokeColor=none;fillColor=none;align=left;verticalAlign=middle;whiteSpace=wrap;rounded=0;fontSize=8;fontStyle=0;fontColor=#232F3E;" vertex="1" parent="1">
+          <mxGeometry x="2570" y="534" width="280" height="44" as="geometry" />
+        </mxCell>
+        <mxCell id="p1-sqs" value="Amazon SQS &amp;mdash; two FIFO queues (metadata and references only; never audio bytes, never a transcript body, never a credential)" style="rounded=1;arcSize=6;whiteSpace=wrap;html=1;fillColor=#FFF5FA;strokeColor=#E7157B;fontColor=#E7157B;fontSize=13;fontStyle=1;align=left;verticalAlign=top;spacingLeft=8;spacingRight=8;spacingTop=4;dashed=0;" vertex="1" parent="1">
+          <mxGeometry x="430" y="1270" width="2030" height="250" as="geometry" />
+        </mxCell>
+        <mxCell id="p1-sqsi" value="" style="sketch=0;points=[[0,0,0],[0.25,0,0],[0.5,0,0],[0.75,0,0],[1,0,0],[0,1,0],[0.25,1,0],[0.5,1,0],[0.75,1,0],[1,1,0],[0,0.25,0],[0,0.5,0],[0,0.75,0],[1,0.25,0],[1,0.5,0],[1,0.75,0]];outlineConnect=0;fontColor=#232F3E;fillColor=#E7157B;strokeColor=#ffffff;dashed=0;verticalLabelPosition=bottom;verticalAlign=top;align=center;html=1;fontSize=11;fontStyle=0;aspect=fixed;shape=mxgraph.aws4.resourceIcon;resIcon=mxgraph.aws4.sqs;" vertex="1" parent="1">
+          <mxGeometry x="460" y="1322" width="58" height="58" as="geometry" />
+        </mxCell>
+        <mxCell id="p1-sqsit" value="Amazon SQS" style="text;html=1;strokeColor=none;fillColor=none;align=center;verticalAlign=middle;whiteSpace=wrap;rounded=0;fontSize=9;fontStyle=0;fontColor=#232F3E;" vertex="1" parent="1">
+          <mxGeometry x="452" y="1386" width="100" height="40" as="geometry" />
+        </mxCell>
+        <mxCell id="p1-q1" value="" style="rounded=1;arcSize=6;whiteSpace=wrap;html=1;fillColor=#FFFFFF;strokeColor=#F0B6D2;fontColor=#232F3E;fontSize=11;fontStyle=0;align=left;verticalAlign=top;spacingLeft=8;spacingRight=8;spacingTop=4;dashed=0;" vertex="1" parent="1">
+          <mxGeometry x="570" y="1318" width="920" height="128" as="geometry" />
+        </mxCell>
+        <mxCell id="p1-q1i" value="" style="sketch=0;outlineConnect=0;fontColor=#232F3E;gradientColor=none;fillColor=#E7157B;strokeColor=none;dashed=0;verticalLabelPosition=bottom;verticalAlign=top;align=center;html=1;fontSize=11;fontStyle=0;aspect=fixed;pointerEvents=1;shape=mxgraph.aws4.queue;" vertex="1" parent="1">
+          <mxGeometry x="592" y="1352" width="78" height="47" as="geometry" />
+        </mxCell>
+        <mxCell id="p1-q1t" value="&lt;b&gt;RADIO_TRANSCRIPTION_QUEUE_URL&lt;/b&gt; &amp;nbsp;&lt;i&gt;&amp;hellip;/&amp;lt;name&amp;gt;.fifo&lt;/i&gt;&lt;br&gt;schema &lt;code&gt;radio.transcription.v1&lt;/code&gt; &amp;middot; body &amp;le; 64 KiB (self-imposed, ~16&amp;times; below the SQS limit)&lt;br&gt;&lt;b&gt;MessageGroupId = station_id&lt;/b&gt; &amp;rarr; a station's segments stay ordered, one in flight per station&lt;br&gt;&lt;b&gt;MessageDeduplicationId = segment_id&lt;/b&gt;&lt;br&gt;producer: &lt;b&gt;planner&lt;/b&gt; outbox dispatcher &amp;nbsp;&amp;middot;&amp;nbsp; consumer: &lt;b&gt;transcription-worker&lt;/b&gt; (&amp;le;5 per receive)" style="text;html=1;strokeColor=none;fillColor=none;align=left;verticalAlign=middle;whiteSpace=wrap;rounded=0;fontSize=9;fontStyle=0;fontColor=#232F3E;" vertex="1" parent="1">
+          <mxGeometry x="686" y="1328" width="790" height="112" as="geometry" />
+        </mxCell>
+        <mxCell id="p1-q2" value="" style="rounded=1;arcSize=6;whiteSpace=wrap;html=1;fillColor=#FFFFFF;strokeColor=#F0B6D2;fontColor=#232F3E;fontSize=11;fontStyle=0;align=left;verticalAlign=top;spacingLeft=8;spacingRight=8;spacingTop=4;dashed=0;" vertex="1" parent="1">
+          <mxGeometry x="1510" y="1318" width="920" height="128" as="geometry" />
+        </mxCell>
+        <mxCell id="p1-q2i" value="" style="sketch=0;outlineConnect=0;fontColor=#232F3E;gradientColor=none;fillColor=#E7157B;strokeColor=none;dashed=0;verticalLabelPosition=bottom;verticalAlign=top;align=center;html=1;fontSize=11;fontStyle=0;aspect=fixed;pointerEvents=1;shape=mxgraph.aws4.queue;" vertex="1" parent="1">
+          <mxGeometry x="1532" y="1352" width="78" height="47" as="geometry" />
+        </mxCell>
+        <mxCell id="p1-q2t" value="&lt;b&gt;RADIO_ANALYSIS_QUEUE_URL&lt;/b&gt; &amp;nbsp;&lt;i&gt;&amp;hellip;/&amp;lt;name&amp;gt;.fifo&lt;/i&gt;&lt;br&gt;schema &lt;code&gt;radio.analysis.v1&lt;/code&gt; &amp;middot; carries the matched-keyword evidence, not the transcript&lt;br&gt;&lt;b&gt;MessageGroupId = station_id&lt;/b&gt;&lt;br&gt;&lt;b&gt;MessageDeduplicationId = analysis_job_id&lt;/b&gt;&lt;br&gt;producer: &lt;b&gt;planner&lt;/b&gt; outbox dispatcher &amp;nbsp;&amp;middot;&amp;nbsp; consumer: &lt;b&gt;analysis-worker&lt;/b&gt; (hardcoded 1 per receive)" style="text;html=1;strokeColor=none;fillColor=none;align=left;verticalAlign=middle;whiteSpace=wrap;rounded=0;fontSize=9;fontStyle=0;fontColor=#232F3E;" vertex="1" parent="1">
+          <mxGeometry x="1626" y="1328" width="790" height="112" as="geometry" />
+        </mxCell>
+        <mxCell id="p1-sqsn" value="Startup refuses a URL that is not &lt;code&gt;https&lt;/code&gt; and does not end in &lt;code&gt;.fifo&lt;/code&gt; &amp;mdash; per-station ordering is a correctness requirement. FIFO deduplication lasts only 5 minutes, so it is &lt;b&gt;defence in depth&lt;/b&gt;; the &lt;code&gt;inbox_messages&lt;/code&gt; table is the actual guarantee. No dead-letter code exists: redrive is a queue attribute owned by infrastructure, and a message whose failure is already understood is recorded in &lt;code&gt;processing_failures&lt;/code&gt; and deleted." style="rounded=1;arcSize=6;whiteSpace=wrap;html=1;fillColor=#FFFFFF;strokeColor=#F0B6D2;fontColor=#232F3E;fontSize=9;fontStyle=0;align=left;verticalAlign=top;spacingLeft=8;spacingRight=8;spacingTop=4;dashed=0;" vertex="1" parent="1">
+          <mxGeometry x="460" y="1458" width="1970" height="48" as="geometry" />
+        </mxCell>
+        <mxCell id="p1-sql" value="SQLite (WAL) on EBS &amp;mdash; the system of record. Every connection gets four pragmas: journal_mode=WAL, foreign_keys=ON, busy_timeout=30000, synchronous=NORMAL. Migrations are forward-only (0003&amp;ndash;0007)." style="rounded=1;arcSize=6;whiteSpace=wrap;html=1;fillColor=#FBF3FC;strokeColor=#C925D1;fontColor=#C925D1;fontSize=13;fontStyle=1;align=left;verticalAlign=top;spacingLeft=8;spacingRight=8;spacingTop=4;dashed=0;" vertex="1" parent="1">
+          <mxGeometry x="430" y="1550" width="2030" height="190" as="geometry" />
+        </mxCell>
+        <mxCell id="p1-tb0" value="" style="rounded=1;arcSize=6;whiteSpace=wrap;html=1;fillColor=#FFFFFF;strokeColor=#E5C7EA;fontColor=#232F3E;fontSize=11;fontStyle=0;align=left;verticalAlign=top;spacingLeft=8;spacingRight=8;spacingTop=4;dashed=0;" vertex="1" parent="1">
+          <mxGeometry x="452" y="1602" width="310" height="118" as="geometry" />
+        </mxCell>
+        <mxCell id="p1-tb0t" value="&lt;b&gt;Campaign intent&lt;/b&gt;" style="text;html=1;strokeColor=none;fillColor=none;align=left;verticalAlign=middle;whiteSpace=wrap;rounded=0;fontSize=10;fontStyle=0;fontColor=#C925D1;" vertex="1" parent="1">
+          <mxGeometry x="462" y="1608" width="290" height="20" as="geometry" />
+        </mxCell>
+        <mxCell id="p1-tb0b" value="campaigns&lt;br&gt;campaign_stations&lt;br&gt;campaign_keywords&lt;br&gt;campaign_content_policies &lt;i&gt;(no writer)&lt;/i&gt;" style="text;html=1;strokeColor=none;fillColor=none;align=left;verticalAlign=middle;whiteSpace=wrap;rounded=0;fontSize=9;fontStyle=0;fontColor=#232F3E;" vertex="1" parent="1">
+          <mxGeometry x="462" y="1630" width="290" height="84" as="geometry" />
+        </mxCell>
+        <mxCell id="p1-tb1" value="" style="rounded=1;arcSize=6;whiteSpace=wrap;html=1;fillColor=#FFFFFF;strokeColor=#E5C7EA;fontColor=#232F3E;fontSize=11;fontStyle=0;align=left;verticalAlign=top;spacingLeft=8;spacingRight=8;spacingTop=4;dashed=0;" vertex="1" parent="1">
+          <mxGeometry x="787" y="1602" width="310" height="118" as="geometry" />
+        </mxCell>
+        <mxCell id="p1-tb1t" value="&lt;b&gt;Planner output&lt;/b&gt;" style="text;html=1;strokeColor=none;fillColor=none;align=left;verticalAlign=middle;whiteSpace=wrap;rounded=0;fontSize=10;fontStyle=0;fontColor=#C925D1;" vertex="1" parent="1">
+          <mxGeometry x="797" y="1608" width="290" height="20" as="geometry" />
+        </mxCell>
+        <mxCell id="p1-tb1b" value="station_subscriptions&lt;br&gt;station_keyword_index_versions&lt;br&gt;station_keyword_bindings" style="text;html=1;strokeColor=none;fillColor=none;align=left;verticalAlign=middle;whiteSpace=wrap;rounded=0;fontSize=9;fontStyle=0;fontColor=#232F3E;" vertex="1" parent="1">
+          <mxGeometry x="797" y="1630" width="290" height="84" as="geometry" />
+        </mxCell>
+        <mxCell id="p1-tb2" value="" style="rounded=1;arcSize=6;whiteSpace=wrap;html=1;fillColor=#FFFFFF;strokeColor=#E5C7EA;fontColor=#232F3E;fontSize=11;fontStyle=0;align=left;verticalAlign=top;spacingLeft=8;spacingRight=8;spacingTop=4;dashed=0;" vertex="1" parent="1">
+          <mxGeometry x="1122" y="1602" width="310" height="118" as="geometry" />
+        </mxCell>
+        <mxCell id="p1-tb2t" value="&lt;b&gt;Capture &amp;amp; ASR&lt;/b&gt;" style="text;html=1;strokeColor=none;fillColor=none;align=left;verticalAlign=middle;whiteSpace=wrap;rounded=0;fontSize=10;fontStyle=0;fontColor=#C925D1;" vertex="1" parent="1">
+          <mxGeometry x="1132" y="1608" width="290" height="20" as="geometry" />
+        </mxCell>
+        <mxCell id="p1-tb2b" value="station_sessions&lt;br&gt;audio_segments&lt;br&gt;transcription_jobs&lt;br&gt;transcripts" style="text;html=1;strokeColor=none;fillColor=none;align=left;verticalAlign=middle;whiteSpace=wrap;rounded=0;fontSize=9;fontStyle=0;fontColor=#232F3E;" vertex="1" parent="1">
+          <mxGeometry x="1132" y="1630" width="290" height="84" as="geometry" />
+        </mxCell>
+        <mxCell id="p1-tb3" value="" style="rounded=1;arcSize=6;whiteSpace=wrap;html=1;fillColor=#FFFFFF;strokeColor=#E5C7EA;fontColor=#232F3E;fontSize=11;fontStyle=0;align=left;verticalAlign=top;spacingLeft=8;spacingRight=8;spacingTop=4;dashed=0;" vertex="1" parent="1">
+          <mxGeometry x="1457" y="1602" width="310" height="118" as="geometry" />
+        </mxCell>
+        <mxCell id="p1-tb3t" value="&lt;b&gt;Analysis &amp;amp; attribution&lt;/b&gt;" style="text;html=1;strokeColor=none;fillColor=none;align=left;verticalAlign=middle;whiteSpace=wrap;rounded=0;fontSize=10;fontStyle=0;fontColor=#C925D1;" vertex="1" parent="1">
+          <mxGeometry x="1467" y="1608" width="290" height="20" as="geometry" />
+        </mxCell>
+        <mxCell id="p1-tb3b" value="conversation_sessions&lt;br&gt;mention_events &lt;i&gt;(no campaign_id column)&lt;/i&gt;&lt;br&gt;mention_campaigns &amp;middot; mention_keywords&lt;br&gt;analysis_results" style="text;html=1;strokeColor=none;fillColor=none;align=left;verticalAlign=middle;whiteSpace=wrap;rounded=0;fontSize=9;fontStyle=0;fontColor=#232F3E;" vertex="1" parent="1">
+          <mxGeometry x="1467" y="1630" width="290" height="84" as="geometry" />
+        </mxCell>
+        <mxCell id="p1-tb4" value="" style="rounded=1;arcSize=6;whiteSpace=wrap;html=1;fillColor=#FFFFFF;strokeColor=#E5C7EA;fontColor=#232F3E;fontSize=11;fontStyle=0;align=left;verticalAlign=top;spacingLeft=8;spacingRight=8;spacingTop=4;dashed=0;" vertex="1" parent="1">
+          <mxGeometry x="1792" y="1602" width="310" height="118" as="geometry" />
+        </mxCell>
+        <mxCell id="p1-tb4t" value="&lt;b&gt;Reliability&lt;/b&gt;" style="text;html=1;strokeColor=none;fillColor=none;align=left;verticalAlign=middle;whiteSpace=wrap;rounded=0;fontSize=10;fontStyle=0;fontColor=#C925D1;" vertex="1" parent="1">
+          <mxGeometry x="1802" y="1608" width="290" height="20" as="geometry" />
+        </mxCell>
+        <mxCell id="p1-tb4b" value="outbox_events&lt;br&gt;inbox_messages&lt;br&gt;worker_heartbeats&lt;br&gt;processing_failures" style="text;html=1;strokeColor=none;fillColor=none;align=left;verticalAlign=middle;whiteSpace=wrap;rounded=0;fontSize=9;fontStyle=0;fontColor=#232F3E;" vertex="1" parent="1">
+          <mxGeometry x="1802" y="1630" width="290" height="84" as="geometry" />
+        </mxCell>
+        <mxCell id="p1-tb5" value="" style="rounded=1;arcSize=6;whiteSpace=wrap;html=1;fillColor=#FFFFFF;strokeColor=#E5C7EA;fontColor=#232F3E;fontSize=11;fontStyle=0;align=left;verticalAlign=top;spacingLeft=8;spacingRight=8;spacingTop=4;dashed=0;" vertex="1" parent="1">
+          <mxGeometry x="2127" y="1602" width="310" height="118" as="geometry" />
+        </mxCell>
+        <mxCell id="p1-tb5t" value="&lt;b&gt;Catalogue (v0.4)&lt;/b&gt;" style="text;html=1;strokeColor=none;fillColor=none;align=left;verticalAlign=middle;whiteSpace=wrap;rounded=0;fontSize=10;fontStyle=0;fontColor=#C925D1;" vertex="1" parent="1">
+          <mxGeometry x="2137" y="1608" width="290" height="20" as="geometry" />
+        </mxCell>
+        <mxCell id="p1-tb5b" value="managed_stations&lt;br&gt;radio_catalog_overrides / _deletions&lt;br&gt;station_jobs &amp;middot; station_probe_results&lt;br&gt;campaign_station_members" style="text;html=1;strokeColor=none;fillColor=none;align=left;verticalAlign=middle;whiteSpace=wrap;rounded=0;fontSize=9;fontStyle=0;fontColor=#232F3E;" vertex="1" parent="1">
+          <mxGeometry x="2137" y="1630" width="290" height="84" as="geometry" />
+        </mxCell>
+        <mxCell id="p1-rel" value="Reliability model &amp;mdash; how work survives a crash, a redelivery or a wedged dependency" style="rounded=1;arcSize=6;whiteSpace=wrap;html=1;fillColor=#F7F8FA;strokeColor=#5A6C86;fontColor=#5A6C86;fontSize=13;fontStyle=1;align=left;verticalAlign=top;spacingLeft=8;spacingRight=8;spacingTop=4;dashed=0;" vertex="1" parent="1">
+          <mxGeometry x="430" y="1770" width="2030" height="130" as="geometry" />
+        </mxCell>
+        <mxCell id="p1-rl0" value="" style="rounded=1;arcSize=6;whiteSpace=wrap;html=1;fillColor=#FFFFFF;strokeColor=#D5DBE3;fontColor=#232F3E;fontSize=11;fontStyle=0;align=left;verticalAlign=top;spacingLeft=8;spacingRight=8;spacingTop=4;dashed=0;" vertex="1" parent="1">
+          <mxGeometry x="452" y="1812" width="480" height="76" as="geometry" />
+        </mxCell>
+        <mxCell id="p1-rl0t" value="&lt;b&gt;Transactional outbox&lt;/b&gt;" style="text;html=1;strokeColor=none;fillColor=none;align=left;verticalAlign=middle;whiteSpace=wrap;rounded=0;fontSize=10;fontStyle=0;fontColor=#232F3E;" vertex="1" parent="1">
+          <mxGeometry x="462" y="1816" width="460" height="18" as="geometry" />
+        </mxCell>
+        <mxCell id="p1-rl0b" value="Producers never call SQS. They INSERT into &lt;code&gt;outbox_events&lt;/code&gt; inside the same transaction as the business rows; the &lt;b&gt;planner&lt;/b&gt; is the single dispatcher. Closes the &quot;committed but never queued&quot; silent stall." style="text;html=1;strokeColor=none;fillColor=none;align=left;verticalAlign=middle;whiteSpace=wrap;rounded=0;fontSize=8;fontStyle=0;fontColor=#232F3E;" vertex="1" parent="1">
+          <mxGeometry x="462" y="1836" width="460" height="48" as="geometry" />
+        </mxCell>
+        <mxCell id="p1-rl1" value="" style="rounded=1;arcSize=6;whiteSpace=wrap;html=1;fillColor=#FFFFFF;strokeColor=#D5DBE3;fontColor=#232F3E;fontSize=11;fontStyle=0;align=left;verticalAlign=top;spacingLeft=8;spacingRight=8;spacingTop=4;dashed=0;" vertex="1" parent="1">
+          <mxGeometry x="954" y="1812" width="480" height="76" as="geometry" />
+        </mxCell>
+        <mxCell id="p1-rl1t" value="&lt;b&gt;Consumer inbox&lt;/b&gt;" style="text;html=1;strokeColor=none;fillColor=none;align=left;verticalAlign=middle;whiteSpace=wrap;rounded=0;fontSize=10;fontStyle=0;fontColor=#232F3E;" vertex="1" parent="1">
+          <mxGeometry x="964" y="1816" width="460" height="18" as="geometry" />
+        </mxCell>
+        <mxCell id="p1-rl1b" value="Business result + &lt;code&gt;inbox_messages&lt;/code&gt; row commit together, &lt;b&gt;then&lt;/b&gt; the SQS message is deleted. A crash in between redelivers, and the inbox turns the redelivery into a no-op. Every insert is UNIQUE-guarded." style="text;html=1;strokeColor=none;fillColor=none;align=left;verticalAlign=middle;whiteSpace=wrap;rounded=0;fontSize=8;fontStyle=0;fontColor=#232F3E;" vertex="1" parent="1">
+          <mxGeometry x="964" y="1836" width="460" height="48" as="geometry" />
+        </mxCell>
+        <mxCell id="p1-rl2" value="" style="rounded=1;arcSize=6;whiteSpace=wrap;html=1;fillColor=#FFFFFF;strokeColor=#D5DBE3;fontColor=#232F3E;fontSize=11;fontStyle=0;align=left;verticalAlign=top;spacingLeft=8;spacingRight=8;spacingTop=4;dashed=0;" vertex="1" parent="1">
+          <mxGeometry x="1456" y="1812" width="480" height="76" as="geometry" />
+        </mxCell>
+        <mxCell id="p1-rl2t" value="&lt;b&gt;Leases &amp;amp; heartbeats&lt;/b&gt;" style="text;html=1;strokeColor=none;fillColor=none;align=left;verticalAlign=middle;whiteSpace=wrap;rounded=0;fontSize=10;fontStyle=0;fontColor=#232F3E;" vertex="1" parent="1">
+          <mxGeometry x="1466" y="1816" width="460" height="18" as="geometry" />
+        </mxCell>
+        <mxCell id="p1-rl2b" value="Visibility 300 s extended every 60 s up to 1800 s. &lt;code&gt;worker_heartbeats&lt;/code&gt; lets &lt;code&gt;/readyz&lt;/code&gt; tell &quot;never ran&quot; from &quot;died 4 minutes ago&quot;. A stale-job sweeper reclaims work whose worker was killed mid-flight." style="text;html=1;strokeColor=none;fillColor=none;align=left;verticalAlign=middle;whiteSpace=wrap;rounded=0;fontSize=8;fontStyle=0;fontColor=#232F3E;" vertex="1" parent="1">
+          <mxGeometry x="1466" y="1836" width="460" height="48" as="geometry" />
+        </mxCell>
+        <mxCell id="p1-rl3" value="" style="rounded=1;arcSize=6;whiteSpace=wrap;html=1;fillColor=#FFFFFF;strokeColor=#D5DBE3;fontColor=#232F3E;fontSize=11;fontStyle=0;align=left;verticalAlign=top;spacingLeft=8;spacingRight=8;spacingTop=4;dashed=0;" vertex="1" parent="1">
+          <mxGeometry x="1958" y="1812" width="480" height="76" as="geometry" />
+        </mxCell>
+        <mxCell id="p1-rl3t" value="&lt;b&gt;Error taxonomy&lt;/b&gt;" style="text;html=1;strokeColor=none;fillColor=none;align=left;verticalAlign=middle;whiteSpace=wrap;rounded=0;fontSize=10;fontStyle=0;fontColor=#232F3E;" vertex="1" parent="1">
+          <mxGeometry x="1968" y="1816" width="460" height="18" as="geometry" />
+        </mxCell>
+        <mxCell id="p1-rl3b" value="Retryability is a property of the exception &lt;i&gt;type&lt;/i&gt;, not a per-call-site decision. Retryable &amp;rarr; leave the message. Permanent &amp;rarr; record in &lt;code&gt;processing_failures&lt;/code&gt;, write the inbox row, delete the message." style="text;html=1;strokeColor=none;fillColor=none;align=left;verticalAlign=middle;whiteSpace=wrap;rounded=0;fontSize=8;fontStyle=0;fontColor=#232F3E;" vertex="1" parent="1">
+          <mxGeometry x="1968" y="1836" width="460" height="48" as="geometry" />
+        </mxCell>
+        <mxCell id="p1-e1" value="REST / JSON  tcp 8788" style="edgeStyle=orthogonalEdgeStyle;rounded=1;arcSize=8;orthogonalLoop=1;jettySize=auto;html=1;exitX=1;exitY=0.505;exitDx=0;exitDy=0;exitPerimeter=0;entryX=0;entryY=0.5;entryDx=0;entryDy=0;entryPerimeter=0;strokeColor=#232F3E;strokeWidth=2;endArrow=blockThin;endFill=1;dashed=0;jumpStyle=arc;jumpSize=6;fontSize=10;fontColor=#232F3E;labelBackgroundColor=#FFFFFF;" edge="1" parent="1" source="p1-cons" target="p1-api">
+          <mxGeometry relative="1" as="geometry">
+            <Array as="points">
+              <mxPoint x="470" y="777" />
+              <mxPoint x="470" y="988" />
+            </Array>
+          </mxGeometry>
+        </mxCell>
+        <mxCell id="p1-b1" value="1" style="ellipse;whiteSpace=wrap;html=1;fillColor=#232F3E;strokeColor=#ffffff;strokeWidth=2;fontColor=#ffffff;fontSize=12;fontStyle=1;align=center;verticalAlign=middle;" vertex="1" parent="1">
+          <mxGeometry x="476" y="930" width="28" height="28" as="geometry" />
+        </mxCell>
+        <mxCell id="p1-e4" value="resolve stream URL" style="edgeStyle=orthogonalEdgeStyle;rounded=1;arcSize=8;orthogonalLoop=1;jettySize=auto;html=1;exitX=1;exitY=0.525;exitDx=0;exitDy=0;exitPerimeter=0;entryX=0.5;entryY=0;entryDx=0;entryDy=0;entryPerimeter=0;strokeColor=#232F3E;strokeWidth=2;endArrow=blockThin;endFill=1;dashed=0;jumpStyle=arc;jumpSize=6;fontSize=10;fontColor=#232F3E;labelBackgroundColor=#FFFFFF;" edge="1" parent="1" source="p1-rb" target="p1-planner">
+          <mxGeometry relative="1" as="geometry">
+            <Array as="points">
+              <mxPoint x="444" y="612" />
+              <mxPoint x="444" y="906" />
+              <mxPoint x="990" y="906" />
+            </Array>
+          </mxGeometry>
+        </mxCell>
+        <mxCell id="p1-b4" value="4" style="ellipse;whiteSpace=wrap;html=1;fillColor=#232F3E;strokeColor=#ffffff;strokeWidth=2;fontColor=#ffffff;fontSize=12;fontStyle=1;align=center;verticalAlign=middle;" vertex="1" parent="1">
+          <mxGeometry x="448" y="636" width="28" height="28" as="geometry" />
+        </mxCell>
+        <mxCell id="p1-e6" value="live audio" style="edgeStyle=orthogonalEdgeStyle;rounded=1;arcSize=8;orthogonalLoop=1;jettySize=auto;html=1;exitX=1;exitY=0.508;exitDx=0;exitDy=0;exitPerimeter=0;entryX=0;entryY=0.5;entryDx=0;entryDy=0;entryPerimeter=0;strokeColor=#232F3E;strokeWidth=3;endArrow=blockThin;endFill=1;dashed=0;jumpStyle=arc;jumpSize=6;fontSize=10;fontColor=#232F3E;labelBackgroundColor=#FFFFFF;" edge="1" parent="1" source="p1-streams" target="p1-listener">
+          <mxGeometry relative="1" as="geometry">
+            <Array as="points">
+              <mxPoint x="414" y="472" />
+              <mxPoint x="414" y="778" />
+            </Array>
+          </mxGeometry>
+        </mxCell>
+        <mxCell id="p1-b6" value="6" style="ellipse;whiteSpace=wrap;html=1;fillColor=#232F3E;strokeColor=#ffffff;strokeWidth=2;fontColor=#ffffff;fontSize=12;fontStyle=1;align=center;verticalAlign=middle;" vertex="1" parent="1">
+          <mxGeometry x="418" y="496" width="28" height="28" as="geometry" />
+        </mxCell>
+        <mxCell id="p1-e10" value="" style="edgeStyle=orthogonalEdgeStyle;rounded=1;arcSize=8;orthogonalLoop=1;jettySize=auto;html=1;exitX=0.5;exitY=1;exitDx=0;exitDy=0;exitPerimeter=0;entryX=0.456;entryY=0;entryDx=0;entryDy=0;entryPerimeter=0;strokeColor=#232F3E;strokeWidth=3;endArrow=blockThin;endFill=1;dashed=0;jumpStyle=arc;jumpSize=6;fontSize=10;fontColor=#232F3E;labelBackgroundColor=#FFFFFF;" edge="1" parent="1" source="p1-planner" target="p1-q1">
+          <mxGeometry relative="1" as="geometry">
+            <Array as="points">
+              <mxPoint x="990" y="1180" />
+            </Array>
+          </mxGeometry>
+        </mxCell>
+        <mxCell id="p1-b10" value="10" style="ellipse;whiteSpace=wrap;html=1;fillColor=#232F3E;strokeColor=#ffffff;strokeWidth=2;fontColor=#ffffff;fontSize=12;fontStyle=1;align=center;verticalAlign=middle;" vertex="1" parent="1">
+          <mxGeometry x="996" y="1180" width="28" height="28" as="geometry" />
+        </mxCell>
+        <mxCell id="p1-l10" value="&lt;b&gt;outbox dispatcher&lt;/b&gt; &amp;rarr; send_message()&lt;br&gt;the only egress to SQS in the system" style="text;html=1;strokeColor=none;fillColor=none;align=left;verticalAlign=middle;whiteSpace=wrap;rounded=0;fontSize=9;fontStyle=0;fontColor=#232F3E;" vertex="1" parent="1">
+          <mxGeometry x="1004" y="1238" width="320" height="30" as="geometry" />
+        </mxCell>
+        <mxCell id="p1-e11" value="" style="edgeStyle=orthogonalEdgeStyle;rounded=1;arcSize=8;orthogonalLoop=1;jettySize=auto;html=1;exitX=0.624;exitY=0;exitDx=0;exitDy=0;exitPerimeter=0;entryX=0.5;entryY=1;entryDx=0;entryDy=0;entryPerimeter=0;strokeColor=#232F3E;strokeWidth=3;endArrow=blockThin;endFill=1;dashed=0;jumpStyle=arc;jumpSize=6;fontSize=10;fontColor=#232F3E;labelBackgroundColor=#FFFFFF;" edge="1" parent="1" source="p1-q1" target="p1-transcription">
+          <mxGeometry relative="1" as="geometry">
+            <Array as="points">
+              <mxPoint x="1144" y="1240" />
+            </Array>
+          </mxGeometry>
+        </mxCell>
+        <mxCell id="p1-b11" value="11" style="ellipse;whiteSpace=wrap;html=1;fillColor=#232F3E;strokeColor=#ffffff;strokeWidth=2;fontColor=#ffffff;fontSize=12;fontStyle=1;align=center;verticalAlign=middle;" vertex="1" parent="1">
+          <mxGeometry x="1150" y="1180" width="28" height="28" as="geometry" />
+        </mxCell>
+        <mxCell id="p1-e16" value="" style="edgeStyle=orthogonalEdgeStyle;rounded=1;arcSize=8;orthogonalLoop=1;jettySize=auto;html=1;exitX=0.054;exitY=0;exitDx=0;exitDy=0;exitPerimeter=0;entryX=0.227;entryY=1;entryDx=0;entryDy=0;entryPerimeter=0;strokeColor=#232F3E;strokeWidth=3;endArrow=blockThin;endFill=1;dashed=0;jumpStyle=arc;jumpSize=6;fontSize=10;fontColor=#232F3E;labelBackgroundColor=#FFFFFF;" edge="1" parent="1" source="p1-q2" target="p1-analysis">
+          <mxGeometry relative="1" as="geometry">
+            <Array as="points">
+              <mxPoint x="1560" y="1250" />
+              <mxPoint x="1452" y="1250" />
+            </Array>
+          </mxGeometry>
+        </mxCell>
+        <mxCell id="p1-b16" value="16" style="ellipse;whiteSpace=wrap;html=1;fillColor=#232F3E;strokeColor=#ffffff;strokeWidth=2;fontColor=#ffffff;fontSize=12;fontStyle=1;align=center;verticalAlign=middle;" vertex="1" parent="1">
+          <mxGeometry x="1458" y="1180" width="28" height="28" as="geometry" />
+        </mxCell>
+        <mxCell id="p1-e18" value="" style="edgeStyle=orthogonalEdgeStyle;rounded=1;arcSize=8;orthogonalLoop=1;jettySize=auto;html=1;exitX=0.14;exitY=1;exitDx=0;exitDy=0;exitPerimeter=0;entryX=0.508;entryY=0;entryDx=0;entryDy=0;entryPerimeter=0;strokeColor=#232F3E;strokeWidth=2;endArrow=blockThin;endFill=1;dashed=0;jumpStyle=arc;jumpSize=6;fontSize=10;fontColor=#232F3E;labelBackgroundColor=#FFFFFF;" edge="1" parent="1" source="p1-analysis" target="p1-llm">
+          <mxGeometry relative="1" as="geometry">
+            <Array as="points">
+              <mxPoint x="1420" y="918" />
+              <mxPoint x="1300" y="918" />
+            </Array>
+          </mxGeometry>
+        </mxCell>
+        <mxCell id="p1-b18" value="18" style="ellipse;whiteSpace=wrap;html=1;fillColor=#232F3E;strokeColor=#ffffff;strokeWidth=2;fontColor=#ffffff;fontSize=12;fontStyle=1;align=center;verticalAlign=middle;" vertex="1" parent="1">
+          <mxGeometry x="1286" y="904" width="28" height="28" as="geometry" />
+        </mxCell>
+        <mxCell id="p1-e18b" value="tier chain, tried best-first, before the local model" style="edgeStyle=orthogonalEdgeStyle;rounded=1;arcSize=8;orthogonalLoop=1;jettySize=auto;html=1;exitX=0.519;exitY=0;exitDx=0;exitDy=0;exitPerimeter=0;entryX=0.5;entryY=1;entryDx=0;entryDy=0;entryPerimeter=0;strokeColor=#232F3E;strokeWidth=2;endArrow=blockThin;endFill=1;dashed=1;dashPattern=8 4;jumpStyle=arc;jumpSize=6;fontSize=10;fontColor=#232F3E;labelBackgroundColor=#FFFFFF;" edge="1" parent="1" source="p1-analysis" target="p1-hosted">
+          <mxGeometry relative="1" as="geometry">
+            <Array as="points">
+              <mxPoint x="1560" y="430" />
+              <mxPoint x="2710" y="430" />
+            </Array>
+          </mxGeometry>
+        </mxCell>
+        <mxCell id="p1-e8" value="" style="edgeStyle=orthogonalEdgeStyle;rounded=1;arcSize=8;orthogonalLoop=1;jettySize=auto;html=1;exitX=1;exitY=0.367;exitDx=0;exitDy=0;exitPerimeter=0;entryX=0;entryY=0.484;entryDx=0;entryDy=0;entryPerimeter=0;strokeColor=#232F3E;strokeWidth=3;endArrow=blockThin;endFill=1;dashed=0;jumpStyle=arc;jumpSize=6;fontSize=10;fontColor=#232F3E;labelBackgroundColor=#FFFFFF;" edge="1" parent="1" source="p1-compose" target="p1-store">
+          <mxGeometry relative="1" as="geometry">
+          </mxGeometry>
+        </mxCell>
+        <mxCell id="p1-b8" value="8" style="ellipse;whiteSpace=wrap;html=1;fillColor=#232F3E;strokeColor=#ffffff;strokeWidth=2;fontColor=#ffffff;fontSize=12;fontStyle=1;align=center;verticalAlign=middle;" vertex="1" parent="1">
+          <mxGeometry x="1748" y="754" width="28" height="28" as="geometry" />
+        </mxCell>
+        <mxCell id="p1-l8" value="&lt;b&gt;8&lt;/b&gt; write segment (fsync+rename)&lt;br&gt;&lt;b&gt;12&lt;/b&gt; read + verify SHA-256&lt;br&gt;&lt;b&gt;21&lt;/b&gt; cleanup deletes by job state" style="text;html=1;strokeColor=none;fillColor=none;align=left;verticalAlign=middle;whiteSpace=wrap;rounded=0;fontSize=8;fontStyle=0;fontColor=#232F3E;" vertex="1" parent="1">
+          <mxGeometry x="1596" y="1048" width="180" height="60" as="geometry" />
+        </mxCell>
+        <mxCell id="p1-e20" value="" style="edgeStyle=orthogonalEdgeStyle;rounded=1;arcSize=8;orthogonalLoop=1;jettySize=auto;html=1;exitX=1;exitY=0.754;exitDx=0;exitDy=0;exitPerimeter=0;entryX=0;entryY=0.719;entryDx=0;entryDy=0;entryPerimeter=0;strokeColor=#7AA116;strokeWidth=3;endArrow=blockThin;endFill=1;dashed=0;jumpStyle=arc;jumpSize=6;fontSize=10;fontColor=#7AA116;labelBackgroundColor=#FFFFFF;" edge="1" parent="1" source="p1-analysis" target="p1-s3">
+          <mxGeometry relative="1" as="geometry">
+            <Array as="points">
+              <mxPoint x="1774" y="840" />
+              <mxPoint x="1774" y="1080" />
+            </Array>
+          </mxGeometry>
+        </mxCell>
+        <mxCell id="p1-b20" value="20" style="ellipse;whiteSpace=wrap;html=1;fillColor=#232F3E;strokeColor=#ffffff;strokeWidth=2;fontColor=#ffffff;fontSize=12;fontStyle=1;align=center;verticalAlign=middle;" vertex="1" parent="1">
+          <mxGeometry x="1786" y="1046" width="28" height="28" as="geometry" />
+        </mxCell>
+        <mxCell id="p1-e22" value="" style="edgeStyle=orthogonalEdgeStyle;rounded=1;arcSize=8;orthogonalLoop=1;jettySize=auto;html=1;exitX=0.567;exitY=1;exitDx=0;exitDy=0;exitPerimeter=0;entryX=0;entryY=0.7516;entryDx=0;entryDy=0;entryPerimeter=0;strokeColor=#7AA116;strokeWidth=2;endArrow=blockThin;endFill=1;dashed=1;dashPattern=8 4;jumpStyle=arc;jumpSize=6;fontSize=10;fontColor=#7AA116;labelBackgroundColor=#FFFFFF;" edge="1" parent="1" source="p1-api" target="p1-s3">
+          <mxGeometry relative="1" as="geometry">
+            <Array as="points">
+              <mxPoint x="700" y="1100" />
+              <mxPoint x="2050" y="1100" />
+            </Array>
+          </mxGeometry>
+        </mxCell>
+        <mxCell id="p1-b22" value="22" style="ellipse;whiteSpace=wrap;html=1;fillColor=#232F3E;strokeColor=#ffffff;strokeWidth=2;fontColor=#ffffff;fontSize=12;fontStyle=1;align=center;verticalAlign=middle;" vertex="1" parent="1">
+          <mxGeometry x="1900" y="1086" width="28" height="28" as="geometry" />
+        </mxCell>
+        <mxCell id="p1-l22" value="keywords.json put &amp;middot; evidence clip Range-streamed back to the browser" style="text;html=1;strokeColor=none;fillColor=none;align=left;verticalAlign=middle;whiteSpace=wrap;rounded=0;fontSize=8;fontStyle=0;fontColor=#4C7A0B;" vertex="1" parent="1">
+          <mxGeometry x="700" y="1104" width="420" height="20" as="geometry" />
+        </mxCell>
+        <mxCell id="p1-ed5" value="" style="edgeStyle=orthogonalEdgeStyle;rounded=1;arcSize=8;orthogonalLoop=1;jettySize=auto;html=1;exitX=1;exitY=0.5;exitDx=0;exitDy=0;exitPerimeter=0;entryX=0.987;entryY=0;entryDx=0;entryDy=0;entryPerimeter=0;strokeColor=#3334B9;strokeWidth=2;endArrow=blockThin;endFill=1;dashed=1;dashPattern=6 4;jumpStyle=arc;jumpSize=6;fontSize=10;fontColor=#3334B9;labelBackgroundColor=#FFFFFF;" edge="1" parent="1" source="p1-d5" target="p1-ec2">
+          <mxGeometry relative="1" as="geometry">
+            <Array as="points">
+              <mxPoint x="1960" y="283" />
+            </Array>
+          </mxGeometry>
+        </mxCell>
+        <mxCell id="p1-egh" value="" style="edgeStyle=orthogonalEdgeStyle;rounded=1;arcSize=8;orthogonalLoop=1;jettySize=auto;html=1;exitX=1;exitY=0.6;exitDx=0;exitDy=0;exitPerimeter=0;entryX=0;entryY=0.5;entryDx=0;entryDy=0;entryPerimeter=0;strokeColor=#3334B9;strokeWidth=2;endArrow=blockThin;endFill=1;dashed=1;dashPattern=6 4;jumpStyle=arc;jumpSize=6;fontSize=10;fontColor=#3334B9;labelBackgroundColor=#FFFFFF;" edge="1" parent="1" source="p1-gh" target="p1-d1">
+          <mxGeometry relative="1" as="geometry">
+          </mxGeometry>
+        </mxCell>
+      </root>
+    </mxGraphModel>
+  </diagram>
+  <diagram id="page-pipeline" name="2. Backend pipeline (22 steps)">
+    <mxGraphModel dx="1600" dy="900" grid="1" gridSize="10" guides="1" tooltips="1" connect="1" arrows="1" fold="1" page="1" pageScale="1" pageWidth="2320" pageHeight="2700" math="0" shadow="0" background="#FFFFFF">
+      <root>
+        <mxCell id="0" />
+        <mxCell id="1" parent="0" />
+        <mxCell id="p2-title" value="Backend pipeline &amp;mdash; 22 numbered steps, end to end" style="text;html=1;strokeColor=none;fillColor=none;align=left;verticalAlign=middle;whiteSpace=wrap;rounded=0;fontSize=26;fontStyle=1;fontColor=#232F3E;" vertex="1" parent="1">
+          <mxGeometry x="40" y="24" width="1700" height="34" as="geometry" />
+        </mxCell>
+        <mxCell id="p2-sub" value="Read top to bottom. &lt;b&gt;ONE TXN&lt;/b&gt; marks a single SQLite transaction &amp;mdash; every row listed there commits together or not at all.&lt;br&gt;The two SQS hops (steps 10 and 16) are the only places work leaves the instance; everything else is local to the EC2 host." style="text;html=1;strokeColor=none;fillColor=none;align=left;verticalAlign=middle;whiteSpace=wrap;rounded=0;fontSize=12;fontStyle=0;fontColor=#232F3E;" vertex="1" parent="1">
+          <mxGeometry x="40" y="60" width="2100" height="44" as="geometry" />
+        </mxCell>
+        <mxCell id="p2-hdr" value="" style="rounded=1;arcSize=6;whiteSpace=wrap;html=1;fillColor=#232F3E;strokeColor=none;fontColor=#232F3E;fontSize=11;fontStyle=0;align=left;verticalAlign=top;spacingLeft=8;spacingRight=8;spacingTop=4;dashed=0;" vertex="1" parent="1">
+          <mxGeometry x="40" y="120" width="2210" height="32" as="geometry" />
+        </mxCell>
+        <mxCell id="p2-h0" value="&lt;b&gt;#&lt;/b&gt;" style="text;html=1;strokeColor=none;fillColor=none;align=center;verticalAlign=middle;whiteSpace=wrap;rounded=0;fontSize=11;fontStyle=0;fontColor=#FFFFFF;" vertex="1" parent="1">
+          <mxGeometry x="52" y="120" width="46" height="32" as="geometry" />
+        </mxCell>
+        <mxCell id="p2-h1" value="&lt;b&gt;PROCESS&lt;/b&gt;" style="text;html=1;strokeColor=none;fillColor=none;align=left;verticalAlign=middle;whiteSpace=wrap;rounded=0;fontSize=11;fontStyle=0;fontColor=#FFFFFF;" vertex="1" parent="1">
+          <mxGeometry x="108" y="120" width="250" height="32" as="geometry" />
+        </mxCell>
+        <mxCell id="p2-h2" value="&lt;b&gt;WHAT HAPPENS&lt;/b&gt;" style="text;html=1;strokeColor=none;fillColor=none;align=left;verticalAlign=middle;whiteSpace=wrap;rounded=0;fontSize=11;fontStyle=0;fontColor=#FFFFFF;" vertex="1" parent="1">
+          <mxGeometry x="372" y="120" width="1320" height="32" as="geometry" />
+        </mxCell>
+        <mxCell id="p2-h3" value="&lt;b&gt;DURABLE EFFECT&lt;/b&gt;" style="text;html=1;strokeColor=none;fillColor=none;align=left;verticalAlign=middle;whiteSpace=wrap;rounded=0;fontSize=11;fontStyle=0;fontColor=#FFFFFF;" vertex="1" parent="1">
+          <mxGeometry x="1706" y="120" width="530" height="32" as="geometry" />
+        </mxCell>
+        <mxCell id="p2-phA" value="&lt;b&gt;A&lt;/b&gt; &amp;nbsp; Intent &amp;mdash; the control plane records what to watch" style="rounded=1;arcSize=6;whiteSpace=wrap;html=1;fillColor=#EEF3FB;strokeColor=#2E5AAC;fontColor=#2E5AAC;fontSize=12;fontStyle=0;align=left;verticalAlign=top;spacingLeft=12;spacingRight=12;spacingTop=4;dashed=0;" vertex="1" parent="1">
+          <mxGeometry x="40" y="162" width="2210" height="30" as="geometry" />
+        </mxCell>
+        <mxCell id="p2-r1" value="" style="rounded=1;arcSize=6;whiteSpace=wrap;html=1;fillColor=#FFFFFF;strokeColor=#D5DBE3;fontColor=#232F3E;fontSize=11;fontStyle=0;align=left;verticalAlign=top;spacingLeft=8;spacingRight=8;spacingTop=4;dashed=0;" vertex="1" parent="1">
+          <mxGeometry x="40" y="200" width="2210" height="86" as="geometry" />
+        </mxCell>
+        <mxCell id="p2-b1" value="1" style="ellipse;whiteSpace=wrap;html=1;fillColor=#232F3E;strokeColor=#ffffff;strokeWidth=2;fontColor=#ffffff;fontSize=12;fontStyle=1;align=center;verticalAlign=middle;" vertex="1" parent="1">
+          <mxGeometry x="54" y="210" width="28" height="28" as="geometry" />
+        </mxCell>
+        <mxCell id="p2-a1" value="&lt;b&gt;browser &amp;rarr; api&lt;/b&gt;" style="text;html=1;strokeColor=none;fillColor=none;align=left;verticalAlign=middle;whiteSpace=wrap;rounded=0;fontSize=11;fontStyle=0;fontColor=#232F3E;" vertex="1" parent="1">
+          <mxGeometry x="108" y="208" width="250" height="40" as="geometry" />
+        </mxCell>
+        <mxCell id="p2-t1" value="&lt;code&gt;POST /api/v1/brand-signal/campaigns&lt;/code&gt;. Station ids are validated against the station map; &lt;code&gt;backfill_days&lt;/code&gt; becomes &lt;code&gt;monitor_from&lt;/code&gt;. The API records &lt;b&gt;intent only&lt;/b&gt; &amp;mdash; it never opens a stream." style="text;html=1;strokeColor=none;fillColor=none;align=left;verticalAlign=middle;whiteSpace=wrap;rounded=0;fontSize=10;fontStyle=0;fontColor=#232F3E;" vertex="1" parent="1">
+          <mxGeometry x="372" y="206" width="1320" height="74" as="geometry" />
+        </mxCell>
+        <mxCell id="p2-e1" value="&amp;mdash;" style="text;html=1;strokeColor=none;fillColor=none;align=left;verticalAlign=middle;whiteSpace=wrap;rounded=0;fontSize=9;fontStyle=0;fontColor=#4C7A0B;" vertex="1" parent="1">
+          <mxGeometry x="1706" y="206" width="530" height="74" as="geometry" />
+        </mxCell>
+        <mxCell id="p2-r2" value="" style="rounded=1;arcSize=6;whiteSpace=wrap;html=1;fillColor=#FFFFFF;strokeColor=#D5DBE3;fontColor=#232F3E;fontSize=11;fontStyle=0;align=left;verticalAlign=top;spacingLeft=8;spacingRight=8;spacingTop=4;dashed=0;" vertex="1" parent="1">
+          <mxGeometry x="40" y="294" width="2210" height="86" as="geometry" />
+        </mxCell>
+        <mxCell id="p2-b2" value="2" style="ellipse;whiteSpace=wrap;html=1;fillColor=#232F3E;strokeColor=#ffffff;strokeWidth=2;fontColor=#ffffff;fontSize=12;fontStyle=1;align=center;verticalAlign=middle;" vertex="1" parent="1">
+          <mxGeometry x="54" y="304" width="28" height="28" as="geometry" />
+        </mxCell>
+        <mxCell id="p2-a2" value="&lt;b&gt;api &amp;rarr; SQLite + S3&lt;/b&gt;" style="text;html=1;strokeColor=none;fillColor=none;align=left;verticalAlign=middle;whiteSpace=wrap;rounded=0;fontSize=11;fontStyle=0;fontColor=#232F3E;" vertex="1" parent="1">
+          <mxGeometry x="108" y="302" width="250" height="40" as="geometry" />
+        </mxCell>
+        <mxCell id="p2-t2" value="&lt;b&gt;ONE TXN:&lt;/b&gt; 1 &amp;times; &lt;code&gt;campaigns&lt;/code&gt; (status=active) + N &amp;times; &lt;code&gt;campaign_stations&lt;/code&gt; + N &amp;times; &lt;code&gt;campaign_keywords&lt;/code&gt;, then a revision bump. The merged entity document is put to S3 and an immediate sync runs." style="text;html=1;strokeColor=none;fillColor=none;align=left;verticalAlign=middle;whiteSpace=wrap;rounded=0;fontSize=10;fontStyle=0;fontColor=#232F3E;" vertex="1" parent="1">
+          <mxGeometry x="372" y="300" width="1320" height="74" as="geometry" />
+        </mxCell>
+        <mxCell id="p2-e2" value="campaigns, campaign_stations,&lt;br&gt;campaign_keywords&lt;br&gt;s3://&amp;hellip;/config/keywords/keywords.json" style="text;html=1;strokeColor=none;fillColor=none;align=left;verticalAlign=middle;whiteSpace=wrap;rounded=0;fontSize=9;fontStyle=0;fontColor=#4C7A0B;" vertex="1" parent="1">
+          <mxGeometry x="1706" y="300" width="530" height="74" as="geometry" />
+        </mxCell>
+        <mxCell id="p2-phB" value="&lt;b&gt;B&lt;/b&gt; &amp;nbsp; Planning &amp;mdash; campaigns become stations, de-duplicated" style="rounded=1;arcSize=6;whiteSpace=wrap;html=1;fillColor=#F3EEFB;strokeColor=#6B3FBF;fontColor=#6B3FBF;fontSize=12;fontStyle=0;align=left;verticalAlign=top;spacingLeft=12;spacingRight=12;spacingTop=4;dashed=0;" vertex="1" parent="1">
+          <mxGeometry x="40" y="394" width="2210" height="30" as="geometry" />
+        </mxCell>
+        <mxCell id="p2-r3" value="" style="rounded=1;arcSize=6;whiteSpace=wrap;html=1;fillColor=#FFFFFF;strokeColor=#D5DBE3;fontColor=#232F3E;fontSize=11;fontStyle=0;align=left;verticalAlign=top;spacingLeft=8;spacingRight=8;spacingTop=4;dashed=0;" vertex="1" parent="1">
+          <mxGeometry x="40" y="432" width="2210" height="86" as="geometry" />
+        </mxCell>
+        <mxCell id="p2-b3" value="3" style="ellipse;whiteSpace=wrap;html=1;fillColor=#232F3E;strokeColor=#ffffff;strokeWidth=2;fontColor=#ffffff;fontSize=12;fontStyle=1;align=center;verticalAlign=middle;" vertex="1" parent="1">
+          <mxGeometry x="54" y="442" width="28" height="28" as="geometry" />
+        </mxCell>
+        <mxCell id="p2-a3" value="&lt;b&gt;planner (every 5 s)&lt;/b&gt;" style="text;html=1;strokeColor=none;fillColor=none;align=left;verticalAlign=middle;whiteSpace=wrap;rounded=0;fontSize=11;fontStyle=0;fontColor=#232F3E;" vertex="1" parent="1">
+          <mxGeometry x="108" y="440" width="250" height="40" as="geometry" />
+        </mxCell>
+        <mxCell id="p2-t3" value="Active campaigns are grouped by &lt;b&gt;DISTINCT&lt;/b&gt; station. One &lt;code&gt;station_subscriptions&lt;/code&gt; row per station carries &lt;code&gt;reference_count&lt;/code&gt; (how many campaigns want it) and &lt;code&gt;shard_index = BLAKE2b(station_id) % shards&lt;/code&gt; &amp;mdash; never Python's &lt;code&gt;hash()&lt;/code&gt;, which is per-process randomised and would split-brain two listeners." style="text;html=1;strokeColor=none;fillColor=none;align=left;verticalAlign=middle;whiteSpace=wrap;rounded=0;fontSize=10;fontStyle=0;fontColor=#232F3E;" vertex="1" parent="1">
+          <mxGeometry x="372" y="438" width="1320" height="74" as="geometry" />
+        </mxCell>
+        <mxCell id="p2-e3" value="station_subscriptions" style="text;html=1;strokeColor=none;fillColor=none;align=left;verticalAlign=middle;whiteSpace=wrap;rounded=0;fontSize=9;fontStyle=0;fontColor=#4C7A0B;" vertex="1" parent="1">
+          <mxGeometry x="1706" y="438" width="530" height="74" as="geometry" />
+        </mxCell>
+        <mxCell id="p2-r4" value="" style="rounded=1;arcSize=6;whiteSpace=wrap;html=1;fillColor=#FFFFFF;strokeColor=#D5DBE3;fontColor=#232F3E;fontSize=11;fontStyle=0;align=left;verticalAlign=top;spacingLeft=8;spacingRight=8;spacingTop=4;dashed=0;" vertex="1" parent="1">
+          <mxGeometry x="40" y="526" width="2210" height="86" as="geometry" />
+        </mxCell>
+        <mxCell id="p2-b4" value="4" style="ellipse;whiteSpace=wrap;html=1;fillColor=#232F3E;strokeColor=#ffffff;strokeWidth=2;fontColor=#ffffff;fontSize=12;fontStyle=1;align=center;verticalAlign=middle;" vertex="1" parent="1">
+          <mxGeometry x="54" y="536" width="28" height="28" as="geometry" />
+        </mxCell>
+        <mxCell id="p2-a4" value="&lt;b&gt;planner &amp;rarr; Radio Browser&lt;/b&gt;" style="text;html=1;strokeColor=none;fillColor=none;align=left;verticalAlign=middle;whiteSpace=wrap;rounded=0;fontSize=11;fontStyle=0;fontColor=#232F3E;" vertex="1" parent="1">
+          <mxGeometry x="108" y="534" width="250" height="40" as="geometry" />
+        </mxCell>
+        <mxCell id="p2-t4" value="A campaign stores a station id; the listener needs a URL. Resolution is durable-first (&lt;code&gt;managed_stations.stream_url_resolved&lt;/code&gt;), then &lt;code&gt;/json/url/&amp;lt;uuid&amp;gt;&lt;/code&gt;. Budgeted per cycle and backed off on failure &amp;mdash; that endpoint counts a click." style="text;html=1;strokeColor=none;fillColor=none;align=left;verticalAlign=middle;whiteSpace=wrap;rounded=0;fontSize=10;fontStyle=0;fontColor=#232F3E;" vertex="1" parent="1">
+          <mxGeometry x="372" y="532" width="1320" height="74" as="geometry" />
+        </mxCell>
+        <mxCell id="p2-e4" value="station_subscriptions.stream_url" style="text;html=1;strokeColor=none;fillColor=none;align=left;verticalAlign=middle;whiteSpace=wrap;rounded=0;fontSize=9;fontStyle=0;fontColor=#4C7A0B;" vertex="1" parent="1">
+          <mxGeometry x="1706" y="532" width="530" height="74" as="geometry" />
+        </mxCell>
+        <mxCell id="p2-r5" value="" style="rounded=1;arcSize=6;whiteSpace=wrap;html=1;fillColor=#FFFFFF;strokeColor=#D5DBE3;fontColor=#232F3E;fontSize=11;fontStyle=0;align=left;verticalAlign=top;spacingLeft=8;spacingRight=8;spacingTop=4;dashed=0;" vertex="1" parent="1">
+          <mxGeometry x="40" y="620" width="2210" height="86" as="geometry" />
+        </mxCell>
+        <mxCell id="p2-b5" value="5" style="ellipse;whiteSpace=wrap;html=1;fillColor=#232F3E;strokeColor=#ffffff;strokeWidth=2;fontColor=#ffffff;fontSize=12;fontStyle=1;align=center;verticalAlign=middle;" vertex="1" parent="1">
+          <mxGeometry x="54" y="630" width="28" height="28" as="geometry" />
+        </mxCell>
+        <mxCell id="p2-a5" value="&lt;b&gt;planner&lt;/b&gt;" style="text;html=1;strokeColor=none;fillColor=none;align=left;verticalAlign=middle;whiteSpace=wrap;rounded=0;fontSize=11;fontStyle=0;fontColor=#232F3E;" vertex="1" parent="1">
+          <mxGeometry x="108" y="628" width="250" height="40" as="geometry" />
+        </mxCell>
+        <mxCell id="p2-t5" value="Builds the &lt;b&gt;combined&lt;/b&gt; keyword index for the station from every campaign that references it and publishes a new version only when the content fingerprint changed. Then admits up to &lt;code&gt;RADIO_MAX_ACTIVE_UNIQUE_STATIONS&lt;/code&gt;; the overflow is parked as &lt;code&gt;pending_capacity&lt;/code&gt; with a stated reason &amp;mdash; a queue, never a silent drop." style="text;html=1;strokeColor=none;fillColor=none;align=left;verticalAlign=middle;whiteSpace=wrap;rounded=0;fontSize=10;fontStyle=0;fontColor=#232F3E;" vertex="1" parent="1">
+          <mxGeometry x="372" y="626" width="1320" height="74" as="geometry" />
+        </mxCell>
+        <mxCell id="p2-e5" value="station_keyword_index_versions,&lt;br&gt;station_keyword_bindings" style="text;html=1;strokeColor=none;fillColor=none;align=left;verticalAlign=middle;whiteSpace=wrap;rounded=0;fontSize=9;fontStyle=0;fontColor=#4C7A0B;" vertex="1" parent="1">
+          <mxGeometry x="1706" y="626" width="530" height="74" as="geometry" />
+        </mxCell>
+        <mxCell id="p2-phC" value="&lt;b&gt;C&lt;/b&gt; &amp;nbsp; Capture &amp;mdash; the only place audio exists" style="rounded=1;arcSize=6;whiteSpace=wrap;html=1;fillColor=#FFF4EC;strokeColor=#C4590C;fontColor=#C4590C;fontSize=12;fontStyle=0;align=left;verticalAlign=top;spacingLeft=12;spacingRight=12;spacingTop=4;dashed=0;" vertex="1" parent="1">
+          <mxGeometry x="40" y="720" width="2210" height="30" as="geometry" />
+        </mxCell>
+        <mxCell id="p2-r6" value="" style="rounded=1;arcSize=6;whiteSpace=wrap;html=1;fillColor=#FFFFFF;strokeColor=#D5DBE3;fontColor=#232F3E;fontSize=11;fontStyle=0;align=left;verticalAlign=top;spacingLeft=8;spacingRight=8;spacingTop=4;dashed=0;" vertex="1" parent="1">
+          <mxGeometry x="40" y="758" width="2210" height="86" as="geometry" />
+        </mxCell>
+        <mxCell id="p2-b6" value="6" style="ellipse;whiteSpace=wrap;html=1;fillColor=#232F3E;strokeColor=#ffffff;strokeWidth=2;fontColor=#ffffff;fontSize=12;fontStyle=1;align=center;verticalAlign=middle;" vertex="1" parent="1">
+          <mxGeometry x="54" y="768" width="28" height="28" as="geometry" />
+        </mxCell>
+        <mxCell id="p2-a6" value="&lt;b&gt;listener &amp;rarr; ffmpeg&lt;/b&gt;" style="text;html=1;strokeColor=none;fillColor=none;align=left;verticalAlign=middle;whiteSpace=wrap;rounded=0;fontSize=11;fontStyle=0;fontColor=#232F3E;" vertex="1" parent="1">
+          <mxGeometry x="108" y="766" width="250" height="40" as="geometry" />
+        </mxCell>
+        <mxCell id="p2-t6" value="The URL is &lt;b&gt;re-validated on every connect&lt;/b&gt; (DNS can be re-pointed between configuration and use). ffmpeg runs with &lt;code&gt;-reconnect 0&lt;/code&gt; so every reconnect re-runs that check, and a &lt;code&gt;-protocol_whitelist&lt;/code&gt; that excludes &lt;code&gt;file&lt;/code&gt; and &lt;code&gt;concat&lt;/code&gt;. Output: 16 kHz mono s16le." style="text;html=1;strokeColor=none;fillColor=none;align=left;verticalAlign=middle;whiteSpace=wrap;rounded=0;fontSize=10;fontStyle=0;fontColor=#232F3E;" vertex="1" parent="1">
+          <mxGeometry x="372" y="764" width="1320" height="74" as="geometry" />
+        </mxCell>
+        <mxCell id="p2-e6" value="station_sessions" style="text;html=1;strokeColor=none;fillColor=none;align=left;verticalAlign=middle;whiteSpace=wrap;rounded=0;fontSize=9;fontStyle=0;fontColor=#4C7A0B;" vertex="1" parent="1">
+          <mxGeometry x="1706" y="764" width="530" height="74" as="geometry" />
+        </mxCell>
+        <mxCell id="p2-r7" value="" style="rounded=1;arcSize=6;whiteSpace=wrap;html=1;fillColor=#FFFFFF;strokeColor=#D5DBE3;fontColor=#232F3E;fontSize=11;fontStyle=0;align=left;verticalAlign=top;spacingLeft=8;spacingRight=8;spacingTop=4;dashed=0;" vertex="1" parent="1">
+          <mxGeometry x="40" y="852" width="2210" height="86" as="geometry" />
+        </mxCell>
+        <mxCell id="p2-b7" value="7" style="ellipse;whiteSpace=wrap;html=1;fillColor=#232F3E;strokeColor=#ffffff;strokeWidth=2;fontColor=#ffffff;fontSize=12;fontStyle=1;align=center;verticalAlign=middle;" vertex="1" parent="1">
+          <mxGeometry x="54" y="862" width="28" height="28" as="geometry" />
+        </mxCell>
+        <mxCell id="p2-a7" value="&lt;b&gt;listener: ring buffer + classifier&lt;/b&gt;" style="text;html=1;strokeColor=none;fillColor=none;align=left;verticalAlign=middle;whiteSpace=wrap;rounded=0;fontSize=11;fontStyle=0;fontColor=#232F3E;" vertex="1" parent="1">
+          <mxGeometry x="108" y="860" width="250" height="40" as="geometry" />
+        </mxCell>
+        <mxCell id="p2-t7" value="PCM lands in a fixed 1,920,000-byte ring buffer (60 s @ 16 kHz &amp;times; 2 B). Timestamps come from the &lt;b&gt;sample count&lt;/b&gt;, not &lt;code&gt;datetime.now()&lt;/code&gt;. A VAD + energy classifier scores 3 s windows: silence, clear music and long-form singing are &lt;b&gt;discarded in RAM&lt;/b&gt;; speech, speech-over-music, jingles and &lt;b&gt;uncertain&lt;/b&gt; are kept." style="text;html=1;strokeColor=none;fillColor=none;align=left;verticalAlign=middle;whiteSpace=wrap;rounded=0;fontSize=10;fontStyle=0;fontColor=#232F3E;" vertex="1" parent="1">
+          <mxGeometry x="372" y="858" width="1320" height="74" as="geometry" />
+        </mxCell>
+        <mxCell id="p2-e7" value="nothing &amp;mdash; discarded audio never&lt;br&gt;touches the disk" style="text;html=1;strokeColor=none;fillColor=none;align=left;verticalAlign=middle;whiteSpace=wrap;rounded=0;fontSize=9;fontStyle=0;fontColor=#4C7A0B;" vertex="1" parent="1">
+          <mxGeometry x="1706" y="858" width="530" height="74" as="geometry" />
+        </mxCell>
+        <mxCell id="p2-r8" value="" style="rounded=1;arcSize=6;whiteSpace=wrap;html=1;fillColor=#FFFFFF;strokeColor=#D5DBE3;fontColor=#232F3E;fontSize=11;fontStyle=0;align=left;verticalAlign=top;spacingLeft=8;spacingRight=8;spacingTop=4;dashed=0;" vertex="1" parent="1">
+          <mxGeometry x="40" y="946" width="2210" height="86" as="geometry" />
+        </mxCell>
+        <mxCell id="p2-b8" value="8" style="ellipse;whiteSpace=wrap;html=1;fillColor=#232F3E;strokeColor=#ffffff;strokeWidth=2;fontColor=#ffffff;fontSize=12;fontStyle=1;align=center;verticalAlign=middle;" vertex="1" parent="1">
+          <mxGeometry x="54" y="956" width="28" height="28" as="geometry" />
+        </mxCell>
+        <mxCell id="p2-a8" value="&lt;b&gt;listener: encode + spool&lt;/b&gt;" style="text;html=1;strokeColor=none;fillColor=none;align=left;verticalAlign=middle;whiteSpace=wrap;rounded=0;fontSize=11;fontStyle=0;fontColor=#232F3E;" vertex="1" parent="1">
+          <mxGeometry x="108" y="954" width="250" height="40" as="geometry" />
+        </mxCell>
+        <mxCell id="p2-t8" value="Segments of 20 s with 1 s overlap are encoded to Ogg/Opus 24 kbit/s &lt;code&gt;voip&lt;/code&gt; (lossless WAV fallback), then written tmp &amp;rarr; &lt;code&gt;fsync&lt;/code&gt; &amp;rarr; &lt;code&gt;os.replace&lt;/code&gt; &amp;rarr; directory fsync, with SHA-256 computed at write time." style="text;html=1;strokeColor=none;fillColor=none;align=left;verticalAlign=middle;whiteSpace=wrap;rounded=0;fontSize=10;fontStyle=0;fontColor=#232F3E;" vertex="1" parent="1">
+          <mxGeometry x="372" y="952" width="1320" height="74" as="geometry" />
+        </mxCell>
+        <mxCell id="p2-e8" value="/var/lib/radio/spool/&amp;lt;station&amp;gt;/&lt;br&gt;&amp;lt;segment&amp;gt;.opus" style="text;html=1;strokeColor=none;fillColor=none;align=left;verticalAlign=middle;whiteSpace=wrap;rounded=0;fontSize=9;fontStyle=0;fontColor=#4C7A0B;" vertex="1" parent="1">
+          <mxGeometry x="1706" y="952" width="530" height="74" as="geometry" />
+        </mxCell>
+        <mxCell id="p2-r9" value="" style="rounded=1;arcSize=6;whiteSpace=wrap;html=1;fillColor=#FFFFFF;strokeColor=#D5DBE3;fontColor=#232F3E;fontSize=11;fontStyle=0;align=left;verticalAlign=top;spacingLeft=8;spacingRight=8;spacingTop=4;dashed=0;" vertex="1" parent="1">
+          <mxGeometry x="40" y="1040" width="2210" height="86" as="geometry" />
+        </mxCell>
+        <mxCell id="p2-b9" value="9" style="ellipse;whiteSpace=wrap;html=1;fillColor=#232F3E;strokeColor=#ffffff;strokeWidth=2;fontColor=#ffffff;fontSize=12;fontStyle=1;align=center;verticalAlign=middle;" vertex="1" parent="1">
+          <mxGeometry x="54" y="1050" width="28" height="28" as="geometry" />
+        </mxCell>
+        <mxCell id="p2-a9" value="&lt;b&gt;listener &amp;rarr; SQLite&lt;/b&gt;" style="text;html=1;strokeColor=none;fillColor=none;align=left;verticalAlign=middle;whiteSpace=wrap;rounded=0;fontSize=11;fontStyle=0;fontColor=#232F3E;" vertex="1" parent="1">
+          <mxGeometry x="108" y="1048" width="250" height="40" as="geometry" />
+        </mxCell>
+        <mxCell id="p2-t9" value="&lt;b&gt;ONE TXN:&lt;/b&gt; &lt;code&gt;audio_segments&lt;/code&gt; (disposition=pending, sha256, size) + &lt;code&gt;transcription_jobs&lt;/code&gt; (pending) + &lt;code&gt;outbox_events&lt;/code&gt; (queue=transcription). Bytes land &lt;i&gt;before&lt;/i&gt; anything references them; if the transaction fails the file just written is deleted. Disk watermarks (70/85/90 %) are checked &lt;b&gt;before&lt;/b&gt; admitting." style="text;html=1;strokeColor=none;fillColor=none;align=left;verticalAlign=middle;whiteSpace=wrap;rounded=0;fontSize=10;fontStyle=0;fontColor=#232F3E;" vertex="1" parent="1">
+          <mxGeometry x="372" y="1046" width="1320" height="74" as="geometry" />
+        </mxCell>
+        <mxCell id="p2-e9" value="audio_segments, transcription_jobs,&lt;br&gt;outbox_events" style="text;html=1;strokeColor=none;fillColor=none;align=left;verticalAlign=middle;whiteSpace=wrap;rounded=0;fontSize=9;fontStyle=0;fontColor=#4C7A0B;" vertex="1" parent="1">
+          <mxGeometry x="1706" y="1046" width="530" height="74" as="geometry" />
+        </mxCell>
+        <mxCell id="p2-phD" value="&lt;b&gt;D&lt;/b&gt; &amp;nbsp; Queue 1 &amp;rarr; transcribe &amp;rarr; match" style="rounded=1;arcSize=6;whiteSpace=wrap;html=1;fillColor=#FFF0F7;strokeColor=#B3106A;fontColor=#B3106A;fontSize=12;fontStyle=0;align=left;verticalAlign=top;spacingLeft=12;spacingRight=12;spacingTop=4;dashed=0;" vertex="1" parent="1">
+          <mxGeometry x="40" y="1140" width="2210" height="30" as="geometry" />
+        </mxCell>
+        <mxCell id="p2-r10" value="" style="rounded=1;arcSize=6;whiteSpace=wrap;html=1;fillColor=#FFFFFF;strokeColor=#D5DBE3;fontColor=#232F3E;fontSize=11;fontStyle=0;align=left;verticalAlign=top;spacingLeft=8;spacingRight=8;spacingTop=4;dashed=0;" vertex="1" parent="1">
+          <mxGeometry x="40" y="1178" width="2210" height="86" as="geometry" />
+        </mxCell>
+        <mxCell id="p2-b10" value="10" style="ellipse;whiteSpace=wrap;html=1;fillColor=#232F3E;strokeColor=#ffffff;strokeWidth=2;fontColor=#ffffff;fontSize=12;fontStyle=1;align=center;verticalAlign=middle;" vertex="1" parent="1">
+          <mxGeometry x="54" y="1188" width="28" height="28" as="geometry" />
+        </mxCell>
+        <mxCell id="p2-a10" value="&lt;b&gt;planner &amp;rarr; SQS FIFO 1&lt;/b&gt;" style="text;html=1;strokeColor=none;fillColor=none;align=left;verticalAlign=middle;whiteSpace=wrap;rounded=0;fontSize=11;fontStyle=0;fontColor=#232F3E;" vertex="1" parent="1">
+          <mxGeometry x="108" y="1186" width="250" height="40" as="geometry" />
+        </mxCell>
+        <mxCell id="p2-t10" value="The dispatcher claims a batch of 25 with a 120 s lease, sends &lt;b&gt;outside&lt;/b&gt; any transaction, then records the outcome in a second short transaction. &lt;code&gt;MessageGroupId=station_id&lt;/code&gt;, &lt;code&gt;MessageDeduplicationId=segment_id&lt;/code&gt;." style="text;html=1;strokeColor=none;fillColor=none;align=left;verticalAlign=middle;whiteSpace=wrap;rounded=0;fontSize=10;fontStyle=0;fontColor=#232F3E;" vertex="1" parent="1">
+          <mxGeometry x="372" y="1184" width="1320" height="74" as="geometry" />
+        </mxCell>
+        <mxCell id="p2-e10" value="outbox_events.status = sent" style="text;html=1;strokeColor=none;fillColor=none;align=left;verticalAlign=middle;whiteSpace=wrap;rounded=0;fontSize=9;fontStyle=0;fontColor=#4C7A0B;" vertex="1" parent="1">
+          <mxGeometry x="1706" y="1184" width="530" height="74" as="geometry" />
+        </mxCell>
+        <mxCell id="p2-r11" value="" style="rounded=1;arcSize=6;whiteSpace=wrap;html=1;fillColor=#FFFFFF;strokeColor=#D5DBE3;fontColor=#232F3E;fontSize=11;fontStyle=0;align=left;verticalAlign=top;spacingLeft=8;spacingRight=8;spacingTop=4;dashed=0;" vertex="1" parent="1">
+          <mxGeometry x="40" y="1272" width="2210" height="86" as="geometry" />
+        </mxCell>
+        <mxCell id="p2-b11" value="11" style="ellipse;whiteSpace=wrap;html=1;fillColor=#232F3E;strokeColor=#ffffff;strokeWidth=2;fontColor=#ffffff;fontSize=12;fontStyle=1;align=center;verticalAlign=middle;" vertex="1" parent="1">
+          <mxGeometry x="54" y="1282" width="28" height="28" as="geometry" />
+        </mxCell>
+        <mxCell id="p2-a11" value="&lt;b&gt;transcription-worker &amp;larr; SQS&lt;/b&gt;" style="text;html=1;strokeColor=none;fillColor=none;align=left;verticalAlign=middle;whiteSpace=wrap;rounded=0;fontSize=11;fontStyle=0;fontColor=#232F3E;" vertex="1" parent="1">
+          <mxGeometry x="108" y="1280" width="250" height="40" as="geometry" />
+        </mxCell>
+        <mxCell id="p2-t11" value="Receives up to 5 with a 20 s long poll; visibility 300 s extended every 60 s (cap 1800 s). A known duplicate is deleted without work. A job older than 6 h is marked &lt;code&gt;abandoned&lt;/code&gt; and its audio released &amp;mdash; decoding a day-old backlog starves the fresh audio behind it." style="text;html=1;strokeColor=none;fillColor=none;align=left;verticalAlign=middle;whiteSpace=wrap;rounded=0;fontSize=10;fontStyle=0;fontColor=#232F3E;" vertex="1" parent="1">
+          <mxGeometry x="372" y="1278" width="1320" height="74" as="geometry" />
+        </mxCell>
+        <mxCell id="p2-e11" value="inbox_messages (pre-check)" style="text;html=1;strokeColor=none;fillColor=none;align=left;verticalAlign=middle;whiteSpace=wrap;rounded=0;fontSize=9;fontStyle=0;fontColor=#4C7A0B;" vertex="1" parent="1">
+          <mxGeometry x="1706" y="1278" width="530" height="74" as="geometry" />
+        </mxCell>
+        <mxCell id="p2-r12" value="" style="rounded=1;arcSize=6;whiteSpace=wrap;html=1;fillColor=#FFFFFF;strokeColor=#D5DBE3;fontColor=#232F3E;fontSize=11;fontStyle=0;align=left;verticalAlign=top;spacingLeft=8;spacingRight=8;spacingTop=4;dashed=0;" vertex="1" parent="1">
+          <mxGeometry x="40" y="1366" width="2210" height="86" as="geometry" />
+        </mxCell>
+        <mxCell id="p2-b12" value="12" style="ellipse;whiteSpace=wrap;html=1;fillColor=#232F3E;strokeColor=#ffffff;strokeWidth=2;fontColor=#ffffff;fontSize=12;fontStyle=1;align=center;verticalAlign=middle;" vertex="1" parent="1">
+          <mxGeometry x="54" y="1376" width="28" height="28" as="geometry" />
+        </mxCell>
+        <mxCell id="p2-a12" value="&lt;b&gt;transcription-worker &amp;larr; spool&lt;/b&gt;" style="text;html=1;strokeColor=none;fillColor=none;align=left;verticalAlign=middle;whiteSpace=wrap;rounded=0;fontSize=11;fontStyle=0;fontColor=#232F3E;" vertex="1" parent="1">
+          <mxGeometry x="108" y="1374" width="250" height="40" as="geometry" />
+        </mxCell>
+        <mxCell id="p2-t12" value="The path is re-resolved inside the spool root with &lt;code&gt;O_NOFOLLOW&lt;/code&gt; and an &lt;code&gt;st_dev&lt;/code&gt;/&lt;code&gt;st_ino&lt;/code&gt; TOCTOU check, the size is compared, and the &lt;b&gt;SHA-256 recorded at write time is verified before any decoder sees the bytes&lt;/b&gt;." style="text;html=1;strokeColor=none;fillColor=none;align=left;verticalAlign=middle;whiteSpace=wrap;rounded=0;fontSize=10;fontStyle=0;fontColor=#232F3E;" vertex="1" parent="1">
+          <mxGeometry x="372" y="1372" width="1320" height="74" as="geometry" />
+        </mxCell>
+        <mxCell id="p2-e12" value="&amp;mdash;" style="text;html=1;strokeColor=none;fillColor=none;align=left;verticalAlign=middle;whiteSpace=wrap;rounded=0;fontSize=9;fontStyle=0;fontColor=#4C7A0B;" vertex="1" parent="1">
+          <mxGeometry x="1706" y="1372" width="530" height="74" as="geometry" />
+        </mxCell>
+        <mxCell id="p2-r13" value="" style="rounded=1;arcSize=6;whiteSpace=wrap;html=1;fillColor=#FFFFFF;strokeColor=#D5DBE3;fontColor=#232F3E;fontSize=11;fontStyle=0;align=left;verticalAlign=top;spacingLeft=8;spacingRight=8;spacingTop=4;dashed=0;" vertex="1" parent="1">
+          <mxGeometry x="40" y="1460" width="2210" height="86" as="geometry" />
+        </mxCell>
+        <mxCell id="p2-b13" value="13" style="ellipse;whiteSpace=wrap;html=1;fillColor=#232F3E;strokeColor=#ffffff;strokeWidth=2;fontColor=#ffffff;fontSize=12;fontStyle=1;align=center;verticalAlign=middle;" vertex="1" parent="1">
+          <mxGeometry x="54" y="1470" width="28" height="28" as="geometry" />
+        </mxCell>
+        <mxCell id="p2-a13" value="&lt;b&gt;transcription-worker: ASR pass A&lt;/b&gt;" style="text;html=1;strokeColor=none;fillColor=none;align=left;verticalAlign=middle;whiteSpace=wrap;rounded=0;fontSize=11;fontStyle=0;fontColor=#232F3E;" vertex="1" parent="1">
+          <mxGeometry x="108" y="1468" width="250" height="40" as="geometry" />
+        </mxCell>
+        <mxCell id="p2-t13" value="faster-whisper &lt;code&gt;small&lt;/code&gt;, CTranslate2 int8, &lt;code&gt;beam_size=1&lt;/code&gt;, no word timestamps, language pinned only when exactly one usable hint exists. No-speech and repetition-loop guards drop bad segments. &lt;b&gt;ONE TXN:&lt;/b&gt; transcript + inbox row." style="text;html=1;strokeColor=none;fillColor=none;align=left;verticalAlign=middle;whiteSpace=wrap;rounded=0;fontSize=10;fontStyle=0;fontColor=#232F3E;" vertex="1" parent="1">
+          <mxGeometry x="372" y="1466" width="1320" height="74" as="geometry" />
+        </mxCell>
+        <mxCell id="p2-e13" value="transcripts (asr_pass='a'),&lt;br&gt;inbox_messages" style="text;html=1;strokeColor=none;fillColor=none;align=left;verticalAlign=middle;whiteSpace=wrap;rounded=0;fontSize=9;fontStyle=0;fontColor=#4C7A0B;" vertex="1" parent="1">
+          <mxGeometry x="1706" y="1466" width="530" height="74" as="geometry" />
+        </mxCell>
+        <mxCell id="p2-r14" value="" style="rounded=1;arcSize=6;whiteSpace=wrap;html=1;fillColor=#FFFFFF;strokeColor=#D5DBE3;fontColor=#232F3E;fontSize=11;fontStyle=0;align=left;verticalAlign=top;spacingLeft=8;spacingRight=8;spacingTop=4;dashed=0;" vertex="1" parent="1">
+          <mxGeometry x="40" y="1554" width="2210" height="86" as="geometry" />
+        </mxCell>
+        <mxCell id="p2-b14" value="14" style="ellipse;whiteSpace=wrap;html=1;fillColor=#232F3E;strokeColor=#ffffff;strokeWidth=2;fontColor=#ffffff;fontSize=12;fontStyle=1;align=center;verticalAlign=middle;" vertex="1" parent="1">
+          <mxGeometry x="54" y="1564" width="28" height="28" as="geometry" />
+        </mxCell>
+        <mxCell id="p2-a14" value="&lt;b&gt;transcription-worker: match + assemble&lt;/b&gt;" style="text;html=1;strokeColor=none;fillColor=none;align=left;verticalAlign=middle;whiteSpace=wrap;rounded=0;fontSize=11;fontStyle=0;fontColor=#232F3E;" vertex="1" parent="1">
+          <mxGeometry x="108" y="1562" width="250" height="40" as="geometry" />
+        </mxCell>
+        <mxCell id="p2-t14" value="One Aho-Corasick scan of the whole station index &amp;mdash; O(len(text)) regardless of keyword count &amp;mdash; and each hit resolves to &lt;b&gt;every&lt;/b&gt; campaign that registered it. Hits feed the per-station conversation assembler, which reaches back 30 s for context and closes on a 12 s gap, 300 s, disconnect or shutdown." style="text;html=1;strokeColor=none;fillColor=none;align=left;verticalAlign=middle;whiteSpace=wrap;rounded=0;fontSize=10;fontStyle=0;fontColor=#232F3E;" vertex="1" parent="1">
+          <mxGeometry x="372" y="1560" width="1320" height="74" as="geometry" />
+        </mxCell>
+        <mxCell id="p2-e14" value="&amp;mdash; (in-memory state machine)" style="text;html=1;strokeColor=none;fillColor=none;align=left;verticalAlign=middle;whiteSpace=wrap;rounded=0;fontSize=9;fontStyle=0;fontColor=#4C7A0B;" vertex="1" parent="1">
+          <mxGeometry x="1706" y="1560" width="530" height="74" as="geometry" />
+        </mxCell>
+        <mxCell id="p2-r15" value="" style="rounded=1;arcSize=6;whiteSpace=wrap;html=1;fillColor=#FFFFFF;strokeColor=#D5DBE3;fontColor=#232F3E;fontSize=11;fontStyle=0;align=left;verticalAlign=top;spacingLeft=8;spacingRight=8;spacingTop=4;dashed=0;" vertex="1" parent="1">
+          <mxGeometry x="40" y="1648" width="2210" height="86" as="geometry" />
+        </mxCell>
+        <mxCell id="p2-b15" value="15" style="ellipse;whiteSpace=wrap;html=1;fillColor=#232F3E;strokeColor=#ffffff;strokeWidth=2;fontColor=#ffffff;fontSize=12;fontStyle=1;align=center;verticalAlign=middle;" vertex="1" parent="1">
+          <mxGeometry x="54" y="1658" width="28" height="28" as="geometry" />
+        </mxCell>
+        <mxCell id="p2-a15" value="&lt;b&gt;transcription-worker &amp;rarr; SQLite&lt;/b&gt;" style="text;html=1;strokeColor=none;fillColor=none;align=left;verticalAlign=middle;whiteSpace=wrap;rounded=0;fontSize=11;fontStyle=0;fontColor=#232F3E;" vertex="1" parent="1">
+          <mxGeometry x="108" y="1656" width="250" height="40" as="geometry" />
+        </mxCell>
+        <mxCell id="p2-t15" value="&lt;b&gt;ONE TXN:&lt;/b&gt; &lt;code&gt;conversation_sessions&lt;/code&gt; (closed) + stamp &lt;code&gt;transcripts.conversation_id&lt;/code&gt; + &lt;code&gt;outbox_events&lt;/code&gt; (queue=analysis). Only after this commits is the SQS message deleted. Then two small transactions mark the job succeeded and set &lt;code&gt;disposition&lt;/code&gt; to &lt;b&gt;retained&lt;/b&gt; (matched) or &lt;b&gt;disposable&lt;/b&gt; (no match) &amp;mdash; the flag cleanup keys on." style="text;html=1;strokeColor=none;fillColor=none;align=left;verticalAlign=middle;whiteSpace=wrap;rounded=0;fontSize=10;fontStyle=0;fontColor=#232F3E;" vertex="1" parent="1">
+          <mxGeometry x="372" y="1654" width="1320" height="74" as="geometry" />
+        </mxCell>
+        <mxCell id="p2-e15" value="conversation_sessions, transcripts,&lt;br&gt;outbox_events, audio_segments" style="text;html=1;strokeColor=none;fillColor=none;align=left;verticalAlign=middle;whiteSpace=wrap;rounded=0;fontSize=9;fontStyle=0;fontColor=#4C7A0B;" vertex="1" parent="1">
+          <mxGeometry x="1706" y="1654" width="530" height="74" as="geometry" />
+        </mxCell>
+        <mxCell id="p2-phE" value="&lt;b&gt;E&lt;/b&gt; &amp;nbsp; Queue 2 &amp;rarr; analyse &amp;rarr; durable mention" style="rounded=1;arcSize=6;whiteSpace=wrap;html=1;fillColor=#F0F7FF;strokeColor=#0B6AA8;fontColor=#0B6AA8;fontSize=12;fontStyle=0;align=left;verticalAlign=top;spacingLeft=12;spacingRight=12;spacingTop=4;dashed=0;" vertex="1" parent="1">
+          <mxGeometry x="40" y="1748" width="2210" height="30" as="geometry" />
+        </mxCell>
+        <mxCell id="p2-r16" value="" style="rounded=1;arcSize=6;whiteSpace=wrap;html=1;fillColor=#FFFFFF;strokeColor=#D5DBE3;fontColor=#232F3E;fontSize=11;fontStyle=0;align=left;verticalAlign=top;spacingLeft=8;spacingRight=8;spacingTop=4;dashed=0;" vertex="1" parent="1">
+          <mxGeometry x="40" y="1786" width="2210" height="86" as="geometry" />
+        </mxCell>
+        <mxCell id="p2-b16" value="16" style="ellipse;whiteSpace=wrap;html=1;fillColor=#232F3E;strokeColor=#ffffff;strokeWidth=2;fontColor=#ffffff;fontSize=12;fontStyle=1;align=center;verticalAlign=middle;" vertex="1" parent="1">
+          <mxGeometry x="54" y="1796" width="28" height="28" as="geometry" />
+        </mxCell>
+        <mxCell id="p2-a16" value="&lt;b&gt;planner &amp;rarr; SQS FIFO 2&lt;/b&gt;" style="text;html=1;strokeColor=none;fillColor=none;align=left;verticalAlign=middle;whiteSpace=wrap;rounded=0;fontSize=11;fontStyle=0;fontColor=#232F3E;" vertex="1" parent="1">
+          <mxGeometry x="108" y="1794" width="250" height="40" as="geometry" />
+        </mxCell>
+        <mxCell id="p2-t16" value="The same single dispatcher sends the analysis job. &lt;code&gt;MessageGroupId=station_id&lt;/code&gt;, &lt;code&gt;MessageDeduplicationId=analysis_job_id&lt;/code&gt;. The message carries the matched-keyword evidence but &lt;b&gt;not&lt;/b&gt; the transcript." style="text;html=1;strokeColor=none;fillColor=none;align=left;verticalAlign=middle;whiteSpace=wrap;rounded=0;fontSize=10;fontStyle=0;fontColor=#232F3E;" vertex="1" parent="1">
+          <mxGeometry x="372" y="1792" width="1320" height="74" as="geometry" />
+        </mxCell>
+        <mxCell id="p2-e16" value="outbox_events.status = sent" style="text;html=1;strokeColor=none;fillColor=none;align=left;verticalAlign=middle;whiteSpace=wrap;rounded=0;fontSize=9;fontStyle=0;fontColor=#4C7A0B;" vertex="1" parent="1">
+          <mxGeometry x="1706" y="1792" width="530" height="74" as="geometry" />
+        </mxCell>
+        <mxCell id="p2-r17" value="" style="rounded=1;arcSize=6;whiteSpace=wrap;html=1;fillColor=#FFFFFF;strokeColor=#D5DBE3;fontColor=#232F3E;fontSize=11;fontStyle=0;align=left;verticalAlign=top;spacingLeft=8;spacingRight=8;spacingTop=4;dashed=0;" vertex="1" parent="1">
+          <mxGeometry x="40" y="1880" width="2210" height="86" as="geometry" />
+        </mxCell>
+        <mxCell id="p2-b17" value="17" style="ellipse;whiteSpace=wrap;html=1;fillColor=#232F3E;strokeColor=#ffffff;strokeWidth=2;fontColor=#ffffff;fontSize=12;fontStyle=1;align=center;verticalAlign=middle;" vertex="1" parent="1">
+          <mxGeometry x="54" y="1890" width="28" height="28" as="geometry" />
+        </mxCell>
+        <mxCell id="p2-a17" value="&lt;b&gt;analysis-worker &amp;larr; SQS&lt;/b&gt;" style="text;html=1;strokeColor=none;fillColor=none;align=left;verticalAlign=middle;whiteSpace=wrap;rounded=0;fontSize=11;fontStyle=0;fontColor=#232F3E;" vertex="1" parent="1">
+          <mxGeometry x="108" y="1888" width="250" height="40" as="geometry" />
+        </mxCell>
+        <mxCell id="p2-t17" value="Exactly one message per receive &amp;mdash; LLM work is serial on CPU and batching only adds latency. The conversation is reloaded from SQLite, so the analysed text is the committed text. A missing row is &lt;i&gt;retryable&lt;/i&gt;; zero matched keywords is &lt;i&gt;permanent&lt;/i&gt;." style="text;html=1;strokeColor=none;fillColor=none;align=left;verticalAlign=middle;whiteSpace=wrap;rounded=0;fontSize=10;fontStyle=0;fontColor=#232F3E;" vertex="1" parent="1">
+          <mxGeometry x="372" y="1886" width="1320" height="74" as="geometry" />
+        </mxCell>
+        <mxCell id="p2-e17" value="&amp;mdash;" style="text;html=1;strokeColor=none;fillColor=none;align=left;verticalAlign=middle;whiteSpace=wrap;rounded=0;fontSize=9;fontStyle=0;fontColor=#4C7A0B;" vertex="1" parent="1">
+          <mxGeometry x="1706" y="1886" width="530" height="74" as="geometry" />
+        </mxCell>
+        <mxCell id="p2-r18" value="" style="rounded=1;arcSize=6;whiteSpace=wrap;html=1;fillColor=#FFFFFF;strokeColor=#D5DBE3;fontColor=#232F3E;fontSize=11;fontStyle=0;align=left;verticalAlign=top;spacingLeft=8;spacingRight=8;spacingTop=4;dashed=0;" vertex="1" parent="1">
+          <mxGeometry x="40" y="1974" width="2210" height="104" as="geometry" />
+        </mxCell>
+        <mxCell id="p2-b18" value="18" style="ellipse;whiteSpace=wrap;html=1;fillColor=#232F3E;strokeColor=#ffffff;strokeWidth=2;fontColor=#ffffff;fontSize=12;fontStyle=1;align=center;verticalAlign=middle;" vertex="1" parent="1">
+          <mxGeometry x="54" y="1984" width="28" height="28" as="geometry" />
+        </mxCell>
+        <mxCell id="p2-a18" value="&lt;b&gt;analysis-worker &amp;rarr; LLM&lt;/b&gt;" style="text;html=1;strokeColor=none;fillColor=none;align=left;verticalAlign=middle;whiteSpace=wrap;rounded=0;fontSize=11;fontStyle=0;fontColor=#232F3E;" vertex="1" parent="1">
+          <mxGeometry x="108" y="1982" width="250" height="40" as="geometry" />
+        </mxCell>
+        <mxCell id="p2-t18" value="Chain, best first: NVIDIA &amp;rarr; Ollama &amp;rarr; Groq &amp;rarr; Mistral &amp;rarr; Gemini &amp;rarr; local &lt;code&gt;llama-server&lt;/code&gt;. Any error, or a 200 whose body has no parseable JSON, cascades within the same call and rests that tier for 2 h. Output is untrusted: &lt;b&gt;every evidence quote must appear verbatim in the transcript&lt;/b&gt; or it is dropped, enumerations are coerced, &lt;code&gt;&amp;lt;think&amp;gt;&lt;/code&gt; blocks are stripped, and a failure degrades to a deterministic fallback rather than losing the mention." style="text;html=1;strokeColor=none;fillColor=none;align=left;verticalAlign=middle;whiteSpace=wrap;rounded=0;fontSize=10;fontStyle=0;fontColor=#232F3E;" vertex="1" parent="1">
+          <mxGeometry x="372" y="1980" width="1320" height="92" as="geometry" />
+        </mxCell>
+        <mxCell id="p2-e18" value="&amp;mdash;" style="text;html=1;strokeColor=none;fillColor=none;align=left;verticalAlign=middle;whiteSpace=wrap;rounded=0;fontSize=9;fontStyle=0;fontColor=#4C7A0B;" vertex="1" parent="1">
+          <mxGeometry x="1706" y="1980" width="530" height="92" as="geometry" />
+        </mxCell>
+        <mxCell id="p2-r19" value="" style="rounded=1;arcSize=6;whiteSpace=wrap;html=1;fillColor=#FFFFFF;strokeColor=#D5DBE3;fontColor=#232F3E;fontSize=11;fontStyle=0;align=left;verticalAlign=top;spacingLeft=8;spacingRight=8;spacingTop=4;dashed=0;" vertex="1" parent="1">
+          <mxGeometry x="40" y="2086" width="2210" height="86" as="geometry" />
+        </mxCell>
+        <mxCell id="p2-b19" value="19" style="ellipse;whiteSpace=wrap;html=1;fillColor=#232F3E;strokeColor=#ffffff;strokeWidth=2;fontColor=#ffffff;fontSize=12;fontStyle=1;align=center;verticalAlign=middle;" vertex="1" parent="1">
+          <mxGeometry x="54" y="2096" width="28" height="28" as="geometry" />
+        </mxCell>
+        <mxCell id="p2-a19" value="&lt;b&gt;analysis-worker &amp;rarr; SQLite&lt;/b&gt;" style="text;html=1;strokeColor=none;fillColor=none;align=left;verticalAlign=middle;whiteSpace=wrap;rounded=0;fontSize=11;fontStyle=0;fontColor=#232F3E;" vertex="1" parent="1">
+          <mxGeometry x="108" y="2094" width="250" height="40" as="geometry" />
+        </mxCell>
+        <mxCell id="p2-t19" value="&lt;b&gt;ONE TXN:&lt;/b&gt; &lt;code&gt;mention_events&lt;/code&gt; (UNIQUE on conversation_id) + one &lt;code&gt;mention_campaigns&lt;/code&gt; row per campaign with its include/exclude verdict + one &lt;code&gt;mention_keywords&lt;/code&gt; row per keyword + &lt;code&gt;analysis_results&lt;/code&gt; + the inbox row. &lt;code&gt;mention_events&lt;/code&gt; has &lt;b&gt;no&lt;/b&gt; campaign_id column &amp;mdash; that is what makes &quot;analyse once, attribute many times&quot; true by construction." style="text;html=1;strokeColor=none;fillColor=none;align=left;verticalAlign=middle;whiteSpace=wrap;rounded=0;fontSize=10;fontStyle=0;fontColor=#232F3E;" vertex="1" parent="1">
+          <mxGeometry x="372" y="2092" width="1320" height="74" as="geometry" />
+        </mxCell>
+        <mxCell id="p2-e19" value="mention_events, mention_campaigns,&lt;br&gt;mention_keywords, analysis_results,&lt;br&gt;inbox_messages" style="text;html=1;strokeColor=none;fillColor=none;align=left;verticalAlign=middle;whiteSpace=wrap;rounded=0;fontSize=9;fontStyle=0;fontColor=#4C7A0B;" vertex="1" parent="1">
+          <mxGeometry x="1706" y="2092" width="530" height="74" as="geometry" />
+        </mxCell>
+        <mxCell id="p2-r20" value="" style="rounded=1;arcSize=6;whiteSpace=wrap;html=1;fillColor=#FFFFFF;strokeColor=#D5DBE3;fontColor=#232F3E;fontSize=11;fontStyle=0;align=left;verticalAlign=top;spacingLeft=8;spacingRight=8;spacingTop=4;dashed=0;" vertex="1" parent="1">
+          <mxGeometry x="40" y="2180" width="2210" height="86" as="geometry" />
+        </mxCell>
+        <mxCell id="p2-b20" value="20" style="ellipse;whiteSpace=wrap;html=1;fillColor=#232F3E;strokeColor=#ffffff;strokeWidth=2;fontColor=#ffffff;fontSize=12;fontStyle=1;align=center;verticalAlign=middle;" vertex="1" parent="1">
+          <mxGeometry x="54" y="2190" width="28" height="28" as="geometry" />
+        </mxCell>
+        <mxCell id="p2-a20" value="&lt;b&gt;analysis-worker &amp;rarr; S3&lt;/b&gt;" style="text;html=1;strokeColor=none;fillColor=none;align=left;verticalAlign=middle;whiteSpace=wrap;rounded=0;fontSize=11;fontStyle=0;fontColor=#232F3E;" vertex="1" parent="1">
+          <mxGeometry x="108" y="2188" width="250" height="40" as="geometry" />
+        </mxCell>
+        <mxCell id="p2-t20" value="Outside the transaction: three objects under &lt;code&gt;mentions/YYYY/MM/DD/&amp;lt;mention_id&amp;gt;/&lt;/code&gt; &amp;mdash; metadata, transcript, analysis &amp;mdash; with SSE-S3, then &lt;code&gt;result_s3_key&lt;/code&gt; is recorded. Allowed to fail: SQLite already holds what the API serves." style="text;html=1;strokeColor=none;fillColor=none;align=left;verticalAlign=middle;whiteSpace=wrap;rounded=0;fontSize=10;fontStyle=0;fontColor=#232F3E;" vertex="1" parent="1">
+          <mxGeometry x="372" y="2186" width="1320" height="74" as="geometry" />
+        </mxCell>
+        <mxCell id="p2-e20" value="s3 mentions/&amp;hellip;&lt;br&gt;mention_events.result_s3_key" style="text;html=1;strokeColor=none;fillColor=none;align=left;verticalAlign=middle;whiteSpace=wrap;rounded=0;fontSize=9;fontStyle=0;fontColor=#4C7A0B;" vertex="1" parent="1">
+          <mxGeometry x="1706" y="2186" width="530" height="74" as="geometry" />
+        </mxCell>
+        <mxCell id="p2-r21" value="" style="rounded=1;arcSize=6;whiteSpace=wrap;html=1;fillColor=#FFFFFF;strokeColor=#D5DBE3;fontColor=#232F3E;fontSize=11;fontStyle=0;align=left;verticalAlign=top;spacingLeft=8;spacingRight=8;spacingTop=4;dashed=0;" vertex="1" parent="1">
+          <mxGeometry x="40" y="2274" width="2210" height="86" as="geometry" />
+        </mxCell>
+        <mxCell id="p2-b21" value="21" style="ellipse;whiteSpace=wrap;html=1;fillColor=#232F3E;strokeColor=#ffffff;strokeWidth=2;fontColor=#ffffff;fontSize=12;fontStyle=1;align=center;verticalAlign=middle;" vertex="1" parent="1">
+          <mxGeometry x="54" y="2284" width="28" height="28" as="geometry" />
+        </mxCell>
+        <mxCell id="p2-a21" value="&lt;b&gt;analysis-worker &amp;rarr; spool + S3&lt;/b&gt;" style="text;html=1;strokeColor=none;fillColor=none;align=left;verticalAlign=middle;whiteSpace=wrap;rounded=0;fontSize=11;fontStyle=0;fontColor=#232F3E;" vertex="1" parent="1">
+          <mxGeometry x="108" y="2282" width="250" height="40" as="geometry" />
+        </mxCell>
+        <mxCell id="p2-t21" value="The conversation's retained segments are read back (a &lt;b&gt;second&lt;/b&gt; SHA-256 verification), stream-copied when formats match or re-encoded to Opus otherwise, and uploaded as one clip. &lt;code&gt;evidence_available&lt;/code&gt; flips to 1, which is what makes the audio routes work." style="text;html=1;strokeColor=none;fillColor=none;align=left;verticalAlign=middle;whiteSpace=wrap;rounded=0;fontSize=10;fontStyle=0;fontColor=#232F3E;" vertex="1" parent="1">
+          <mxGeometry x="372" y="2280" width="1320" height="74" as="geometry" />
+        </mxCell>
+        <mxCell id="p2-e21" value="s3 evidence/YYYY/MM/DD/&amp;lt;id&amp;gt;.opus&lt;br&gt;mention_events.evidence_storage_key" style="text;html=1;strokeColor=none;fillColor=none;align=left;verticalAlign=middle;whiteSpace=wrap;rounded=0;fontSize=9;fontStyle=0;fontColor=#4C7A0B;" vertex="1" parent="1">
+          <mxGeometry x="1706" y="2280" width="530" height="74" as="geometry" />
+        </mxCell>
+        <mxCell id="p2-phF" value="&lt;b&gt;F&lt;/b&gt; &amp;nbsp; Retention and serving" style="rounded=1;arcSize=6;whiteSpace=wrap;html=1;fillColor=#F2F7EC;strokeColor=#4C7A0B;fontColor=#4C7A0B;fontSize=12;fontStyle=0;align=left;verticalAlign=top;spacingLeft=12;spacingRight=12;spacingTop=4;dashed=0;" vertex="1" parent="1">
+          <mxGeometry x="40" y="2374" width="2210" height="30" as="geometry" />
+        </mxCell>
+        <mxCell id="p2-r22" value="" style="rounded=1;arcSize=6;whiteSpace=wrap;html=1;fillColor=#FFFFFF;strokeColor=#D5DBE3;fontColor=#232F3E;fontSize=11;fontStyle=0;align=left;verticalAlign=top;spacingLeft=8;spacingRight=8;spacingTop=4;dashed=0;" vertex="1" parent="1">
+          <mxGeometry x="40" y="2412" width="2210" height="104" as="geometry" />
+        </mxCell>
+        <mxCell id="p2-b22" value="22" style="ellipse;whiteSpace=wrap;html=1;fillColor=#232F3E;strokeColor=#ffffff;strokeWidth=2;fontColor=#ffffff;fontSize=12;fontStyle=1;align=center;verticalAlign=middle;" vertex="1" parent="1">
+          <mxGeometry x="54" y="2422" width="28" height="28" as="geometry" />
+        </mxCell>
+        <mxCell id="p2-a22" value="&lt;b&gt;cleanup-worker &amp;nbsp;+&amp;nbsp; api &amp;rarr; browser&lt;/b&gt;" style="text;html=1;strokeColor=none;fillColor=none;align=left;verticalAlign=middle;whiteSpace=wrap;rounded=0;fontSize=11;fontStyle=0;fontColor=#232F3E;" vertex="1" parent="1">
+          <mxGeometry x="108" y="2420" width="250" height="40" as="geometry" />
+        </mxCell>
+        <mxCell id="p2-t22" value="&lt;b&gt;Cleanup&lt;/b&gt; deletes only what SQLite proves is safe: disposition &lt;code&gt;disposable&lt;/code&gt; past 10 min with the job succeeded/abandoned, or &lt;code&gt;failed&lt;/code&gt; past 24 h &amp;mdash; and never a segment a mention depends on. &lt;code&gt;pending&lt;/code&gt; and &lt;code&gt;retained&lt;/code&gt; are never deleted at any watermark. &amp;nbsp; &lt;b&gt;API&lt;/b&gt; serves &lt;code&gt;/dashboard&lt;/code&gt; and &lt;code&gt;/mentions&lt;/code&gt;, then mints an HMAC-SHA256 audio token (TTL 600 s, key allow-listed) that the browser exchanges for a Range-capable stream of the clip from S3." style="text;html=1;strokeColor=none;fillColor=none;align=left;verticalAlign=middle;whiteSpace=wrap;rounded=0;fontSize=10;fontStyle=0;fontColor=#232F3E;" vertex="1" parent="1">
+          <mxGeometry x="372" y="2418" width="1320" height="92" as="geometry" />
+        </mxCell>
+        <mxCell id="p2-e22" value="audio_segments.disposition='deleted'&lt;br&gt;inbox_messages pruned (7 d)&lt;br&gt;HTTP 206 audio stream" style="text;html=1;strokeColor=none;fillColor=none;align=left;verticalAlign=middle;whiteSpace=wrap;rounded=0;fontSize=9;fontStyle=0;fontColor=#4C7A0B;" vertex="1" parent="1">
+          <mxGeometry x="1706" y="2418" width="530" height="92" as="geometry" />
+        </mxCell>
+        <mxCell id="p2-note" value="&lt;b&gt;Two honest notes about this pipeline as it stands at v0.4.1.&lt;/b&gt;&lt;br&gt;&amp;#9679; &lt;b&gt;ASR pass B is never invoked.&lt;/b&gt; &lt;code&gt;TranscriptionService.confirm()&lt;/code&gt; (wide beam, word timestamps, keyword-primed prompt) exists and is unit-tested, but no worker calls it. So &lt;code&gt;fuzzy&lt;/code&gt;, &lt;code&gt;phonetic&lt;/code&gt; and &lt;code&gt;semantic&lt;/code&gt; matches are flagged &lt;code&gt;requires_confirmation&lt;/code&gt; and then persisted &lt;i&gt;without&lt;/i&gt; a confirming second decode. No transcript row is ever written with &lt;code&gt;asr_pass='b'&lt;/code&gt;.&lt;br&gt;&amp;#9679; &lt;b&gt;The S3 publish backlog is not a recovery path yet.&lt;/b&gt; &lt;code&gt;_publish_backlog&lt;/code&gt; selects mentions with a NULL &lt;code&gt;result_s3_key&lt;/code&gt; and only logs the count &amp;mdash; it never re-publishes them. Evidence capture (step 21) &lt;i&gt;is&lt;/i&gt; retried properly by its own idle sweep." style="rounded=1;arcSize=6;whiteSpace=wrap;html=1;fillColor=#FFF6F6;strokeColor=#DD3522;fontColor=#232F3E;fontSize=10;fontStyle=0;align=left;verticalAlign=top;spacingLeft=8;spacingRight=8;spacingTop=4;dashed=0;" vertex="1" parent="1">
+          <mxGeometry x="40" y="2534" width="2210" height="92" as="geometry" />
+        </mxCell>
+      </root>
+    </mxGraphModel>
+  </diagram>
+  <diagram id="page-cicd" name="3. CI/CD and deployment">
+    <mxGraphModel dx="1600" dy="900" grid="1" gridSize="10" guides="1" tooltips="1" connect="1" arrows="1" fold="1" page="1" pageScale="1" pageWidth="2320" pageHeight="1660" math="0" shadow="0" background="#FFFFFF">
+      <root>
+        <mxCell id="0" />
+        <mxCell id="1" parent="0" />
+        <mxCell id="p3-title" value="CI/CD &amp;mdash; GitHub &amp;rarr; OIDC &amp;rarr; SSM &amp;rarr; EC2" style="text;html=1;strokeColor=none;fillColor=none;align=left;verticalAlign=middle;whiteSpace=wrap;rounded=0;fontSize=26;fontStyle=1;fontColor=#232F3E;" vertex="1" parent="1">
+          <mxGeometry x="40" y="24" width="1700" height="34" as="geometry" />
+        </mxCell>
+        <mxCell id="p3-sub" value="&lt;b&gt;main is the only deployment source.&lt;/b&gt; A reviewed change lands on main, every protected check passes on that exact commit, and the commit deploys itself.&lt;br&gt;There is no SSH, no port 22, no EC2 key pair, no static AWS credential, and no input through which an arbitrary command can be sent." style="text;html=1;strokeColor=none;fillColor=none;align=left;verticalAlign=middle;whiteSpace=wrap;rounded=0;fontSize=12;fontStyle=0;fontColor=#232F3E;" vertex="1" parent="1">
+          <mxGeometry x="40" y="60" width="2100" height="44" as="geometry" />
+        </mxCell>
+        <mxCell id="p3-r0" value="" style="rounded=1;arcSize=6;whiteSpace=wrap;html=1;fillColor=#FFFFFF;strokeColor=#D5DBE3;fontColor=#232F3E;fontSize=11;fontStyle=0;align=left;verticalAlign=top;spacingLeft=8;spacingRight=8;spacingTop=4;dashed=0;" vertex="1" parent="1">
+          <mxGeometry x="40" y="124" width="2210" height="120" as="geometry" />
+        </mxCell>
+        <mxCell id="p3-b0" value="D1" style="ellipse;whiteSpace=wrap;html=1;fillColor=#3334B9;strokeColor=#ffffff;strokeWidth=2;fontColor=#ffffff;fontSize=11;fontStyle=1;align=center;verticalAlign=middle;" vertex="1" parent="1">
+          <mxGeometry x="54" y="136" width="34" height="34" as="geometry" />
+        </mxCell>
+        <mxCell id="p3-a0" value="&lt;b&gt;GitHub Actions&lt;/b&gt;" style="text;html=1;strokeColor=none;fillColor=none;align=left;verticalAlign=middle;whiteSpace=wrap;rounded=0;fontSize=12;fontStyle=0;fontColor=#232F3E;" vertex="1" parent="1">
+          <mxGeometry x="100" y="134" width="250" height="40" as="geometry" />
+        </mxCell>
+        <mxCell id="p3-t0" value="A commit lands on &lt;code&gt;main&lt;/code&gt; &amp;mdash; the only deployment source. No staging branch, no release branch, no tag can trigger a deployment. &lt;b&gt;CI&lt;/b&gt; runs ruff, pytest on 3.11 and 3.12, and bandit + pip-audit; &lt;b&gt;CodeQL&lt;/b&gt; analyses Python in parallel." style="text;html=1;strokeColor=none;fillColor=none;align=left;verticalAlign=middle;whiteSpace=wrap;rounded=0;fontSize=10;fontStyle=0;fontColor=#232F3E;" vertex="1" parent="1">
+          <mxGeometry x="364" y="132" width="1320" height="104" as="geometry" />
+        </mxCell>
+        <mxCell id="p3-e0" value="5 protected checks must exist:&lt;br&gt;Lint (ruff) &amp;middot; Tests 3.11 &amp;middot; Tests 3.12&lt;br&gt;Security (bandit + pip-audit) &amp;middot; Analyze Python" style="text;html=1;strokeColor=none;fillColor=none;align=left;verticalAlign=middle;whiteSpace=wrap;rounded=0;fontSize=9;fontStyle=0;fontColor=#3334B9;" vertex="1" parent="1">
+          <mxGeometry x="1698" y="132" width="540" height="104" as="geometry" />
+        </mxCell>
+        <mxCell id="p3-r1" value="" style="rounded=1;arcSize=6;whiteSpace=wrap;html=1;fillColor=#FFFFFF;strokeColor=#D5DBE3;fontColor=#232F3E;fontSize=11;fontStyle=0;align=left;verticalAlign=top;spacingLeft=8;spacingRight=8;spacingTop=4;dashed=0;" vertex="1" parent="1">
+          <mxGeometry x="40" y="254" width="2210" height="120" as="geometry" />
+        </mxCell>
+        <mxCell id="p3-b1" value="D2" style="ellipse;whiteSpace=wrap;html=1;fillColor=#3334B9;strokeColor=#ffffff;strokeWidth=2;fontColor=#ffffff;fontSize=11;fontStyle=1;align=center;verticalAlign=middle;" vertex="1" parent="1">
+          <mxGeometry x="54" y="266" width="34" height="34" as="geometry" />
+        </mxCell>
+        <mxCell id="p3-a1" value="&lt;b&gt;deploy-main.yml&lt;/b&gt;" style="text;html=1;strokeColor=none;fillColor=none;align=left;verticalAlign=middle;whiteSpace=wrap;rounded=0;fontSize=12;fontStyle=0;fontColor=#232F3E;" vertex="1" parent="1">
+          <mxGeometry x="100" y="264" width="250" height="40" as="geometry" />
+        </mxCell>
+        <mxCell id="p3-t1" value="Triggered by &lt;code&gt;workflow_run&lt;/code&gt; on CI completion (branch main), &lt;b&gt;not&lt;/b&gt; by push &amp;mdash; so a commit that failed CI can never deploy. Gates, in order: &lt;code&gt;AUTO_DEPLOY_ENABLED == &quot;1&quot;&lt;/code&gt;, conclusion success, event push, head_branch main, and the SHA must match &lt;code&gt;^[0-9a-f]{40}$&lt;/code&gt;. Then it polls the check-runs API for up to 30 minutes until &lt;b&gt;all five checks are green on that exact SHA&lt;/b&gt;." style="text;html=1;strokeColor=none;fillColor=none;align=left;verticalAlign=middle;whiteSpace=wrap;rounded=0;fontSize=10;fontStyle=0;fontColor=#232F3E;" vertex="1" parent="1">
+          <mxGeometry x="364" y="262" width="1320" height="104" as="geometry" />
+        </mxCell>
+        <mxCell id="p3-e1" value="concurrency radio-production-main-deploy&lt;br&gt;cancel-in-progress: false&lt;br&gt;environment: production" style="text;html=1;strokeColor=none;fillColor=none;align=left;verticalAlign=middle;whiteSpace=wrap;rounded=0;fontSize=9;fontStyle=0;fontColor=#3334B9;" vertex="1" parent="1">
+          <mxGeometry x="1698" y="262" width="540" height="104" as="geometry" />
+        </mxCell>
+        <mxCell id="p3-r2" value="" style="rounded=1;arcSize=6;whiteSpace=wrap;html=1;fillColor=#FFFFFF;strokeColor=#D5DBE3;fontColor=#232F3E;fontSize=11;fontStyle=0;align=left;verticalAlign=top;spacingLeft=8;spacingRight=8;spacingTop=4;dashed=0;" vertex="1" parent="1">
+          <mxGeometry x="40" y="384" width="2210" height="120" as="geometry" />
+        </mxCell>
+        <mxCell id="p3-b2" value="D3" style="ellipse;whiteSpace=wrap;html=1;fillColor=#3334B9;strokeColor=#ffffff;strokeWidth=2;fontColor=#ffffff;fontSize=11;fontStyle=1;align=center;verticalAlign=middle;" vertex="1" parent="1">
+          <mxGeometry x="54" y="396" width="34" height="34" as="geometry" />
+        </mxCell>
+        <mxCell id="p3-a2" value="&lt;b&gt;OIDC &amp;rarr; STS&lt;/b&gt;" style="text;html=1;strokeColor=none;fillColor=none;align=left;verticalAlign=middle;whiteSpace=wrap;rounded=0;fontSize=12;fontStyle=0;fontColor=#232F3E;" vertex="1" parent="1">
+          <mxGeometry x="100" y="394" width="250" height="40" as="geometry" />
+        </mxCell>
+        <mxCell id="p3-t2" value="&lt;code&gt;aws-actions/configure-aws-credentials&lt;/code&gt;, pinned to a commit SHA, exchanges the GitHub OIDC token for short-lived STS credentials. The trust policy allows &lt;code&gt;sts:AssumeRoleWithWebIdentity&lt;/code&gt; only when &lt;code&gt;aud = sts.amazonaws.com&lt;/code&gt; and &lt;code&gt;sub = repo:&amp;lt;owner&amp;gt;/&amp;lt;repo&amp;gt;:environment:production&lt;/code&gt;. The workflow then asserts the returned ARN and account id are the expected ones." style="text;html=1;strokeColor=none;fillColor=none;align=left;verticalAlign=middle;whiteSpace=wrap;rounded=0;fontSize=10;fontStyle=0;fontColor=#232F3E;" vertex="1" parent="1">
+          <mxGeometry x="364" y="392" width="1320" height="104" as="geometry" />
+        </mxCell>
+        <mxCell id="p3-e2" value="GitHubActionsRadioDeployRole&lt;br&gt;role-duration 7200 s&lt;br&gt;&lt;b&gt;id-token: write &amp;mdash; no secrets.* anywhere&lt;/b&gt;" style="text;html=1;strokeColor=none;fillColor=none;align=left;verticalAlign=middle;whiteSpace=wrap;rounded=0;fontSize=9;fontStyle=0;fontColor=#3334B9;" vertex="1" parent="1">
+          <mxGeometry x="1698" y="392" width="540" height="104" as="geometry" />
+        </mxCell>
+        <mxCell id="p3-r3" value="" style="rounded=1;arcSize=6;whiteSpace=wrap;html=1;fillColor=#FFFFFF;strokeColor=#D5DBE3;fontColor=#232F3E;fontSize=11;fontStyle=0;align=left;verticalAlign=top;spacingLeft=8;spacingRight=8;spacingTop=4;dashed=0;" vertex="1" parent="1">
+          <mxGeometry x="40" y="514" width="2210" height="120" as="geometry" />
+        </mxCell>
+        <mxCell id="p3-b3" value="D4" style="ellipse;whiteSpace=wrap;html=1;fillColor=#3334B9;strokeColor=#ffffff;strokeWidth=2;fontColor=#ffffff;fontSize=11;fontStyle=1;align=center;verticalAlign=middle;" vertex="1" parent="1">
+          <mxGeometry x="54" y="526" width="34" height="34" as="geometry" />
+        </mxCell>
+        <mxCell id="p3-a3" value="&lt;b&gt;SSM SendCommand&lt;/b&gt;" style="text;html=1;strokeColor=none;fillColor=none;align=left;verticalAlign=middle;whiteSpace=wrap;rounded=0;fontSize=12;fontStyle=0;fontColor=#232F3E;" vertex="1" parent="1">
+          <mxGeometry x="100" y="524" width="250" height="40" as="geometry" />
+        </mxCell>
+        <mxCell id="p3-t3" value="Verifies the instance is &lt;code&gt;Online&lt;/code&gt;, then verifies the pinned document version is numeric and matches &lt;code&gt;describe-document&lt;/code&gt; exactly &amp;mdash; &lt;code&gt;$LATEST&lt;/code&gt; and &lt;code&gt;$DEFAULT&lt;/code&gt; are explicitly forbidden. Sends &lt;b&gt;one&lt;/b&gt; parameter: the 40-hex commit. The role can call &lt;code&gt;ssm:SendCommand&lt;/code&gt; on only two documents and is explicitly &lt;b&gt;denied&lt;/b&gt; AWS-RunShellScript, StartSession, EC2 Instance Connect, iam:*, sts:AssumeRole, ec2:RunInstances, cloudformation:* and secretsmanager:*." style="text;html=1;strokeColor=none;fillColor=none;align=left;verticalAlign=middle;whiteSpace=wrap;rounded=0;fontSize=10;fontStyle=0;fontColor=#232F3E;" vertex="1" parent="1">
+          <mxGeometry x="364" y="522" width="1320" height="104" as="geometry" />
+        </mxCell>
+        <mxCell id="p3-e3" value="RadioBroadcastDeployMain&lt;br&gt;--document-version &amp;lt;numeric&amp;gt;&lt;br&gt;--max-concurrency 1 --max-errors 0" style="text;html=1;strokeColor=none;fillColor=none;align=left;verticalAlign=middle;whiteSpace=wrap;rounded=0;fontSize=9;fontStyle=0;fontColor=#3334B9;" vertex="1" parent="1">
+          <mxGeometry x="1698" y="522" width="540" height="104" as="geometry" />
+        </mxCell>
+        <mxCell id="p3-r4" value="" style="rounded=1;arcSize=6;whiteSpace=wrap;html=1;fillColor=#FFFFFF;strokeColor=#D5DBE3;fontColor=#232F3E;fontSize=11;fontStyle=0;align=left;verticalAlign=top;spacingLeft=8;spacingRight=8;spacingTop=4;dashed=0;" vertex="1" parent="1">
+          <mxGeometry x="40" y="644" width="2210" height="120" as="geometry" />
+        </mxCell>
+        <mxCell id="p3-b4" value="D5" style="ellipse;whiteSpace=wrap;html=1;fillColor=#3334B9;strokeColor=#ffffff;strokeWidth=2;fontColor=#ffffff;fontSize=11;fontStyle=1;align=center;verticalAlign=middle;" vertex="1" parent="1">
+          <mxGeometry x="54" y="656" width="34" height="34" as="geometry" />
+        </mxCell>
+        <mxCell id="p3-a4" value="&lt;b&gt;SSM Agent on the host (root)&lt;/b&gt;" style="text;html=1;strokeColor=none;fillColor=none;align=left;verticalAlign=middle;whiteSpace=wrap;rounded=0;fontSize=12;fontStyle=0;fontColor=#232F3E;" vertex="1" parent="1">
+          <mxGeometry x="100" y="654" width="250" height="40" as="geometry" />
+        </mxCell>
+        <mxCell id="p3-t4" value="Reads the commit from the environment (&lt;code&gt;ENV_VAR&lt;/code&gt; interpolation, re-validated as 40 lower-case hex), requires &lt;code&gt;uname -m = aarch64&lt;/code&gt; and &lt;code&gt;/var/lib/radio&lt;/code&gt; to be a real mount point. Then, as &lt;code&gt;ec2-user&lt;/code&gt;: &lt;code&gt;git fetch&lt;/code&gt; only &amp;mdash; never pull, reset or checkout &amp;mdash; asserts &lt;code&gt;merge-base --is-ancestor &amp;lt;sha&amp;gt; origin/main&lt;/code&gt;, and &lt;code&gt;git archive&lt;/code&gt;s the commit to a temp dir before running its own &lt;code&gt;scripts/main-auto-deploy.sh&lt;/code&gt;." style="text;html=1;strokeColor=none;fillColor=none;align=left;verticalAlign=middle;whiteSpace=wrap;rounded=0;fontSize=10;fontStyle=0;fontColor=#232F3E;" vertex="1" parent="1">
+          <mxGeometry x="364" y="652" width="1320" height="104" as="geometry" />
+        </mxCell>
+        <mxCell id="p3-e4" value="/var/lib/radio/logs/deployments/&lt;br&gt;deploy-&amp;lt;sha&amp;gt;-&amp;lt;stamp&amp;gt;.log (0600 root)&lt;br&gt;flock /var/lock/radio-main-auto-deploy.lock" style="text;html=1;strokeColor=none;fillColor=none;align=left;verticalAlign=middle;whiteSpace=wrap;rounded=0;fontSize=9;fontStyle=0;fontColor=#3334B9;" vertex="1" parent="1">
+          <mxGeometry x="1698" y="652" width="540" height="104" as="geometry" />
+        </mxCell>
+        <mxCell id="p3-r5" value="" style="rounded=1;arcSize=6;whiteSpace=wrap;html=1;fillColor=#FFFFFF;strokeColor=#D5DBE3;fontColor=#232F3E;fontSize=11;fontStyle=0;align=left;verticalAlign=top;spacingLeft=8;spacingRight=8;spacingTop=4;dashed=0;" vertex="1" parent="1">
+          <mxGeometry x="40" y="774" width="2210" height="120" as="geometry" />
+        </mxCell>
+        <mxCell id="p3-b5" value="D6" style="ellipse;whiteSpace=wrap;html=1;fillColor=#3334B9;strokeColor=#ffffff;strokeWidth=2;fontColor=#ffffff;fontSize=11;fontStyle=1;align=center;verticalAlign=middle;" vertex="1" parent="1">
+          <mxGeometry x="54" y="786" width="34" height="34" as="geometry" />
+        </mxCell>
+        <mxCell id="p3-a5" value="&lt;b&gt;main-auto-deploy.sh &amp;rarr; deploy-compose.sh&lt;/b&gt;" style="text;html=1;strokeColor=none;fillColor=none;align=left;verticalAlign=middle;whiteSpace=wrap;rounded=0;fontSize=12;fontStyle=0;fontColor=#232F3E;" vertex="1" parent="1">
+          <mxGeometry x="100" y="784" width="250" height="40" as="geometry" />
+        </mxCell>
+        <mxCell id="p3-t5" value="Nine stages: validate repo &amp;rarr; lock &amp;rarr; validate host (free space) &amp;rarr; host prerequisites (pinned Docker toolchain by SHA-256) &amp;rarr; runtime directories &amp;rarr; production config (created &lt;b&gt;once&lt;/b&gt;, never regenerating the token secret) &amp;rarr; first-install vs normal-update &amp;rarr; models (verify-first; a model that fails verification is never overwritten &amp;mdash; the deploy dies) &amp;rarr; deploy the stage. First install runs &lt;b&gt;api &amp;rarr; core &amp;rarr; full&lt;/b&gt; on the same commit, each fully verified before the next." style="text;html=1;strokeColor=none;fillColor=none;align=left;verticalAlign=middle;whiteSpace=wrap;rounded=0;fontSize=10;fontStyle=0;fontColor=#232F3E;" vertex="1" parent="1">
+          <mxGeometry x="364" y="782" width="1320" height="104" as="geometry" />
+        </mxCell>
+        <mxCell id="p3-e5" value="stages: api &amp;rarr; core &amp;rarr; full&lt;br&gt;release id = &lt;b&gt;commit + stage&lt;/b&gt;&lt;br&gt;/var/lib/radio/releases/&amp;lt;sha&amp;gt;/&amp;lt;stage&amp;gt;" style="text;html=1;strokeColor=none;fillColor=none;align=left;verticalAlign=middle;whiteSpace=wrap;rounded=0;fontSize=9;fontStyle=0;fontColor=#3334B9;" vertex="1" parent="1">
+          <mxGeometry x="1698" y="782" width="540" height="104" as="geometry" />
+        </mxCell>
+        <mxCell id="p3-gates" value="deploy-compose.sh &amp;mdash; 16 pre-flight gates, in order" style="rounded=1;arcSize=6;whiteSpace=wrap;html=1;fillColor=#F5F5FE;strokeColor=#3334B9;fontColor=#3334B9;fontSize=13;fontStyle=1;align=left;verticalAlign=top;spacingLeft=8;spacingRight=8;spacingTop=4;dashed=0;" vertex="1" parent="1">
+          <mxGeometry x="40" y="916" width="1090" height="620" as="geometry" />
+        </mxCell>
+        <mxCell id="p3-gatesn" value="Gates 1&amp;ndash;13 leave the running release &lt;b&gt;completely untouched&lt;/b&gt;. Nothing is built, pulled or started until every one has passed." style="text;html=1;strokeColor=none;fillColor=none;align=left;verticalAlign=middle;whiteSpace=wrap;rounded=0;fontSize=9;fontStyle=0;fontColor=#5A6C86;" vertex="1" parent="1">
+          <mxGeometry x="58" y="946" width="1050" height="30" as="geometry" />
+        </mxCell>
+        <mxCell id="p3-g0" value="1 &amp;nbsp;tooling + sha256 present" style="rounded=1;arcSize=6;whiteSpace=wrap;html=1;fillColor=#FFFFFF;strokeColor=#DDDDF0;fontColor=#232F3E;fontSize=9;fontStyle=0;align=left;verticalAlign=top;spacingLeft=6;spacingRight=6;spacingTop=4;dashed=0;" vertex="1" parent="1">
+          <mxGeometry x="58" y="980" width="1050" height="22" as="geometry" />
+        </mxCell>
+        <mxCell id="p3-g1" value="2 &amp;nbsp;source repo readable, commit present, tree clean" style="rounded=1;arcSize=6;whiteSpace=wrap;html=1;fillColor=#FFFFFF;strokeColor=#DDDDF0;fontColor=#232F3E;fontSize=9;fontStyle=0;align=left;verticalAlign=top;spacingLeft=6;spacingRight=6;spacingTop=4;dashed=0;" vertex="1" parent="1">
+          <mxGeometry x="58" y="1004" width="1050" height="22" as="geometry" />
+        </mxCell>
+        <mxCell id="p3-g2" value="3 &amp;nbsp;flock /var/lock/radio-compose-deploy.lock" style="rounded=1;arcSize=6;whiteSpace=wrap;html=1;fillColor=#FFFFFF;strokeColor=#DDDDF0;fontColor=#232F3E;fontSize=9;fontStyle=0;align=left;verticalAlign=top;spacingLeft=6;spacingRight=6;spacingTop=4;dashed=0;" vertex="1" parent="1">
+          <mxGeometry x="58" y="1028" width="1050" height="22" as="geometry" />
+        </mxCell>
+        <mxCell id="p3-g3" value="4 &amp;nbsp;/var/lib/radio is a real mount point" style="rounded=1;arcSize=6;whiteSpace=wrap;html=1;fillColor=#FFFFFF;strokeColor=#DDDDF0;fontColor=#232F3E;fontSize=9;fontStyle=0;align=left;verticalAlign=top;spacingLeft=6;spacingRight=6;spacingTop=4;dashed=0;" vertex="1" parent="1">
+          <mxGeometry x="58" y="1052" width="1050" height="22" as="geometry" />
+        </mxCell>
+        <mxCell id="p3-g4" value="5 &amp;nbsp;source compose.env" style="rounded=1;arcSize=6;whiteSpace=wrap;html=1;fillColor=#FFFFFF;strokeColor=#DDDDF0;fontColor=#232F3E;fontSize=9;fontStyle=0;align=left;verticalAlign=top;spacingLeft=6;spacingRight=6;spacingTop=4;dashed=0;" vertex="1" parent="1">
+          <mxGeometry x="58" y="1076" width="1050" height="22" as="geometry" />
+        </mxCell>
+        <mxCell id="p3-g5" value="6 &amp;nbsp;resolve the host radio uid:gid" style="rounded=1;arcSize=6;whiteSpace=wrap;html=1;fillColor=#FFFFFF;strokeColor=#DDDDF0;fontColor=#232F3E;fontSize=9;fontStyle=0;align=left;verticalAlign=top;spacingLeft=6;spacingRight=6;spacingTop=4;dashed=0;" vertex="1" parent="1">
+          <mxGeometry x="58" y="1100" width="1050" height="22" as="geometry" />
+        </mxCell>
+        <mxCell id="p3-g6" value="7 &amp;nbsp;directory ownership is writable" style="rounded=1;arcSize=6;whiteSpace=wrap;html=1;fillColor=#FFFFFF;strokeColor=#DDDDF0;fontColor=#232F3E;fontSize=9;fontStyle=0;align=left;verticalAlign=top;spacingLeft=6;spacingRight=6;spacingTop=4;dashed=0;" vertex="1" parent="1">
+          <mxGeometry x="58" y="1124" width="1050" height="22" as="geometry" />
+        </mxCell>
+        <mxCell id="p3-g7" value="8 &amp;nbsp;env files exist, mode 600/640/400/440, no placeholder&lt;br&gt;&amp;nbsp;&amp;nbsp;&amp;nbsp;secret, &lt;b&gt;no static AWS credential&lt;/b&gt;" style="rounded=1;arcSize=6;whiteSpace=wrap;html=1;fillColor=#FFFFFF;strokeColor=#DDDDF0;fontColor=#232F3E;fontSize=9;fontStyle=0;align=left;verticalAlign=top;spacingLeft=6;spacingRight=6;spacingTop=4;dashed=0;" vertex="1" parent="1">
+          <mxGeometry x="58" y="1148" width="1050" height="38" as="geometry" />
+        </mxCell>
+        <mxCell id="p3-g8" value="9 &amp;nbsp;validate the publish host" style="rounded=1;arcSize=6;whiteSpace=wrap;html=1;fillColor=#FFFFFF;strokeColor=#DDDDF0;fontColor=#232F3E;fontSize=9;fontStyle=0;align=left;verticalAlign=top;spacingLeft=6;spacingRight=6;spacingTop=4;dashed=0;" vertex="1" parent="1">
+          <mxGeometry x="58" y="1188" width="1050" height="22" as="geometry" />
+        </mxCell>
+        <mxCell id="p3-g9" value="10 free space: / 3072 MiB, /var/lib/radio 2048 MiB" style="rounded=1;arcSize=6;whiteSpace=wrap;html=1;fillColor=#FFFFFF;strokeColor=#DDDDF0;fontColor=#232F3E;fontSize=9;fontStyle=0;align=left;verticalAlign=top;spacingLeft=6;spacingRight=6;spacingTop=4;dashed=0;" vertex="1" parent="1">
+          <mxGeometry x="58" y="1212" width="1050" height="22" as="geometry" />
+        </mxCell>
+        <mxCell id="p3-g10" value="11 immutable release via git archive + manifest + secret-scan" style="rounded=1;arcSize=6;whiteSpace=wrap;html=1;fillColor=#FFFFFF;strokeColor=#DDDDF0;fontColor=#232F3E;fontSize=9;fontStyle=0;align=left;verticalAlign=top;spacingLeft=6;spacingRight=6;spacingTop=4;dashed=0;" vertex="1" parent="1">
+          <mxGeometry x="58" y="1236" width="1050" height="22" as="geometry" />
+        </mxCell>
+        <mxCell id="p3-g11" value="12 &lt;code&gt;docker compose config&lt;/code&gt; resolves" style="rounded=1;arcSize=6;whiteSpace=wrap;html=1;fillColor=#FFFFFF;strokeColor=#DDDDF0;fontColor=#232F3E;fontSize=9;fontStyle=0;align=left;verticalAlign=top;spacingLeft=6;spacingRight=6;spacingTop=4;dashed=0;" vertex="1" parent="1">
+          <mxGeometry x="58" y="1260" width="1050" height="22" as="geometry" />
+        </mxCell>
+        <mxCell id="p3-g12" value="13 verify-models.py against models.lock.json (full stage)" style="rounded=1;arcSize=6;whiteSpace=wrap;html=1;fillColor=#FFFFFF;strokeColor=#DDDDF0;fontColor=#232F3E;fontSize=9;fontStyle=0;align=left;verticalAlign=top;spacingLeft=6;spacingRight=6;spacingTop=4;dashed=0;" vertex="1" parent="1">
+          <mxGeometry x="58" y="1284" width="1050" height="22" as="geometry" />
+        </mxCell>
+        <mxCell id="p3-g13" value="14 build images tagged &lt;b&gt;:&amp;lt;sha&amp;gt;&lt;/b&gt; &amp;mdash; never pulled" style="rounded=1;arcSize=6;whiteSpace=wrap;html=1;fillColor=#FFFFFF;strokeColor=#DDDDF0;fontColor=#232F3E;fontSize=9;fontStyle=0;align=left;verticalAlign=top;spacingLeft=6;spacingRight=6;spacingTop=4;dashed=0;" vertex="1" parent="1">
+          <mxGeometry x="58" y="1308" width="1050" height="22" as="geometry" />
+        </mxCell>
+        <mxCell id="p3-g14" value="14a validate config &lt;b&gt;inside the built image&lt;/b&gt;&lt;br&gt;&amp;nbsp;&amp;nbsp;&amp;nbsp;&amp;nbsp;(--network none, --read-only, --cap-drop ALL)" style="rounded=1;arcSize=6;whiteSpace=wrap;html=1;fillColor=#FFFFFF;strokeColor=#DDDDF0;fontColor=#232F3E;fontSize=9;fontStyle=0;align=left;verticalAlign=top;spacingLeft=6;spacingRight=6;spacingTop=4;dashed=0;" vertex="1" parent="1">
+          <mxGeometry x="58" y="1332" width="1050" height="38" as="geometry" />
+        </mxCell>
+        <mxCell id="p3-g15" value="15 backup SQLite (.backup, integrity_check, S3) then migrate&lt;br&gt;&amp;nbsp;&amp;nbsp;&amp;nbsp;&amp;nbsp;in a one-shot --network none container" style="rounded=1;arcSize=6;whiteSpace=wrap;html=1;fillColor=#FFFFFF;strokeColor=#DDDDF0;fontColor=#232F3E;fontSize=9;fontStyle=0;align=left;verticalAlign=top;spacingLeft=6;spacingRight=6;spacingTop=4;dashed=0;" vertex="1" parent="1">
+          <mxGeometry x="58" y="1372" width="1050" height="38" as="geometry" />
+        </mxCell>
+        <mxCell id="p3-g16" value="16 &lt;code&gt;compose up -d --no-build --pull never&lt;/code&gt;, wait 300 s for&lt;br&gt;&amp;nbsp;&amp;nbsp;&amp;nbsp;&amp;nbsp;health, reconcile out-of-stage services" style="rounded=1;arcSize=6;whiteSpace=wrap;html=1;fillColor=#FFFFFF;strokeColor=#DDDDF0;fontColor=#232F3E;fontSize=9;fontStyle=0;align=left;verticalAlign=top;spacingLeft=6;spacingRight=6;spacingTop=4;dashed=0;" vertex="1" parent="1">
+          <mxGeometry x="58" y="1412" width="1050" height="38" as="geometry" />
+        </mxCell>
+        <mxCell id="p3-g17" value="&amp;#10003; smoke-test.sh against http://127.0.0.1:8788" style="rounded=1;arcSize=6;whiteSpace=wrap;html=1;fillColor=#FFFFFF;strokeColor=#DDDDF0;fontColor=#232F3E;fontSize=9;fontStyle=0;align=left;verticalAlign=top;spacingLeft=6;spacingRight=6;spacingTop=4;dashed=0;" vertex="1" parent="1">
+          <mxGeometry x="58" y="1452" width="1050" height="22" as="geometry" />
+        </mxCell>
+        <mxCell id="p3-g18" value="&amp;#10003; only now: flip current / previous symlinks, write state.json" style="rounded=1;arcSize=6;whiteSpace=wrap;html=1;fillColor=#FFFFFF;strokeColor=#DDDDF0;fontColor=#232F3E;fontSize=9;fontStyle=0;align=left;verticalAlign=top;spacingLeft=6;spacingRight=6;spacingTop=4;dashed=0;" vertex="1" parent="1">
+          <mxGeometry x="58" y="1476" width="1050" height="22" as="geometry" />
+        </mxCell>
+        <mxCell id="p3-rb" value="Rollback &amp;mdash; two mechanisms, one contract" style="rounded=1;arcSize=6;whiteSpace=wrap;html=1;fillColor=#FFF6F6;strokeColor=#DD3522;fontColor=#DD3522;fontSize=13;fontStyle=1;align=left;verticalAlign=top;spacingLeft=8;spacingRight=8;spacingTop=4;dashed=0;" vertex="1" parent="1">
+          <mxGeometry x="1160" y="916" width="1090" height="240" as="geometry" />
+        </mxCell>
+        <mxCell id="p3-rb1" value="&lt;b&gt;Automatic&lt;/b&gt; &amp;mdash; &lt;code&gt;restore_previous_release&lt;/code&gt; inside deploy-compose.sh. Runs only after containers were touched and only when a previous commit+stage exists. It deliberately does not call the operator script, which would deadlock on the lock this process already holds." style="rounded=1;arcSize=6;whiteSpace=wrap;html=1;fillColor=#FFFFFF;strokeColor=#E8C4C4;fontColor=#232F3E;fontSize=9;fontStyle=0;align=left;verticalAlign=top;spacingLeft=8;spacingRight=8;spacingTop=4;dashed=0;" vertex="1" parent="1">
+          <mxGeometry x="1178" y="950" width="1054" height="62" as="geometry" />
+        </mxCell>
+        <mxCell id="p3-rb2" value="&lt;b&gt;Manual&lt;/b&gt; &amp;mdash; &lt;code&gt;scripts/rollback-compose.sh --previous&lt;/code&gt; or &lt;code&gt;--to-commit &amp;lt;sha&amp;gt;&lt;/code&gt;. Restores existing artifacts by moving a symlink." style="rounded=1;arcSize=6;whiteSpace=wrap;html=1;fillColor=#FFFFFF;strokeColor=#E8C4C4;fontColor=#232F3E;fontSize=9;fontStyle=0;align=left;verticalAlign=top;spacingLeft=8;spacingRight=8;spacingTop=4;dashed=0;" vertex="1" parent="1">
+          <mxGeometry x="1178" y="1018" width="1054" height="50" as="geometry" />
+        </mxCell>
+        <mxCell id="p3-rb3" value="&lt;b&gt;Both restore code and images only. Neither ever restores the database.&lt;/b&gt; Reverting a SQLite file would discard every mention written since the backup, and the schema is forward-only by policy (ADR-004). A backup &lt;i&gt;is&lt;/i&gt; taken first; state records &lt;code&gt;&quot;migration&quot;: &quot;not-run (rollback)&quot;&lt;/code&gt; and &lt;code&gt;&quot;database_restored&quot;: false&lt;/code&gt;." style="rounded=1;arcSize=6;whiteSpace=wrap;html=1;fillColor=#FFFFFF;strokeColor=#E8C4C4;fontColor=#232F3E;fontSize=9;fontStyle=0;align=left;verticalAlign=top;spacingLeft=8;spacingRight=8;spacingTop=4;dashed=0;" vertex="1" parent="1">
+          <mxGeometry x="1178" y="1074" width="1054" height="68" as="geometry" />
+        </mxCell>
+        <mxCell id="p3-ev" value="Evidence that there is no SSH and no static credential" style="rounded=1;arcSize=6;whiteSpace=wrap;html=1;fillColor=#F7F8FA;strokeColor=#5A6C86;fontColor=#5A6C86;fontSize=13;fontStyle=1;align=left;verticalAlign=top;spacingLeft=8;spacingRight=8;spacingTop=4;dashed=0;" vertex="1" parent="1">
+          <mxGeometry x="1160" y="1178" width="1090" height="238" as="geometry" />
+        </mxCell>
+        <mxCell id="p3-ev0" value="&amp;#9679; IAM &lt;code&gt;Deny&lt;/code&gt; &amp;mdash; ssm:StartSession / ResumeSession / TerminateSession and both ec2-instance-connect SSH actions, on &lt;code&gt;*&lt;/code&gt;" style="rounded=1;arcSize=6;whiteSpace=wrap;html=1;fillColor=#FFFFFF;strokeColor=#D5DBE3;fontColor=#232F3E;fontSize=9;fontStyle=0;align=left;verticalAlign=top;spacingLeft=6;spacingRight=6;spacingTop=4;dashed=0;" vertex="1" parent="1">
+          <mxGeometry x="1178" y="1212" width="1054" height="30" as="geometry" />
+        </mxCell>
+        <mxCell id="p3-ev1" value="&amp;#9679; IAM &lt;code&gt;Deny&lt;/code&gt; &amp;mdash; ssm:SendCommand against AWS-RunShellScript, AWS-RunPowerShellScript, AWS-RunRemoteScript" style="rounded=1;arcSize=6;whiteSpace=wrap;html=1;fillColor=#FFFFFF;strokeColor=#D5DBE3;fontColor=#232F3E;fontSize=9;fontStyle=0;align=left;verticalAlign=top;spacingLeft=6;spacingRight=6;spacingTop=4;dashed=0;" vertex="1" parent="1">
+          <mxGeometry x="1178" y="1245" width="1054" height="30" as="geometry" />
+        </mxCell>
+        <mxCell id="p3-ev2" value="&amp;#9679; The role carries &lt;b&gt;no s3: and no sqs: permission at all&lt;/b&gt; &amp;mdash; those belong to the EC2 instance role, and a test asserts it" style="rounded=1;arcSize=6;whiteSpace=wrap;html=1;fillColor=#FFFFFF;strokeColor=#D5DBE3;fontColor=#232F3E;fontSize=9;fontStyle=0;align=left;verticalAlign=top;spacingLeft=6;spacingRight=6;spacingTop=4;dashed=0;" vertex="1" parent="1">
+          <mxGeometry x="1178" y="1278" width="1054" height="30" as="geometry" />
+        </mxCell>
+        <mxCell id="p3-ev3" value="&amp;#9679; &lt;code&gt;permissions: id-token: write&lt;/code&gt; and no &lt;code&gt;secrets.*&lt;/code&gt; reference anywhere in the deploy workflows" style="rounded=1;arcSize=6;whiteSpace=wrap;html=1;fillColor=#FFFFFF;strokeColor=#D5DBE3;fontColor=#232F3E;fontSize=9;fontStyle=0;align=left;verticalAlign=top;spacingLeft=6;spacingRight=6;spacingTop=4;dashed=0;" vertex="1" parent="1">
+          <mxGeometry x="1178" y="1311" width="1054" height="30" as="geometry" />
+        </mxCell>
+        <mxCell id="p3-ev4" value="&amp;#9679; &lt;code&gt;reject_static_aws_credentials()&lt;/code&gt; fails the deployment if an env file assigns AWS_ACCESS_KEY_ID / SECRET / SESSION_TOKEN" style="rounded=1;arcSize=6;whiteSpace=wrap;html=1;fillColor=#FFFFFF;strokeColor=#D5DBE3;fontColor=#232F3E;fontSize=9;fontStyle=0;align=left;verticalAlign=top;spacingLeft=6;spacingRight=6;spacingTop=4;dashed=0;" vertex="1" parent="1">
+          <mxGeometry x="1178" y="1344" width="1054" height="30" as="geometry" />
+        </mxCell>
+        <mxCell id="p3-ev5" value="&amp;#9679; The SSM document accepts exactly one parameter and no shell command" style="rounded=1;arcSize=6;whiteSpace=wrap;html=1;fillColor=#FFFFFF;strokeColor=#D5DBE3;fontColor=#232F3E;fontSize=9;fontStyle=0;align=left;verticalAlign=top;spacingLeft=6;spacingRight=6;spacingTop=4;dashed=0;" vertex="1" parent="1">
+          <mxGeometry x="1178" y="1377" width="1054" height="30" as="geometry" />
+        </mxCell>
+      </root>
+    </mxGraphModel>
+  </diagram>
+</mxfile>
