@@ -650,7 +650,13 @@ class FailoverLlmClient:
                     "%.0f minutes",
                     tier_name,
                     self._retry_seconds / 60,
-                    extra=log_fields(error=str(error)[:300]),
+                    extra=log_fields(
+                        error=str(error)[:300],
+                        # The HTTP body names the cause -- a Groq 400 turned
+                        # out to be a free-tier tokens-per-minute cap, which
+                        # the status line alone could never say.
+                        detail=str(getattr(error, "detail", "") or "")[:300],
+                    ),
                 )
                 continue
             if self._content_check is not None and not self._content_check(content):
