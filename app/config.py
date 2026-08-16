@@ -132,7 +132,15 @@ class Settings(BaseSettings):
     #: specific knobs (reasoning toggles above all). A provider that rejects a
     #: field answers with a named HTTP error and the chain cascades, so
     #: experimenting here is safe. Empty string sends nothing extra.
-    RADIO_LLM_REMOTE_EXTRA_BODY: str = ""
+    # Default ON for the NVIDIA tier and verified live against it: nemotron
+    # thinks in prose inside `content` (17k characters of it in production)
+    # unless told not to, and with the flag the same model answers clean
+    # JSON. Point tier 1 at a provider that rejects the field and the chain
+    # cascades with a named 400; set the variable to an empty string to send
+    # nothing extra.
+    RADIO_LLM_REMOTE_EXTRA_BODY: str = (
+        '{"chat_template_kwargs":{"enable_thinking":false}}'
+    )
     RADIO_LLM_GROQ_EXTRA_BODY: str = ""
     RADIO_LLM_MISTRAL_EXTRA_BODY: str = ""
     RADIO_LLM_GEMINI_EXTRA_BODY: str = ""
