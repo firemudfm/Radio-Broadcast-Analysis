@@ -34,43 +34,70 @@ count. The old `RADIO_PIPELINE_MODE` switch is gone — see
 
 ```mermaid
 flowchart TD
-    FE[Frontend / dashboard] --> API[FastAPI control plane<br/>:8788]
-    API --> DB[(SQLite WAL)]
+    %% ══════════════ CI/CD: push to main is the only deployment source ══════════════
+    subgraph CICD["CI/CD — GitHub → AWS over OIDC, no SSH, no static credentials"]
+        direction LR
+        PUSH["git push → main"] --> CI["CI — 5 required checks<br/>Lint (ruff) · Tests (3.11) · Tests (3.12)<br/>Security (bandit + pip-audit) · CodeQL (Analyze Python)"]
+        CI -->|"all green"| DEPLOY["deploy-main.yml<br/>re-verifies every check, then deploys<br/>the exact 40-char commit SHA"]
+        DEPLOY -->|"sts:AssumeRoleWithWebIdentity<br/>immutable OIDC subject"| ROLE["GitHubActionsRadioDeployRole<br/>short-lived credentials only"]
+        ROLE --> DOC["SSM document<br/>RadioBroadcastDeployMain (pinned version)"]
+    end
+    DOC -->|"scripts/main-auto-deploy.sh:<br/>clone exact SHA · build · migrate · compose up"| EC2
 
-    DB --> PLAN[planner worker]
-    PLAN -->|one row per DISTINCT station| SUB[station_subscriptions]
-    PLAN -->|one combined index per station| IDX[station_keyword_index_versions]
-    PLAN -->|drains the transactional outbox| SQS1
+    %% ══════════════ Runtime: everything inside the one production host ══════════════
+    subgraph EC2["EC2 aarch64 · 8 vCPU / 16 GiB · Docker Compose — 7 services, non-root, read-only rootfs"]
+        API["api — FastAPI control plane :8788<br/>(1.0 cpu / 512 MiB, the only published port)"] --> DB[("SQLite WAL on EBS")]
+        DB --> PLAN["planner (0.5 cpu / 256 MiB)<br/>subscriptions + keyword indexes<br/>+ outbox drain + stale-lease sweep"]
+        PLAN -->|"one row per DISTINCT station"| SUB["station_subscriptions"]
+        PLAN -->|"one combined index per station"| IDX["station_keyword_index_versions"]
 
-    SUB --> LIS[listener worker]
-    LIS -->|ffmpeg → 16 kHz mono s16le| RING[Bounded RAM ring buffer<br/>60 s ≈ 1.83 MiB per station]
-    RING --> CLS{Speech / music classifier<br/>VAD + energy features}
+        SUB --> LIS["listener (1.5 cpu / 1 GiB)<br/>one async ffmpeg session per distinct station"]
+        LIS -->|"ffmpeg → 16 kHz mono s16le"| RING["bounded RAM ring buffer<br/>60 s ≈ 1.83 MiB per station"]
+        RING --> CLS{"speech / music classifier<br/>VAD + energy features"}
+        CLS -->|"silence, clear music,<br/>long-form singing"| DROP["discarded in RAM<br/>never written to disk"]
+        CLS -->|"speech, speech-over-music,<br/>jingle, UNCERTAIN"| ENC["Opus 24k encode"]
+        ENC --> SPOOL[("local EBS spool<br/>fsync + atomic rename")]
+        ENC --> TXN1[["one SQLite transaction:<br/>audio_segments + transcription_jobs + outbox"]]
 
-    CLS -->|silence, clear music,<br/>long-form singing| DROP[Discarded in RAM<br/>never written to disk]
-    CLS -->|speech, speech-over-music,<br/>jingle, UNCERTAIN| ENC[Opus 24k encode]
+        ASR["transcription-worker (3.0 cpu / 3 GiB)<br/>ASR MODEL: Systran/faster-whisper-small<br/>int8 · 3 CPU threads · two-pass discovery + confirmation"]
+        SPOOL -->|"SHA-256 verified read"| ASR
+        ASR --> MATCH["Aho-Corasick scan against the<br/>station's COMBINED keyword index"]
+        MATCH -->|"no hit"| DISP["disposition = disposable<br/>→ cleanup reclaims it"]
+        MATCH -->|"hit"| CONV["conversation assembler<br/>pulls 30 s of pre-keyword context"]
+        CONV --> TXN2[["one SQLite transaction:<br/>conversation_sessions + outbox"]]
 
-    ENC --> SPOOL[(Local EBS spool<br/>fsync + atomic rename)]
-    ENC --> TXN1[[one SQLite transaction:<br/>audio_segments + transcription_jobs + outbox]]
-    TXN1 --> SQS1[SQS transcription.fifo<br/>MessageGroupId = station_id]
+        AN["analysis-worker (0.75 cpu / 512 MiB)<br/>LLM analysis · mention fan-out<br/>evidence clips · backlog healing"]
+        LOCAL["llm — llama.cpp llama-server :8790, never published<br/>LOCAL MODEL: Qwen3-0.6B-Q8 (3.0 cpu / 4 GiB)<br/>GBNF grammar: malformed JSON impossible at decode time"]
+        AN --> WRITE[("mention_events + mention_campaigns<br/>+ mention_keywords + analysis_results")]
+        WRITE --> API
+        CLEAN["cleanup-worker (0.25 cpu / 256 MiB)"] -->|"deletes only what job state<br/>proves is safe"| SPOOL
+    end
 
-    SQS1 --> ASR[transcription worker<br/>shared faster-whisper]
-    SPOOL -->|SHA-256 verified read| ASR
-    ASR --> MATCH[Aho-Corasick scan against the<br/>station's COMBINED keyword index]
+    %% ══════════════ AWS data plane ══════════════
+    subgraph AWSQ["AWS eu-north-1 — queues carry metadata and references ONLY, never audio or transcripts"]
+        SQS1["SQS transcription.fifo<br/>MessageGroupId = station_id"]
+        SQS2["SQS analysis.fifo"]
+        S3[("S3 — evidence clips evidence/YYYY/MM/DD/<br/>+ published results + SQLite backups")]
+    end
+    PLAN -->|"drains the transactional outbox"| SQS1
+    TXN1 --> SQS1 --> ASR
+    TXN2 --> SQS2 --> AN
+    AN -->|"FFmpeg cut of retained<br/>spool segments"| S3
 
-    MATCH -->|no hit| DISP[disposition = disposable<br/>→ cleanup reclaims it]
-    MATCH -->|hit| CONV[Conversation assembler<br/>pulls 30 s of pre-keyword context]
+    %% ══════════════ The LLM tier chain, in exact priority order ══════════════
+    subgraph TIERS["hosted LLM tiers — any error or JSON-free 200 cascades to the next tier · per-tier 2 h cooldown"]
+        direction TB
+        T1["1 · NVIDIA — nvidia/nemotron-3.5-lightning-30b-a3b<br/>(thinking disabled via chat_template_kwargs)"]
+        T2["2 · Ollama cloud — gemma4:31b"]
+        T3["3 · Groq — qwen/qwen3.6-27b"]
+        T4["4 · Mistral — ministral-8b-latest"]
+        T5["5 · Gemini — gemini-flash-latest (rolling alias)"]
+        T1 --> T2 --> T3 --> T4 --> T5
+    end
+    AN -->|"tiers 1–5, in order"| TIERS
+    T5 -.->|"every hosted tier down or resting"| LOCAL
 
-    CONV --> TXN2[[one SQLite transaction:<br/>conversation_sessions + outbox]]
-    TXN2 --> SQS2[SQS analysis.fifo]
-
-    SQS2 --> AN[analysis worker]
-    AN --> LLM[LLM chain:<br/>hosted tiers → local Qwen]
-    AN --> WRITE[(mention_events + mention_campaigns<br/>+ mention_keywords + analysis_results)]
-    AN --> EV[Evidence clip cut from<br/>retained spool segments → S3]
-    WRITE --> API
-    EV --> API
-
-    CLEAN[cleanup worker] -->|deletes only what job state<br/>proves is safe| SPOOL
+    FE["frontend / dashboard"] --> API
 ```
 
 The queues carry **metadata and references only** — never audio bytes, never a
@@ -411,7 +438,12 @@ Default deployment is local-only. Each enabled hosted tier stacks above the
 local model in fixed priority order:
 
 ```
-NVIDIA → Ollama cloud → Groq → Mistral → Gemini → local llama-server
+1  NVIDIA        nvidia/nemotron-3.5-lightning-30b-a3b   thinking disabled by default
+2  Ollama cloud  gemma4:31b
+3  Groq          qwen/qwen3.6-27b
+4  Mistral       ministral-8b-latest
+5  Gemini        gemini-flash-latest                     rolling alias, survives retirements
+6  local         llama.cpp llama-server — Qwen3-0.6B-Q8  grammar-locked, end of chain
 ```
 
 * any error, or a 200 whose body carries no parseable JSON, **cascades to the
