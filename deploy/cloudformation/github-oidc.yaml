@@ -34,7 +34,7 @@ Parameters:
 
   GitHubRepositoryOwnerId:
     Type: String
-    Default: '131385927'
+    Default: '20034308'
     Description: Immutable GitHub repository_owner_id claim
 
   MaxSessionDurationSeconds:
