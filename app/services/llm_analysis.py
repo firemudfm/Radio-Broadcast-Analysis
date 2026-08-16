@@ -469,6 +469,12 @@ class LlamaServerClient:
             raise AnalysisFailedError("Local LLM response had no chat content") from error
 
 
+#: Sent on every hosted request. Not cosmetic: Groq's WAF answers Cloudflare
+#: error 1010 ("blocked based on your browser's signature") to Python's
+#: default urllib User-Agent, which read as a dead tier with a valid key.
+_USER_AGENT = "RadioBroadcastAnalysis/1.0"
+
+
 @dataclass(frozen=True)
 class RemoteTier:
     """One hosted provider in the failover chain."""
@@ -511,7 +517,10 @@ class RemoteApiClient:
         try:
             request = urllib.request.Request(
                 f"{self._base_url}/models",
-                headers={"Authorization": f"Bearer {self._tier.api_key}"},
+                headers={
+                    "Authorization": f"Bearer {self._tier.api_key}",
+                    "User-Agent": _USER_AGENT,
+                },
                 method="GET",
             )
             with urllib.request.urlopen(request, timeout=5) as response:  # nosec B310
@@ -550,6 +559,7 @@ class RemoteApiClient:
                 "Content-Type": "application/json",
                 "Accept": "application/json",
                 "Authorization": f"Bearer {self._tier.api_key}",
+                "User-Agent": _USER_AGENT,
             },
             method="POST",
         )
