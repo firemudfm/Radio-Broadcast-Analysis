@@ -123,6 +123,11 @@ class Settings(BaseSettings):
     RADIO_LLM_REMOTE_TIMEOUT_SECONDS: int = 60
     #: Rest window for a failed hosted tier; shared by every remote provider.
     RADIO_LLM_REMOTE_RETRY_SECONDS: int = 7200
+    #: Output budget for hosted tiers, separate from the local model's. Hosted
+    #: reasoning models think inside the output budget: at the local 480-token
+    #: cap, tier 1 in production burned its entire budget thinking and was cut
+    #: off before the first JSON brace, so every response failed parsing.
+    RADIO_LLM_REMOTE_MAX_OUTPUT_TOKENS: int = 2048
 
     # Second hosted tier: Groq. Same failover contract, next in priority.
     RADIO_LLM_GROQ_ENABLED: bool = False
@@ -298,6 +303,15 @@ class Settings(BaseSettings):
     def validate_remote_llm_timeout(cls, value: int) -> int:
         if not 5 <= value <= 300:
             raise ValueError("Remote LLM timeouts must be between 5 and 300 seconds")
+        return value
+
+    @field_validator("RADIO_LLM_REMOTE_MAX_OUTPUT_TOKENS")
+    @classmethod
+    def validate_remote_llm_output_tokens(cls, value: int) -> int:
+        if not 128 <= value <= 8192:
+            raise ValueError(
+                "RADIO_LLM_REMOTE_MAX_OUTPUT_TOKENS must be between 128 and 8192"
+            )
         return value
 
     @field_validator("RADIO_LLM_REMOTE_RETRY_SECONDS")

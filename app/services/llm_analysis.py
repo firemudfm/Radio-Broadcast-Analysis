@@ -480,8 +480,19 @@ class RemoteApiClient:
             "model": self._tier.model,
             "messages": list(messages),
             "temperature": settings.RADIO_LLM_TEMPERATURE,
-            "max_tokens": settings.RADIO_LLM_MAX_OUTPUT_TOKENS,
+            # The REMOTE budget, not the local one. Hosted reasoning models
+            # think inside the output budget; at the local 480 cap, tier 1
+            # spent the whole budget thinking and was truncated before the
+            # first JSON brace, failing every parse.
+            "max_tokens": settings.RADIO_LLM_REMOTE_MAX_OUTPUT_TOKENS,
             "stream": False,
+            # The one extension worth the compatibility risk, added after
+            # production returned prose: json_object mode is the most widely
+            # supported structured-output request across these providers, and
+            # a provider that rejects it answers with a named HTTP 400 that
+            # the chain treats as a tier failure -- strictly better than a
+            # silent 200 full of reasoning text.
+            "response_format": {"type": "json_object"},
         }
         request = urllib.request.Request(
             f"{self._base_url}/chat/completions",
@@ -534,11 +545,18 @@ class FailoverLlmClient:
         *,
         retry_seconds: float,
         clock=time.monotonic,
+        content_check: Callable[[str], bool] | None = None,
     ) -> None:
         self._remotes = list(remotes)
         self._local = local
         self._retry_seconds = retry_seconds
         self._clock = clock
+        # A tier that answers HTTP 200 with unusable content is just as failed
+        # as one that errors: production tier 1 returned reasoning prose on
+        # every call, and without this check the chain never cascaded past it.
+        # Applied to REMOTE tiers only; the local model is grammar-constrained
+        # and is the end of the chain regardless.
+        self._content_check = content_check
         self._cooldown_until = [0.0] * len(self._remotes)
         first = self._remotes[0] if self._remotes else local
         self._serving_model = str(getattr(first, "model", "local"))
@@ -574,6 +592,16 @@ class FailoverLlmClient:
                     tier_name,
                     self._retry_seconds / 60,
                     extra=log_fields(error=str(error)[:300]),
+                )
+                continue
+            if self._content_check is not None and not self._content_check(content):
+                self._cooldown_until[index] = self._clock() + self._retry_seconds
+                logger.warning(
+                    "%s LLM returned unusable content; trying the next tier "
+                    "and resting it for %.0f minutes",
+                    tier_name,
+                    self._retry_seconds / 60,
+                    extra=log_fields(content_length=len(content)),
                 )
                 continue
             if was_cooling:
@@ -650,7 +678,17 @@ def build_llm_client(settings: Settings) -> Any:
         [RemoteApiClient(settings, tier) for tier in tiers],
         local,
         retry_seconds=settings.RADIO_LLM_REMOTE_RETRY_SECONDS,
+        content_check=_content_carries_json,
     )
+
+
+def _content_carries_json(content: str) -> bool:
+    """Whether a tier's answer contains something the parser can work with."""
+    try:
+        _parse_json(content)
+    except ValueError:
+        return False
+    return True
 
 
 @dataclass
@@ -767,6 +805,7 @@ class ConversationAnalyzer:
                         conversation_id=request.conversation_id,
                         attempt=attempt + 1,
                         reason=last_error,
+                        model=getattr(self._client, "model", None),
                     ),
                 )
                 continue
