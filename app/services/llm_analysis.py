@@ -183,6 +183,25 @@ class AnalysisResult(BaseModel):
         candidate = str(value or "normal").strip().lower()
         return candidate if candidate in URGENCIES else "normal"
 
+    @field_validator("confidence", mode="before")
+    @classmethod
+    def coerce_confidence(cls, value: Any) -> float:
+        """Accept percentages and clamp into [0, 1].
+
+        The decode grammar cannot express numeric ranges, and the small local
+        model regularly answers ``"confidence": 70``. Production rejected the
+        WHOLE analysis over that ("confidence: less_than_equal", twice per
+        mention, then the no-model fallback), which is strictly worse than
+        reading 70 as 0.70.
+        """
+        try:
+            number = float(value)
+        except (TypeError, ValueError):
+            return 0.0
+        if 1.0 < number <= 100.0:
+            number /= 100.0
+        return min(max(number, 0.0), 1.0)
+
     @field_validator("key_points", mode="before")
     @classmethod
     def clean_key_points(cls, value: Any) -> list[str]:
@@ -886,7 +905,8 @@ class ConversationAnalyzer:
             # response outlive the request timeout. Two tight summaries plus a
             # couple of key points fit comfortably inside the token budget.
             "Keep summary and translated_summary under 50 words each, at most "
-            "3 key_points, and at most 2 evidence quotes."
+            "3 key_points, and at most 2 evidence quotes. key_points are plain "
+            "strings. confidence is a decimal between 0.0 and 1.0."
         )
         if repair:
             instruction = (
