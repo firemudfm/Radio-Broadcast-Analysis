@@ -8,7 +8,7 @@ Parameters:
 
   GitHubOidcSubject:
     Type: String
-    Default: repo:naman1995jain/Radio-Broadcast-Analysis:environment:production
+    Default: repo:firemudfm/Radio-Broadcast-Analysis:environment:production
     Description: Exact GitHub Actions OIDC sub claim for the protected production environment
     AllowedPattern: '^repo:[A-Za-z0-9._-]+/[A-Za-z0-9._-]+:[A-Za-z0-9._/:-]+$'
     ConstraintDescription: >-
@@ -24,7 +24,7 @@ Parameters:
 
   GitHubRepository:
     Type: String
-    Default: naman1995jain/Radio-Broadcast-Analysis
+    Default: firemudfm/Radio-Broadcast-Analysis
     Description: GitHub repository that owns the protected production environment
 
   GitHubRepositoryId:
@@ -147,7 +147,7 @@ Resources:
                 - |
                   set -euo pipefail
 
-                  REPO_URL="https://github.com/naman1995jain/Radio-Broadcast-Analysis.git"
+                  REPO_URL="https://github.com/firemudfm/Radio-Broadcast-Analysis.git"
                   REPO_DIR="/var/lib/radio/app/Radio-Broadcast-Analysis"
                   DATA_ROOT="/var/lib/radio"
                   LOG_DIR="${DATA_ROOT}/logs/deployments"
