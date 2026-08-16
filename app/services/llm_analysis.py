@@ -650,7 +650,14 @@ class FailoverLlmClient:
                     "and resting it for %.0f minutes",
                     tier_name,
                     self._retry_seconds / 60,
-                    extra=log_fields(content_length=len(content)),
+                    extra=log_fields(
+                        content_length=len(content),
+                        # The head and tail say WHY it was unusable -- endless
+                        # reasoning, a refusal, a truncation -- without which
+                        # this line is undiagnosable from the log alone.
+                        content_head=" ".join(content[:160].split()),
+                        content_tail=" ".join(content[-80:].split()),
+                    ),
                 )
                 continue
             if was_cooling:
