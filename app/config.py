@@ -165,7 +165,11 @@ class Settings(BaseSettings):
     RADIO_LLM_GEMINI_BASE_URL: str = (
         "https://generativelanguage.googleapis.com/v1beta/openai"
     )
-    RADIO_LLM_GEMINI_MODEL: str = "gemini-3.5-flash"
+    # gemini-2.5-flash, and not a guessed newer name: the OpenAI-compatible
+    # endpoint answers HTTP 404 for a model that does not exist, which in
+    # production read as a dead tier. The template and this default must
+    # name a model Google actually serves.
+    RADIO_LLM_GEMINI_MODEL: str = "gemini-2.5-flash"
     RADIO_LLM_GEMINI_API_KEY: SecretStr | None = Field(
         default=None,
         validation_alias=AliasChoices(
@@ -174,7 +178,13 @@ class Settings(BaseSettings):
     )
     RADIO_LLM_GEMINI_TIMEOUT_SECONDS: int = 60
     RADIO_LLM_MAX_INPUT_CHARACTERS: int = 40_000
-    RADIO_LLM_MAX_OUTPUT_TOKENS: int = 480
+    # 768, raised from 480 after production truncation: a long conversation's
+    # grammar-constrained decode ran out of budget MID-JSON and failed parsing
+    # on both attempts. The grammar guarantees well-formed output only if the
+    # budget lets it close its braces; the bounded-output prompt keeps typical
+    # answers far below this, so the extra headroom costs nothing on the
+    # common path.
+    RADIO_LLM_MAX_OUTPUT_TOKENS: int = 768
     RADIO_LLM_TEMPERATURE: float = 0.1
 
     # Shared analysis queue. One bounded worker is used for all campaigns.
