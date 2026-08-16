@@ -137,7 +137,7 @@ def badge(cid, x, y, n, fill=RUNTIME_BADGE, d=28, fontsize=12):
 
 def edge(cid, src, tgt, pts=None, text="", color=INK, width=2, dashed=0,
          exit_xy=None, entry_xy=None, fontsize=10, dash_pattern="",
-         label_pos=None):
+         label_pos=None, label_bg="none"):
     ex = ""
     if exit_xy:
         ex += (f"exitX={exit_xy[0]};exitY={exit_xy[1]};exitDx=0;exitDy=0;"
@@ -151,7 +151,7 @@ def edge(cid, src, tgt, pts=None, text="", color=INK, width=2, dashed=0,
              f"strokeColor={color};strokeWidth={width};endArrow=blockThin;"
              f"endFill=1;dashed={dashed};{dp}jumpStyle=arc;jumpSize=6;"
              f"fontSize={fontsize};fontColor={color};"
-             f"labelBackgroundColor=#FFFFFF;")
+             f"labelBackgroundColor={label_bg};")
     body = '<mxGeometry relative="1" as="geometry">'
     if label_pos is not None:
         body += f'\n            <mxPoint as="offset" x="0" y="{label_pos}" />'
@@ -178,8 +178,9 @@ def page1() -> str:
     label("p1-sub", 24, 50, 2200, 46,
           "One EC2 instance &middot; 7 Docker Compose services &middot; 2 SQS FIFO queues "
           "&middot; SQLite (WAL) on EBS + S3 &middot; deploy via GitHub OIDC &rarr; SSM (no SSH)<br>"
-          "<b>Black badges 1&ndash;22</b> = runtime data pipeline &nbsp;&nbsp;"
-          "<b>Blue badges D1&ndash;D6</b> = deployment chain &nbsp;&nbsp;"
+          "<b>Black badges</b> mark the runtime steps that cross a process or service "
+          "boundary; <b>page 2 carries the full 1&ndash;22 sequence</b>, and the numbers mean "
+          "the same thing on both pages. &nbsp;<b>Blue badges D1&ndash;D6</b> = deployment. &nbsp;"
           "Every label is taken verbatim from the repository at v0.4.1.",
           fontsize=12)
 
@@ -214,7 +215,8 @@ def page1() -> str:
          "<b>Radio Browser API</b><br>"
          "community catalogue &middot; mirror pool<br>"
          "SRV discovery &middot; <code>/json/url/&lt;uuid&gt;</code><br>"
-         "resolved URL is cached &mdash; asked once per station",
+         "resolved URL is <b>persisted</b> to station_subscriptions<br>"
+         "&mdash; asked once per station, never cached in-process",
          fill="#FFFFFF", stroke=EXT_STROKE, fontsize=10)
 
     rect("p1-cons", 24, 688, 316, 176, "Consumers", fill="#F7F8FA",
@@ -233,17 +235,17 @@ def page1() -> str:
     # legend
     rect("p1-leg", 24, 886, 316, 452, "Legend", fill="#F7F8FA", stroke=GREY,
          font=GREY, bold=1, fontsize=13)
-    badge("p1-legb1", 44, 922, 7)
+    badge("p1-legb1", 44, 922, "n")
     label("p1-legt1", 82, 922, 248, 28,
           "runtime pipeline step (1&ndash;22)", fontsize=10)
     badge("p1-legb2", 44, 958, "D", fill=DEPLOY_BADGE)
     label("p1-legt2", 82, 958, 248, 28, "deployment step (D1&ndash;D6)", fontsize=10)
     label("p1-legl1", 44, 998, 286, 22,
-          "<b>&#9473;&#9473;</b> data path (audio, messages, rows)", fontsize=10)
+          "<b>&mdash;&mdash;</b> data path (audio, messages, rows)", fontsize=10)
     label("p1-legl2", 44, 1022, 286, 22,
-          "<b>&#9476;&#9476;</b> control / deploy path", fontsize=10, color=DEPLOY_BADGE)
+          "<b>&ndash; &ndash; &ndash;</b> control / deploy path", fontsize=10, color=DEPLOY_BADGE)
     label("p1-legl3", 44, 1046, 286, 22,
-          "<b>&#9473;&#9473;</b> S3 export / read-back", fontsize=10, color=STORAGE)
+          "<b>&mdash;&mdash;</b> S3 export / read-back", fontsize=10, color=STORAGE)
     rect("p1-legtx", 44, 1078, 286, 60,
          "<b>ONE TXN</b> marks a single SQLite transaction. Business rows and the "
          "outbox row commit together &mdash; that is the whole reliability argument "
@@ -281,21 +283,29 @@ def page1() -> str:
          "cleanup-worker 0.25 / 256<br>"
          "llm 3.0 / 4096 &nbsp;&mdash;&nbsp; total 9,728 MiB",
          fill="#FFFFFF", stroke="#D5DBE3", fontsize=9)
-    rect("p1-f3", 44, 1630, 276, 116,
+    rect("p1-f3", 44, 1630, 276, 128,
          "<b>Models (never in an image, never auto-downloaded)</b><br>"
          "ASR <code>Systran/faster-whisper-small</code><br>"
          "&nbsp;&nbsp;CTranslate2, int8, CPU, beam 1<br>"
          "VAD <code>silero_vad.onnx</code><br>"
          "LLM <code>Qwen3-0.6B-Q8_0.gguf</code><br>"
-         "pinned + digest-verified via models.lock.json",
+         "pinned via models.lock.json &mdash; sha256 on<br>"
+         "model.bin and the GGUF only; the VAD onnx is<br>"
+         "size-checked (upstream publishes no digest)",
          fill="#FFFFFF", stroke="#D5DBE3", fontsize=9)
-    rect("p1-f4", 44, 1754, 276, 130,
+    rect("p1-f4", 44, 1766, 276, 134,
          "<b>Known gaps &mdash; documented, not defects</b><br>"
          "&bull; ASR <b>pass B</b> exists and is unit-tested but <b>no worker calls it</b>, "
          "so fuzzy/phonetic candidates are never re-decoded<br>"
          "&bull; <code>_publish_backlog</code> logs only; it does not re-publish<br>"
          "&bull; nothing writes <code>campaign_content_policies</code><br>"
-         "&bull; <code>temp-transcripts/</code> and <code>config/</code> prefixes are dead settings",
+         "&bull; <code>SemanticDiscoveryService</code> and "
+         "<code>app/analysis_worker.py</code> have no runner &mdash; no container "
+         "executes them<br>"
+         "&bull; <code>station_jobs</code> are enqueued by the API and never "
+         "drained: <code>claim_next_job</code> has zero call sites<br>"
+         "&bull; <code>RADIO_TEMP_TRANSCRIPTS_PREFIX</code> and "
+         "<code>RADIO_PIPELINE_CONFIG_PREFIX</code> are declared but read by nothing",
          fill="#FFF6F6", stroke=SGRED, fontsize=9)
 
     # ----------------------------------------------------------------- AWS cloud
@@ -323,7 +333,7 @@ def page1() -> str:
          "DENY StartSession / RunShellScript / iam:*"),
         ("d3", 1140, "tile", "systems_manager", APPINT, 244,
          "<b>AWS Systems Manager</b><br>"
-         "ssm:SendCommand only<br>"
+         "ssm:SendCommand on two fixed documents;<br>every other allowed action is read-only<br>"
          "max-concurrency 1 &middot; max-errors 0"),
         ("d4", 1450, "documents", "documents", APPINT, 244,
          "<b>RadioBroadcastDeployMain</b><br>"
@@ -426,13 +436,20 @@ def page1() -> str:
         label(f"p1-{cid}b", x + 12, y + 48, w - 24, h - 56, body, fontsize=9)
 
     svc2 = [
-        ("api", 548, 936, 268, 104,
+        ("api", 548, 936, 268, 150,
          "api",
          "FastAPI / uvicorn <b>:8788</b> &mdash; the only<br>"
          "published port (loopback by default)<br>"
          "campaigns &middot; mentions &middot; dashboard &middot; catalogue<br>"
-         "monitoring &middot; preview &middot; HMAC audio token<br>"
-         "applies schema migrations at lifespan<br>"
+         "monitoring &middot; HMAC audio token<br>"
+         "<b>preview proxy</b> &mdash; relays live upstream audio to<br>"
+         "the browser, SSRF-checked per hop, never spooled<br>"
+         "<b>sync loop every 15 s</b> &mdash; LISTs results/<br>"
+         "intelligence/ and imports external mentions<br>"
+         "<b>on-demand LLM re-analysis</b> &rarr; the llm container<br>"
+         "and results/conversation-analysis/<br>"
+         "<i>migrations: EVERY process runs run_migrations()<br>"
+         "on connect; the deploy runs them first (page 3)</i><br>"
          "<i>1.0 CPU &middot; 512 MiB</i>"),
         ("planner", 856, 936, 268, 104,
          "planner",
@@ -468,7 +485,7 @@ def page1() -> str:
 
     # EBS storage column
     rect("p1-store", 1790, 612, 172, 388,
-         "EBS gp3<br>/var/lib/radio",
+         "EBS data volume<br>/var/lib/radio",
          fill="#F4F8EC", stroke=STORAGE, font="#248814", bold=1, fontsize=11,
          align="center", spacing=2)
     vols = [
@@ -508,14 +525,14 @@ def page1() -> str:
     prefixes = [
         ("mentions/YYYY/MM/DD/&lt;id&gt;/", "metadata + transcript + analysis JSON", 1),
         ("evidence/YYYY/MM/DD/&lt;id&gt;.opus", "the playable mention clip", 1),
-        ("results/conversation-analysis/", "legacy v0.4 analysis documents", 1),
-        ("results/semantic-matches/", "cross-language semantic hits", 1),
+        ("results/conversation-analysis/", "written by the <b>api</b> on-demand re-analysis", 1),
+        ("results/semantic-matches/", "no writer runs &mdash; see known gaps", 0),
         ("config/keywords/keywords.json", "published entity/keyword document", 1),
         ("backups/sqlite/", "hardcoded in backup-sqlite.sh", 1),
         ("temp-speech/", "only when RADIO_SEGMENT_STORE=s3", 0),
-        ("results/intelligence/", "READ / LIST only &mdash; never written here", 0),
+        ("results/intelligence/", "LIST every 15 s by the api sync loop &mdash; an <b>input</b>", 0),
         ("transcripts/", "READ / LIST only (semantic scan)", 0),
-        ("raw-audio/", "legacy; role deliberately lacks ListBucket", 0),
+        ("raw-audio/", "legacy; role scopes ListBucket to active prefixes", 0),
     ]
     for i, (key, note, live) in enumerate(prefixes):
         py = 746 + i * 46
@@ -588,7 +605,9 @@ def page1() -> str:
 
     # ------------------------------------------------------------- SQLite lane
     rect("p1-sql", 430, 1550, 2030, 190,
-         "SQLite (WAL) on EBS &mdash; the system of record. Every connection gets four "
+         "Table map for <code>database/radio.db</code> above &mdash; a reference panel, not a "
+         "separate node. All SQLite I/O is the EBS arrow (badges 8 / 12 / 21 / 22). "
+         "SQLite is the system of record. Every connection gets four "
          "pragmas: journal_mode=WAL, foreign_keys=ON, busy_timeout=30000, "
          "synchronous=NORMAL. Migrations are forward-only (0003&ndash;0007).",
          fill="#FBF3FC", stroke=DATABASE, font=DATABASE, bold=1, fontsize=13)
@@ -608,7 +627,8 @@ def page1() -> str:
          "outbox_events<br>inbox_messages<br>worker_heartbeats<br>processing_failures"),
         ("Catalogue (v0.4)",
          "managed_stations<br>radio_catalog_overrides / _deletions<br>"
-         "station_jobs &middot; station_probe_results<br>campaign_station_members"),
+         "<i>station_jobs (enqueued, no consumer)</i><br>"
+         "<i>station_probe_results (no writer)</i><br>campaign_station_members"),
     ]
     for i, (title, body) in enumerate(tables):
         tx = 452 + i * 335
@@ -673,19 +693,24 @@ def page1() -> str:
     edge("p1-e10", "p1-planner", "p1-q1", pts=[(990, 1180)], color=E, width=3,
          exit_xy=(0.5, 1), entry_xy=(0.456, 0))
     badge("p1-b10", 996, 1180, 10)
-    label("p1-l10", 1004, 1238, 320, 30,
+    label("p1-l10", 996, 1238, 320, 30,
           "<b>outbox dispatcher</b> &rarr; send_message()<br>"
-          "the only egress to SQS in the system", fontsize=9)
+          "the only egress to SQS in the system", fontsize=8)
 
     # 11 SQS q1 -> transcription
     edge("p1-e11", "p1-q1", "p1-transcription", pts=[(1144, 1240)], color=E,
          width=3, exit_xy=(0.624, 0), entry_xy=(0.5, 1))
     badge("p1-b11", 1150, 1180, 11)
 
-    # 16 SQS q2 -> analysis
-    edge("p1-e16", "p1-q2", "p1-analysis", pts=[(1560, 1250), (1452, 1250)],
+    # 16 planner -> SQS q2 (the SEND; same dispatcher as step 10)
+    edge("p1-e16", "p1-planner", "p1-q2",
+         pts=[(1100, 1256), (1700, 1256)], color=E, width=3,
+         exit_xy=(0.9104, 1), entry_xy=(0.207, 0))
+    badge("p1-b16", 1106, 1152, 16)
+    # 17 SQS q2 -> analysis (the RECEIVE)
+    edge("p1-e17", "p1-q2", "p1-analysis", pts=[(1560, 1290), (1452, 1290)],
          color=E, width=3, exit_xy=(0.054, 0), entry_xy=(0.227, 1))
-    badge("p1-b16", 1458, 1180, 16)
+    badge("p1-b17", 1458, 1180, 17)
 
     # 18 analysis -> llm
     edge("p1-e18", "p1-analysis", "p1-llm", pts=[(1420, 918), (1300, 918)],
@@ -694,18 +719,19 @@ def page1() -> str:
 
     # 18b analysis -> hosted tiers
     edge("p1-e18b", "p1-analysis", "p1-hosted",
-         pts=[(1560, 430), (2710, 430)], color=E, dashed=1, dash_pattern="8 4",
-         exit_xy=(0.519, 0), entry_xy=(0.5, 1),
+         pts=[(1560, 430)], color=E, dashed=1, dash_pattern="8 4",
+         exit_xy=(0.519, 0), entry_xy=(0, 0.4643),
          text="tier chain, tried best-first, before the local model")
 
     # 8/12/21 compose <-> EBS
     edge("p1-e8", "p1-compose", "p1-store", color=E, width=3,
          exit_xy=(1, 0.367), entry_xy=(0, 0.484))
     badge("p1-b8", 1748, 754, 8)
-    label("p1-l8", 1596, 1048, 180, 60,
+    label("p1-l8", 1584, 1044, 196, 56,
           "<b>8</b> write segment (fsync+rename)<br>"
           "<b>12</b> read + verify SHA-256<br>"
-          "<b>21</b> cleanup deletes by job state", fontsize=8)
+          "<b>21</b> evidence clip re-reads segments<br>"
+          "<b>22</b> cleanup deletes by job state", fontsize=8)
 
     # 20 analysis -> S3
     edge("p1-e20", "p1-analysis", "p1-s3",
@@ -714,7 +740,7 @@ def page1() -> str:
     badge("p1-b20", 1786, 1046, 20)
 
     # 22 api <-> S3
-    edge("p1-e22", "p1-api", "p1-s3", pts=[(700, 1100), (2050, 1100)],
+    edge("p1-e22", "p1-api", "p1-s3", pts=[(700, 1104), (2050, 1104)],
          color=STORAGE, width=2, dashed=1, dash_pattern="8 4",
          exit_xy=(0.567, 1), entry_xy=(0, 0.7516))
     badge("p1-b22", 1900, 1086, 22)
@@ -724,10 +750,10 @@ def page1() -> str:
 
     # D5 -> EC2
     edge("p1-ed5", "p1-d5", "p1-ec2", pts=[(1960, 283)], color=DEPLOY_BADGE,
-         dashed=1, dash_pattern="6 4", exit_xy=(1, 0.5), entry_xy=(0.987, 0))
+         dashed=1, dash_pattern="6 4", exit_xy=(1, 0.5), entry_xy=(0.98776, 0))
     # GitHub -> D1
     edge("p1-egh", "p1-gh", "p1-d1", color=DEPLOY_BADGE, dashed=1,
-         dash_pattern="6 4", exit_xy=(1, 0.6), entry_xy=(0, 0.5))
+         dash_pattern="6 4", exit_xy=(1, 0.5833), entry_xy=(0, 0.5))
 
     return "\n".join(cells)
 
@@ -746,7 +772,7 @@ PHASES = [
          "<b>ONE TXN:</b> 1 &times; <code>campaigns</code> (status=active) + N &times; "
          "<code>campaign_stations</code> + N &times; <code>campaign_keywords</code>, then a revision bump. "
          "The merged entity document is put to S3 and an immediate sync runs.",
-         "campaigns, campaign_stations,<br>campaign_keywords<br>"
+         "campaigns, campaign_stations,<br>campaign_keywords, app_meta<br>"
          "s3://&hellip;/config/keywords/keywords.json"),
     ]),
     ("B", "Planning &mdash; campaigns become stations, de-duplicated", "#F3EEFB", "#6B3FBF", [
@@ -828,7 +854,7 @@ PHASES = [
          "Only after this commits is the SQS message deleted. Then two small transactions mark the "
          "job succeeded and set <code>disposition</code> to <b>retained</b> (matched) or "
          "<b>disposable</b> (no match) &mdash; the flag cleanup keys on.",
-         "conversation_sessions, transcripts,<br>outbox_events, audio_segments"),
+         "conversation_sessions, transcripts,<br>outbox_events, transcription_jobs,<br>audio_segments"),
     ]),
     ("E", "Queue 2 &rarr; analyse &rarr; durable mention", "#F0F7FF", "#0B6AA8", [
         (16, "planner &rarr; SQS FIFO 2",
@@ -843,7 +869,10 @@ PHASES = [
          "text. A missing row is <i>retryable</i>; zero matched keywords is <i>permanent</i>.",
          "&mdash;"),
         (18, "analysis-worker &rarr; LLM",
-         "Chain, best first: NVIDIA &rarr; Ollama &rarr; Groq &rarr; Mistral &rarr; Gemini &rarr; local "
+         "Chain, best first &mdash; but <b>every hosted tier is off by default</b> and "
+         "needs its own flag plus an API key, so a stock deployment goes straight to "
+         "the local model: NVIDIA &rarr; Ollama &rarr; Groq &rarr; Mistral &rarr; "
+         "Gemini &rarr; local "
          "<code>llama-server</code>. Any error, or a 200 whose body has no parseable JSON, cascades "
          "within the same call and rests that tier for 2 h. Output is untrusted: "
          "<b>every evidence quote must appear verbatim in the transcript</b> or it is dropped, "
@@ -851,12 +880,14 @@ PHASES = [
          "degrades to a deterministic fallback rather than losing the mention.",
          "&mdash;"),
         (19, "analysis-worker &rarr; SQLite",
-         "<b>ONE TXN:</b> <code>mention_events</code> (UNIQUE on conversation_id) + one "
+         "<b>ONE TXN:</b> <code>conversation_sessions</code> (re-stamped) + "
+         "<code>mention_events</code> (UNIQUE on conversation_id) + one "
          "<code>mention_campaigns</code> row per campaign with its include/exclude verdict + one "
          "<code>mention_keywords</code> row per keyword + <code>analysis_results</code> + the inbox row. "
          "<code>mention_events</code> has <b>no</b> campaign_id column &mdash; that is what makes "
          "\"analyse once, attribute many times\" true by construction.",
-         "mention_events, mention_campaigns,<br>mention_keywords, analysis_results,<br>inbox_messages"),
+         "conversation_sessions, mention_events,<br>"
+         "mention_campaigns, mention_keywords,<br>analysis_results, inbox_messages"),
         (20, "analysis-worker &rarr; S3",
          "Outside the transaction: three objects under "
          "<code>mentions/YYYY/MM/DD/&lt;mention_id&gt;/</code> &mdash; metadata, transcript, analysis "
@@ -864,7 +895,9 @@ PHASES = [
          "already holds what the API serves.",
          "s3 mentions/&hellip;<br>mention_events.result_s3_key"),
         (21, "analysis-worker &rarr; spool + S3",
-         "The conversation's retained segments are read back (a <b>second</b> SHA-256 verification), "
+         "The conversation's segments that cleanup has not yet deleted "
+         "(<code>disposition != 'deleted'</code>, so the disposable 30 s pre-roll is "
+         "included too) are read back (a <b>second</b> SHA-256 verification), "
          "stream-copied when formats match or re-encoded to Opus otherwise, and uploaded as one clip. "
          "<code>evidence_available</code> flips to 1, which is what makes the audio routes work.",
          "s3 evidence/YYYY/MM/DD/&lt;id&gt;.opus<br>mention_events.evidence_storage_key"),
@@ -894,8 +927,9 @@ def page2() -> str:
     label("p2-sub", 40, 60, 2100, 44,
           "Read top to bottom. <b>ONE TXN</b> marks a single SQLite transaction &mdash; every "
           "row listed there commits together or not at all.<br>"
-          "The two SQS hops (steps 10 and 16) are the only places work leaves the instance; "
-          "everything else is local to the EC2 host.", fontsize=12)
+          "The two SQS hops (steps 10 and 16) are the only places a unit of <b>work</b> is handed "
+          "to another process. They are not the only egress: S3 (2, 20, 21), Radio Browser (4), "
+          "the streams (6) and any enabled hosted LLM tier (18) all leave the instance.", fontsize=12)
 
     hy = 120
     rect("p2-hdr", 40, hy, 2210, 32, "", fill="#232F3E", stroke="none")
@@ -954,7 +988,9 @@ DSTEPS = [
      "Security (bandit + pip-audit) &middot; Analyze Python"),
     ("D2", "deploy-main.yml",
      "Triggered by <code>workflow_run</code> on CI completion (branch main), <b>not</b> by push &mdash; "
-     "so a commit that failed CI can never deploy. Gates, in order: "
+     "so a commit that failed CI can never deploy &mdash; plus <code>workflow_dispatch</code> with "
+     "<b>no inputs</b>, which refuses any ref that is not <code>refs/heads/main</code>. "
+     "Gates on the workflow_run path, in order: "
      "<code>AUTO_DEPLOY_ENABLED == \"1\"</code>, conclusion success, event push, head_branch main, "
      "and the SHA must match <code>^[0-9a-f]{40}$</code>. Then it polls the check-runs API for up to "
      "30 minutes until <b>all five checks are green on that exact SHA</b>.",
@@ -1050,7 +1086,7 @@ def page3() -> str:
 
     y += 12
     rect("p3-gates", 40, y, 1090, 620,
-         "deploy-compose.sh &mdash; 16 pre-flight gates, in order",
+         "deploy-compose.sh &mdash; 16 stages, in order (1&ndash;13 are pre-flight)",
          fill="#F5F5FE", stroke=DEPLOY_BADGE, font=DEPLOY_BADGE, bold=1,
          fontsize=13)
     label("p3-gatesn", 58, y + 30, 1050, 30,
