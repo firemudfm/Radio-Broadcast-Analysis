@@ -426,6 +426,233 @@ class LlamaServerClient:
             raise AnalysisFailedError("Local LLM response had no chat content") from error
 
 
+@dataclass(frozen=True)
+class RemoteTier:
+    """One hosted provider in the failover chain."""
+
+    name: str
+    base_url: str
+    model: str
+    api_key: str
+    timeout_seconds: int
+
+
+class RemoteApiClient:
+    """OpenAI-compatible hosted endpoint (NVIDIA, Groq, Mistral and kin).
+
+    The request body is deliberately MINIMAL: model, messages, temperature,
+    max_tokens. Hosted endpoints differ in which extensions they accept, and an
+    unrecognized field can be a 400 on every call, which would silently pin
+    analysis to a lower tier forever. Schema enforcement happens downstream in
+    parse-and-validate, which already repairs and rejects; reasoning models'
+    think blocks are stripped there too.
+    """
+
+    def __init__(self, settings: Settings, tier: RemoteTier) -> None:
+        self._settings = settings
+        self._tier = tier
+        self._base_url = tier.base_url.rstrip("/")
+
+    @property
+    def name(self) -> str:
+        return self._tier.name
+
+    @property
+    def model(self) -> str:
+        return self._tier.model
+
+    def health(self) -> bool:
+        try:
+            request = urllib.request.Request(
+                f"{self._base_url}/models",
+                headers={"Authorization": f"Bearer {self._tier.api_key}"},
+                method="GET",
+            )
+            with urllib.request.urlopen(request, timeout=5) as response:  # nosec B310
+                return 200 <= response.status < 300
+        except Exception:  # noqa: BLE001 - health is advisory, never fatal
+            return False
+
+    def complete(self, messages: Sequence[dict[str, str]], *, schema: dict | None = None) -> str:
+        del schema  # enforced downstream; see class docstring
+        settings = self._settings
+        payload: dict[str, Any] = {
+            "model": self._tier.model,
+            "messages": list(messages),
+            "temperature": settings.RADIO_LLM_TEMPERATURE,
+            "max_tokens": settings.RADIO_LLM_MAX_OUTPUT_TOKENS,
+            "stream": False,
+        }
+        request = urllib.request.Request(
+            f"{self._base_url}/chat/completions",
+            data=json.dumps(payload, ensure_ascii=False).encode("utf-8"),
+            headers={
+                "Content-Type": "application/json",
+                "Accept": "application/json",
+                "Authorization": f"Bearer {self._tier.api_key}",
+            },
+            method="POST",
+        )
+        try:
+            with urllib.request.urlopen(  # nosec B310 - https URL from validated settings
+                request, timeout=self._tier.timeout_seconds
+            ) as response:
+                document = json.loads(response.read())
+        except urllib.error.HTTPError as error:
+            body = error.read().decode("utf-8", "replace")[:500]
+            raise AnalysisFailedError(
+                f"{self._tier.name} LLM returned HTTP {error.code}", detail=body
+            ) from error
+        except Exception as error:  # noqa: BLE001 - network failures trip the failover
+            raise AnalysisFailedError(
+                f"{self._tier.name} LLM request failed",
+                detail=f"{type(error).__name__}: {error}",
+            ) from error
+        try:
+            return str(document["choices"][0]["message"]["content"])
+        except (KeyError, IndexError, TypeError) as error:
+            raise AnalysisFailedError(
+                f"{self._tier.name} LLM response had no chat content"
+            ) from error
+
+
+class FailoverLlmClient:
+    """An ordered chain of hosted tiers over an always-on local fallback.
+
+    The operator's contract: try the best tier; on any error the next tier
+    takes over WITHIN the same call, and the failed tier rests for the retry
+    window. When windows expire, the chain climbs back to the best tier by
+    simply using it again. Cooldowns are per tier, so one dead provider never
+    hides a healthy one, and the local model needs no cooldown because there
+    is nothing below it to protect.
+    """
+
+    def __init__(
+        self,
+        remotes: Sequence[Any],
+        local: Any,
+        *,
+        retry_seconds: float,
+        clock=time.monotonic,
+    ) -> None:
+        self._remotes = list(remotes)
+        self._local = local
+        self._retry_seconds = retry_seconds
+        self._clock = clock
+        self._cooldown_until = [0.0] * len(self._remotes)
+        first = self._remotes[0] if self._remotes else local
+        self._serving_model = str(getattr(first, "model", "local"))
+
+    @property
+    def model(self) -> str:
+        """The model that served the most recent completion."""
+        return self._serving_model
+
+    def _available(self, index: int) -> bool:
+        return self._clock() >= self._cooldown_until[index]
+
+    def health(self) -> bool:
+        # While any remote is presumed up, report healthy without spending a
+        # billed API call; a real failure walks the chain on its own.
+        if any(self._available(index) for index in range(len(self._remotes))):
+            return True
+        return bool(self._local.health())
+
+    def complete(self, messages: Sequence[dict[str, str]], *, schema: dict | None = None) -> str:
+        for index, tier in enumerate(self._remotes):
+            if not self._available(index):
+                continue
+            tier_name = str(getattr(tier, "name", getattr(tier, "model", "remote")))
+            was_cooling = self._cooldown_until[index] > 0.0
+            try:
+                content = tier.complete(messages, schema=schema)
+            except Exception as error:  # noqa: BLE001 - any tier failure walks the chain
+                self._cooldown_until[index] = self._clock() + self._retry_seconds
+                logger.warning(
+                    "%s LLM failed; trying the next tier and resting it for "
+                    "%.0f minutes",
+                    tier_name,
+                    self._retry_seconds / 60,
+                    extra=log_fields(error=str(error)[:300]),
+                )
+                continue
+            if was_cooling:
+                logger.info("%s LLM recovered; serving from it again", tier_name)
+                self._cooldown_until[index] = 0.0
+            self._serving_model = str(getattr(tier, "model", "remote"))
+            return content
+        self._serving_model = str(getattr(self._local, "model", "local"))
+        return self._local.complete(messages, schema=schema)
+
+
+def _remote_tiers(settings: Settings) -> list[RemoteTier]:
+    """The enabled hosted tiers, best first. Priority is fixed by position."""
+
+    def secret(value) -> str:
+        return value.get_secret_value() if value is not None else ""
+
+    tiers: list[RemoteTier] = []
+    if settings.RADIO_LLM_REMOTE_ENABLED:
+        tiers.append(
+            RemoteTier(
+                name="NVIDIA",
+                base_url=settings.RADIO_LLM_REMOTE_BASE_URL,
+                model=settings.RADIO_LLM_REMOTE_MODEL,
+                api_key=secret(settings.RADIO_LLM_REMOTE_API_KEY),
+                timeout_seconds=settings.RADIO_LLM_REMOTE_TIMEOUT_SECONDS,
+            )
+        )
+    if settings.RADIO_LLM_GROQ_ENABLED:
+        tiers.append(
+            RemoteTier(
+                name="Groq",
+                base_url=settings.RADIO_LLM_GROQ_BASE_URL,
+                model=settings.RADIO_LLM_GROQ_MODEL,
+                api_key=secret(settings.RADIO_LLM_GROQ_API_KEY),
+                timeout_seconds=settings.RADIO_LLM_GROQ_TIMEOUT_SECONDS,
+            )
+        )
+    if settings.RADIO_LLM_MISTRAL_ENABLED:
+        tiers.append(
+            RemoteTier(
+                name="Mistral",
+                base_url=settings.RADIO_LLM_MISTRAL_BASE_URL,
+                model=settings.RADIO_LLM_MISTRAL_MODEL,
+                api_key=secret(settings.RADIO_LLM_MISTRAL_API_KEY),
+                timeout_seconds=settings.RADIO_LLM_MISTRAL_TIMEOUT_SECONDS,
+            )
+        )
+    if settings.RADIO_LLM_GEMINI_ENABLED:
+        tiers.append(
+            RemoteTier(
+                name="Gemini",
+                base_url=settings.RADIO_LLM_GEMINI_BASE_URL,
+                model=settings.RADIO_LLM_GEMINI_MODEL,
+                api_key=secret(settings.RADIO_LLM_GEMINI_API_KEY),
+                timeout_seconds=settings.RADIO_LLM_GEMINI_TIMEOUT_SECONDS,
+            )
+        )
+    return tiers
+
+
+def build_llm_client(settings: Settings) -> Any:
+    """The analysis client the configuration asks for.
+
+    Local llama-server only by default; each enabled hosted tier stacks above
+    it in fixed priority order: NVIDIA, then Groq, then Mistral, then Gemini,
+    then local.
+    """
+    local = LlamaServerClient(settings)
+    tiers = _remote_tiers(settings)
+    if not tiers:
+        return local
+    return FailoverLlmClient(
+        [RemoteApiClient(settings, tier) for tier in tiers],
+        local,
+        retry_seconds=settings.RADIO_LLM_REMOTE_RETRY_SECONDS,
+    )
+
+
 @dataclass
 class FakeLlmClient:
     """Deterministic client for tests and for running without a model.
@@ -473,7 +700,7 @@ class ConversationAnalyzer:
         breaker: CircuitBreaker | None = None,
     ) -> None:
         self._settings = settings
-        self._client = client or LlamaServerClient(settings)
+        self._client = client or build_llm_client(settings)
         self._breaker = breaker or CircuitBreaker(
             failure_threshold=settings.RADIO_LLM_CIRCUIT_FAILURE_THRESHOLD,
             reset_seconds=settings.RADIO_LLM_CIRCUIT_RESET_SECONDS,
