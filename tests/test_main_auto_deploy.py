@@ -348,12 +348,17 @@ def test_the_role_denies_arbitrary_execution_and_escalation() -> None:
 
 def test_the_trust_policy_pins_the_exact_live_subject() -> None:
     """The LIVE subject is environment-scoped, because the workflow runs with
-    `environment: production`. A ref-scoped subject would simply stop the
-    deployment authenticating. StringLike with a wildcard would let any branch,
-    pull request or tag assume the role."""
+    `environment: production`. The firemudfm organization issues immutable-ID
+    subjects (owner@id/repo@id) — verified by decoding a real token — so the
+    plain owner/repo form would simply stop the deployment authenticating.
+    StringLike with a wildcard would let any branch, pull request or tag assume
+    the role."""
     text = cfn_yaml()
     assert "'token.actions.githubusercontent.com:sub': !Ref GitHubOidcSubject" in text
-    assert "repo:firemudfm/Radio-Broadcast-Analysis:environment:production" in text
+    assert (
+        "repo:firemudfm@20034308/Radio-Broadcast-Analysis@1298638244"
+        ":environment:production" in text
+    )
     assert "StringEquals:" in text
     assert "StringLike" not in text
 
