@@ -270,9 +270,8 @@ def test_enabling_a_provider_without_its_key_is_refused(tmp_path, flag, match) -
         settings_with(tmp_path, **flag)
 
 
-def test_ollama_sits_second_in_the_chain(settings_factory=None) -> None:
+def test_ollama_sits_second_in_the_chain() -> None:
     """The operator's order: NVIDIA first, Ollama the moment tier 1 stumbles."""
-    from app.config import Settings
     from app.services.llm_analysis import _remote_tiers
 
     settings = Settings(
@@ -293,9 +292,6 @@ def test_ollama_sits_second_in_the_chain(settings_factory=None) -> None:
 
 
 def test_ollama_without_a_key_refuses_to_start() -> None:
-    import pytest
-    from app.config import Settings
-
     with pytest.raises(ValueError, match="OLLAMA_API_KEY"):
         Settings(
             RADIO_S3_BUCKET="bucket",
