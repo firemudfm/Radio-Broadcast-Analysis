@@ -353,7 +353,7 @@ def test_the_trust_policy_pins_the_exact_live_subject() -> None:
     pull request or tag assume the role."""
     text = cfn_yaml()
     assert "'token.actions.githubusercontent.com:sub': !Ref GitHubOidcSubject" in text
-    assert "repo:naman1995jain/Radio-Broadcast-Analysis:environment:production" in text
+    assert "repo:firemudfm/Radio-Broadcast-Analysis:environment:production" in text
     assert "StringEquals:" in text
     assert "StringLike" not in text
 

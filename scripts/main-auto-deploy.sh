@@ -116,7 +116,7 @@ else
     log "git operations run as $(id -un)"
 fi
 
-EXPECTED_ORIGIN="${RADIO_EXPECTED_ORIGIN:-https://github.com/naman1995jain/Radio-Broadcast-Analysis.git}"
+EXPECTED_ORIGIN="${RADIO_EXPECTED_ORIGIN:-https://github.com/firemudfm/Radio-Broadcast-Analysis.git}"
 ACTUAL_ORIGIN="$(repo_git remote get-url origin 2>/dev/null || true)"
 if [ "${ACTUAL_ORIGIN}" != "${EXPECTED_ORIGIN}" ]; then
     die "${EXIT_PRECONDITION}" \

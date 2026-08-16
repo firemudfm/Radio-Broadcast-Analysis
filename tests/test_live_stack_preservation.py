@@ -216,7 +216,7 @@ def test_the_trust_subject_is_the_live_environment_form() -> None:
     deployment authenticating."""
     text = cfn_text()
     assert (
-        "repo:naman1995jain/Radio-Broadcast-Analysis:environment:production" in text
+        "repo:firemudfm/Radio-Broadcast-Analysis:environment:production" in text
     )
     trust = text[text.index("      AssumeRolePolicyDocument:"):text.index("      Policies:")]
     assert "ref:refs/heads/main" not in trust, "the live subject is environment-scoped"

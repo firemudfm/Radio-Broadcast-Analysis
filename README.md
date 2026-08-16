@@ -752,6 +752,19 @@ CI runs ruff plus the suite on Python 3.11 and 3.12, with CodeQL on a schedule.
 * **Two settings are dead.** `RADIO_TEMP_TRANSCRIPTS_PREFIX` and
   `RADIO_PIPELINE_CONFIG_PREFIX` are declared and validated in
   [config.py](app/config.py) but have no reader and no writer anywhere.
+* **Semantic discovery does not run.**
+  [`SemanticDiscoveryService`](app/services/semantic.py) (572 lines) is
+  constructed only by [`app/analysis_worker.py`](app/analysis_worker.py), and no
+  container runs that module — the worker entrypoint allow-lists
+  `planner|listener|transcription|analysis|cleanup` and execs
+  `app.workers.<role>`. So `results/semantic-matches/` is never written, and
+  `RADIO_SEMANTIC_DISCOVERY_ENABLED=true` has no effect on the Compose stack.
+* **Catalogue probe/activate jobs are queued and never drained.** The API writes
+  `station_jobs` rows, but [`claim_next_job`](app/db_catalog.py),
+  `finish_job` and `record_probe_result` have **zero call sites** — there is no
+  station reconciler process. `station_probe_results` is therefore never
+  populated, and `/probe` returns "Probe queued for the station reconciler" for
+  a reconciler that does not exist.
 
 ---
 
