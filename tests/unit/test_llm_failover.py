@@ -111,6 +111,35 @@ def test_a_second_failure_rearms_that_tier_only() -> None:
     assert remotes[1].calls == 3
 
 
+def test_unusable_content_cascades_like_an_error() -> None:
+    """The production incident: tier 1 answered HTTP 200 with reasoning prose
+    on every call. A 200 full of garbage must walk the chain and rest the
+    tier, exactly like a transport error."""
+
+    class ProseClient(ScriptedClient):
+        def complete(self, messages, *, schema=None):
+            self.calls += 1
+            return "I am thinking about the transcript rather than answering."
+
+    clock = FakeClock()
+    prose = ProseClient("nvidia")
+    good = ScriptedClient("groq")
+    local = ScriptedClient("local")
+    client = FailoverLlmClient(
+        [prose, good],
+        local,
+        retry_seconds=RETRY,
+        clock=clock,
+        content_check=lambda content: content.strip().startswith("{"),
+    )
+    good.complete = lambda messages, schema=None: '{"summary": "fine"}'  # type: ignore[method-assign]
+    assert client.complete([]) == '{"summary": "fine"}'
+    assert prose.calls == 1
+    clock.now += RETRY / 2
+    client.complete([])
+    assert prose.calls == 1, "a garbage tier must rest like a failed one"
+
+
 def test_cooldowns_are_independent_per_tier() -> None:
     clock = FakeClock()
     client, remotes, local = make_chain(clock, 1, 1, 0)
@@ -128,6 +157,49 @@ def settings_with(tmp_path, **overrides) -> Settings:
         RADIO_AUDIO_TOKEN_SECRET="x" * 48,
         **overrides,
     )
+
+
+def test_remote_requests_ask_for_json_and_use_the_remote_budget(
+    tmp_path, monkeypatch
+) -> None:
+    """Both production lessons in one contract: hosted reasoning models need
+    the larger remote output budget (480 truncated mid-think), and json_object
+    mode asks the provider for parseable output up front."""
+    import json as jsonlib
+
+    from app.services.llm_analysis import RemoteApiClient, RemoteTier
+
+    settings = settings_with(tmp_path)
+    tier = RemoteTier(
+        name="NVIDIA",
+        base_url="https://example.invalid/v1",
+        model="test-model",
+        api_key="key",
+        timeout_seconds=5,
+    )
+    captured: dict = {}
+
+    class FakeResponse:
+        status = 200
+
+        def read(self):
+            return jsonlib.dumps({"choices": [{"message": {"content": "{}"}}]}).encode()
+
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *args):
+            return False
+
+    def fake_urlopen(request, timeout=None):
+        captured["body"] = jsonlib.loads(request.data)
+        return FakeResponse()
+
+    monkeypatch.setattr("app.services.llm_analysis.urllib.request.urlopen", fake_urlopen)
+    client = RemoteApiClient(settings, tier)
+    assert client.complete([{"role": "user", "content": "x"}]) == "{}"
+    assert captured["body"]["response_format"] == {"type": "json_object"}
+    assert captured["body"]["max_tokens"] == settings.RADIO_LLM_REMOTE_MAX_OUTPUT_TOKENS
 
 
 def test_builder_returns_local_only_when_nothing_is_enabled(settings) -> None:
