@@ -145,7 +145,21 @@ class Settings(BaseSettings):
     RADIO_LLM_MISTRAL_EXTRA_BODY: str = ""
     RADIO_LLM_GEMINI_EXTRA_BODY: str = ""
 
-    # Second hosted tier: Groq. Same failover contract, next in priority.
+    # Second hosted tier: Ollama cloud, OpenAI-compatible at /v1. Verified
+    # live: gemma4:31b answers a German transcript in ~1.2s with correct
+    # German comprehension and an English translation. Gemma is non-thinking
+    # by design, which is exactly what a structured-extraction tier wants.
+    RADIO_LLM_OLLAMA_ENABLED: bool = False
+    RADIO_LLM_OLLAMA_BASE_URL: str = "https://ollama.com/v1"
+    RADIO_LLM_OLLAMA_MODEL: str = "gemma4:31b"
+    RADIO_LLM_OLLAMA_API_KEY: SecretStr | None = Field(
+        default=None,
+        validation_alias=AliasChoices("RADIO_LLM_OLLAMA_API_KEY", "OLLAMA_API_KEY"),
+    )
+    RADIO_LLM_OLLAMA_TIMEOUT_SECONDS: int = 60
+    RADIO_LLM_OLLAMA_EXTRA_BODY: str = ""
+
+    # Third hosted tier: Groq. Same failover contract, next in priority.
     RADIO_LLM_GROQ_ENABLED: bool = False
     RADIO_LLM_GROQ_BASE_URL: str = "https://api.groq.com/openai/v1"
     RADIO_LLM_GROQ_MODEL: str = "qwen/qwen3.6-27b"
@@ -321,6 +335,7 @@ class Settings(BaseSettings):
 
     @field_validator(
         "RADIO_LLM_REMOTE_TIMEOUT_SECONDS",
+        "RADIO_LLM_OLLAMA_TIMEOUT_SECONDS",
         "RADIO_LLM_GROQ_TIMEOUT_SECONDS",
         "RADIO_LLM_MISTRAL_TIMEOUT_SECONDS",
         "RADIO_LLM_GEMINI_TIMEOUT_SECONDS",
@@ -333,6 +348,7 @@ class Settings(BaseSettings):
 
     @field_validator(
         "RADIO_LLM_REMOTE_EXTRA_BODY",
+        "RADIO_LLM_OLLAMA_EXTRA_BODY",
         "RADIO_LLM_GROQ_EXTRA_BODY",
         "RADIO_LLM_MISTRAL_EXTRA_BODY",
         "RADIO_LLM_GEMINI_EXTRA_BODY",
@@ -374,6 +390,12 @@ class Settings(BaseSettings):
                 self.RADIO_LLM_REMOTE_API_KEY,
                 "RADIO_LLM_REMOTE_ENABLED requires RADIO_LLM_REMOTE_API_KEY "
                 "(or NVIDIA_API_KEY) to be set",
+            ),
+            (
+                self.RADIO_LLM_OLLAMA_ENABLED,
+                self.RADIO_LLM_OLLAMA_API_KEY,
+                "RADIO_LLM_OLLAMA_ENABLED requires RADIO_LLM_OLLAMA_API_KEY "
+                "(or OLLAMA_API_KEY) to be set",
             ),
             (
                 self.RADIO_LLM_GROQ_ENABLED,

@@ -703,6 +703,17 @@ def _remote_tiers(settings: Settings) -> list[RemoteTier]:
                 extra_body=settings.RADIO_LLM_REMOTE_EXTRA_BODY,
             )
         )
+    if settings.RADIO_LLM_OLLAMA_ENABLED:
+        tiers.append(
+            RemoteTier(
+                name="Ollama",
+                base_url=settings.RADIO_LLM_OLLAMA_BASE_URL,
+                model=settings.RADIO_LLM_OLLAMA_MODEL,
+                api_key=secret(settings.RADIO_LLM_OLLAMA_API_KEY),
+                timeout_seconds=settings.RADIO_LLM_OLLAMA_TIMEOUT_SECONDS,
+                extra_body=settings.RADIO_LLM_OLLAMA_EXTRA_BODY,
+            )
+        )
     if settings.RADIO_LLM_GROQ_ENABLED:
         tiers.append(
             RemoteTier(
@@ -743,8 +754,8 @@ def build_llm_client(settings: Settings) -> Any:
     """The analysis client the configuration asks for.
 
     Local llama-server only by default; each enabled hosted tier stacks above
-    it in fixed priority order: NVIDIA, then Groq, then Mistral, then Gemini,
-    then local.
+    it in fixed priority order: NVIDIA, then Ollama, then Groq, then Mistral,
+    then Gemini, then local.
     """
     local = LlamaServerClient(settings)
     tiers = _remote_tiers(settings)

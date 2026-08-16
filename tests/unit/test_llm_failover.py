@@ -268,3 +268,33 @@ def test_a_partial_chain_skips_disabled_providers(tmp_path) -> None:
 def test_enabling_a_provider_without_its_key_is_refused(tmp_path, flag, match) -> None:
     with pytest.raises(ValueError, match=match):
         settings_with(tmp_path, **flag)
+
+
+def test_ollama_sits_second_in_the_chain() -> None:
+    """The operator's order: NVIDIA first, Ollama the moment tier 1 stumbles."""
+    from app.services.llm_analysis import _remote_tiers
+
+    settings = Settings(
+        RADIO_S3_BUCKET="bucket",
+        RADIO_AUDIO_TOKEN_SECRET="x" * 48,
+        RADIO_LLM_REMOTE_ENABLED=True,
+        RADIO_LLM_REMOTE_API_KEY="nvapi-test",
+        RADIO_LLM_OLLAMA_ENABLED=True,
+        RADIO_LLM_OLLAMA_API_KEY="ollama-test",
+        RADIO_LLM_GROQ_ENABLED=True,
+        RADIO_LLM_GROQ_API_KEY="gsk-test",
+    )
+    names = [tier.name for tier in _remote_tiers(settings)]
+    assert names == ["NVIDIA", "Ollama", "Groq"]
+    ollama = _remote_tiers(settings)[1]
+    assert ollama.base_url == "https://ollama.com/v1"
+    assert ollama.model == "gemma4:31b"
+
+
+def test_ollama_without_a_key_refuses_to_start() -> None:
+    with pytest.raises(ValueError, match="OLLAMA_API_KEY"):
+        Settings(
+            RADIO_S3_BUCKET="bucket",
+            RADIO_AUDIO_TOKEN_SECRET="x" * 48,
+            RADIO_LLM_OLLAMA_ENABLED=True,
+        )
