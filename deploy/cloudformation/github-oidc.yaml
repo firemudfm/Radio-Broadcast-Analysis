@@ -8,12 +8,18 @@ Parameters:
 
   GitHubOidcSubject:
     Type: String
-    Default: repo:firemudfm/Radio-Broadcast-Analysis:environment:production
-    Description: Exact GitHub Actions OIDC sub claim for the protected production environment
-    AllowedPattern: '^repo:[A-Za-z0-9._-]+/[A-Za-z0-9._-]+:[A-Za-z0-9._/:-]+$'
+    Default: repo:firemudfm@20034308/Radio-Broadcast-Analysis@1298638244:environment:production
+    Description: >-
+      Exact GitHub Actions OIDC sub claim for the protected production
+      environment. The firemudfm organization issues immutable-ID subjects
+      (owner@owner_id/repo@repository_id), which also pin the trust to the
+      numeric ids so a renamed or recreated repository cannot inherit it.
+    AllowedPattern: '^repo:[A-Za-z0-9._-]+(@[0-9]+)?/[A-Za-z0-9._-]+(@[0-9]+)?:[A-Za-z0-9._/:-]+$'
     ConstraintDescription: >-
       Must be a nonempty repo-scoped GitHub OIDC subject shaped as
-      repo:OWNER/REPOSITORY:CONTEXT. Wildcard characters are not accepted.
+      repo:OWNER/REPOSITORY:CONTEXT or the immutable form
+      repo:OWNER@ID/REPOSITORY@ID:CONTEXT. Wildcard characters are not
+      accepted.
 
   TargetInstanceId:
     Type: String

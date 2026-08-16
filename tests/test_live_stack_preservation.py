@@ -212,11 +212,14 @@ def test_the_thirteen_live_outputs_are_only_extended() -> None:
 
 def test_the_trust_subject_is_the_live_environment_form() -> None:
     """The workflow runs with `environment: production`, so GitHub issues an
-    environment-scoped subject. A ref-scoped trust policy would simply stop the
-    deployment authenticating."""
+    environment-scoped subject — in this organization's immutable-ID form
+    (owner@owner_id/repo@repository_id), verified by decoding a real token.
+    A ref-scoped or plain-form trust policy would simply stop the deployment
+    authenticating."""
     text = cfn_text()
     assert (
-        "repo:firemudfm/Radio-Broadcast-Analysis:environment:production" in text
+        "repo:firemudfm@20034308/Radio-Broadcast-Analysis@1298638244"
+        ":environment:production" in text
     )
     trust = text[text.index("      AssumeRolePolicyDocument:"):text.index("      Policies:")]
     assert "ref:refs/heads/main" not in trust, "the live subject is environment-scoped"
