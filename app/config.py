@@ -165,11 +165,11 @@ class Settings(BaseSettings):
     RADIO_LLM_GEMINI_BASE_URL: str = (
         "https://generativelanguage.googleapis.com/v1beta/openai"
     )
-    # gemini-2.5-flash, and not a guessed newer name: the OpenAI-compatible
-    # endpoint answers HTTP 404 for a model that does not exist, which in
-    # production read as a dead tier. The template and this default must
-    # name a model Google actually serves.
-    RADIO_LLM_GEMINI_MODEL: str = "gemini-2.5-flash"
+    # The rolling alias, verified live: numbered models rot in BOTH directions
+    # (gemini-2.5-flash is refused for new accounts as too old; a guessed
+    # newer number 404s until it exists). gemini-flash-latest always names
+    # the current flash model, which is exactly right for a fallback tier.
+    RADIO_LLM_GEMINI_MODEL: str = "gemini-flash-latest"
     RADIO_LLM_GEMINI_API_KEY: SecretStr | None = Field(
         default=None,
         validation_alias=AliasChoices(
