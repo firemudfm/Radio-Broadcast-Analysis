@@ -8,7 +8,14 @@ from pathlib import Path
 from typing import Annotated, ClassVar, Literal
 from urllib.parse import urlsplit
 
-from pydantic import BeforeValidator, Field, SecretStr, field_validator, model_validator
+from pydantic import (
+    AliasChoices,
+    BeforeValidator,
+    Field,
+    SecretStr,
+    field_validator,
+    model_validator,
+)
 from pydantic_settings import BaseSettings, NoDecode, SettingsConfigDict
 
 # Enumerated settings. Declaring them as Literal makes pydantic reject unknown
@@ -101,6 +108,58 @@ class Settings(BaseSettings):
     RADIO_LLM_BASE_URL: str = "http://127.0.0.1:8790"
     RADIO_LLM_MODEL: str = "qwen3-0.6b-q8"
     RADIO_LLM_TIMEOUT_SECONDS: int = 90
+
+    # -- remote analysis LLM (primary tier; the local llama-server becomes the
+    # fallback). Any remote failure switches analysis to the local model
+    # immediately and re-probes the remote after RADIO_LLM_REMOTE_RETRY_SECONDS.
+    RADIO_LLM_REMOTE_ENABLED: bool = False
+    RADIO_LLM_REMOTE_BASE_URL: str = "https://integrate.api.nvidia.com/v1"
+    RADIO_LLM_REMOTE_MODEL: str = "nvidia/nemotron-3.5-lightning-30b-a3b"
+    #: Reads RADIO_LLM_REMOTE_API_KEY or, for convenience, NVIDIA_API_KEY.
+    RADIO_LLM_REMOTE_API_KEY: SecretStr | None = Field(
+        default=None,
+        validation_alias=AliasChoices("RADIO_LLM_REMOTE_API_KEY", "NVIDIA_API_KEY"),
+    )
+    RADIO_LLM_REMOTE_TIMEOUT_SECONDS: int = 60
+    #: Rest window for a failed hosted tier; shared by every remote provider.
+    RADIO_LLM_REMOTE_RETRY_SECONDS: int = 7200
+
+    # Second hosted tier: Groq. Same failover contract, next in priority.
+    RADIO_LLM_GROQ_ENABLED: bool = False
+    RADIO_LLM_GROQ_BASE_URL: str = "https://api.groq.com/openai/v1"
+    RADIO_LLM_GROQ_MODEL: str = "qwen/qwen3.6-27b"
+    RADIO_LLM_GROQ_API_KEY: SecretStr | None = Field(
+        default=None,
+        validation_alias=AliasChoices("RADIO_LLM_GROQ_API_KEY", "GROQ_API_KEY"),
+    )
+    RADIO_LLM_GROQ_TIMEOUT_SECONDS: int = 60
+
+    # Third hosted tier: Mistral. Same failover contract.
+    RADIO_LLM_MISTRAL_ENABLED: bool = False
+    RADIO_LLM_MISTRAL_BASE_URL: str = "https://api.mistral.ai/v1"
+    RADIO_LLM_MISTRAL_MODEL: str = "ministral-8b-latest"
+    RADIO_LLM_MISTRAL_API_KEY: SecretStr | None = Field(
+        default=None,
+        validation_alias=AliasChoices("RADIO_LLM_MISTRAL_API_KEY", "MISTRAL_API_KEY"),
+    )
+    RADIO_LLM_MISTRAL_TIMEOUT_SECONDS: int = 60
+
+    # Fourth hosted tier: Gemini via its OpenAI-compatible endpoint. Last
+    # hosted tier before the local model: its free tier is rate-limited per
+    # day, and a fallback position only sees traffic when the tiers above are
+    # down, which is exactly what a daily cap tolerates.
+    RADIO_LLM_GEMINI_ENABLED: bool = False
+    RADIO_LLM_GEMINI_BASE_URL: str = (
+        "https://generativelanguage.googleapis.com/v1beta/openai"
+    )
+    RADIO_LLM_GEMINI_MODEL: str = "gemini-3.5-flash"
+    RADIO_LLM_GEMINI_API_KEY: SecretStr | None = Field(
+        default=None,
+        validation_alias=AliasChoices(
+            "RADIO_LLM_GEMINI_API_KEY", "GEMINI_API_KEY", "GOOGLE_API_KEY"
+        ),
+    )
+    RADIO_LLM_GEMINI_TIMEOUT_SECONDS: int = 60
     RADIO_LLM_MAX_INPUT_CHARACTERS: int = 40_000
     RADIO_LLM_MAX_OUTPUT_TOKENS: int = 480
     RADIO_LLM_TEMPERATURE: float = 0.1
@@ -228,6 +287,61 @@ class Settings(BaseSettings):
         if not 0 <= value <= 3600:
             raise ValueError("RADIO_ANALYSIS_SETTLE_SECONDS must be between 0 and 3600")
         return value
+
+    @field_validator(
+        "RADIO_LLM_REMOTE_TIMEOUT_SECONDS",
+        "RADIO_LLM_GROQ_TIMEOUT_SECONDS",
+        "RADIO_LLM_MISTRAL_TIMEOUT_SECONDS",
+        "RADIO_LLM_GEMINI_TIMEOUT_SECONDS",
+    )
+    @classmethod
+    def validate_remote_llm_timeout(cls, value: int) -> int:
+        if not 5 <= value <= 300:
+            raise ValueError("Remote LLM timeouts must be between 5 and 300 seconds")
+        return value
+
+    @field_validator("RADIO_LLM_REMOTE_RETRY_SECONDS")
+    @classmethod
+    def validate_remote_llm_retry(cls, value: int) -> int:
+        # One minute to one day. The operator asked for hours-scale: a failed
+        # hosted endpoint should not be hammered, and the local fallback keeps
+        # analyses flowing meanwhile.
+        if not 60 <= value <= 86_400:
+            raise ValueError("RADIO_LLM_REMOTE_RETRY_SECONDS must be between 60 and 86400")
+        return value
+
+    @model_validator(mode="after")
+    def validate_remote_llm_key(self) -> Settings:
+        required = [
+            (
+                self.RADIO_LLM_REMOTE_ENABLED,
+                self.RADIO_LLM_REMOTE_API_KEY,
+                "RADIO_LLM_REMOTE_ENABLED requires RADIO_LLM_REMOTE_API_KEY "
+                "(or NVIDIA_API_KEY) to be set",
+            ),
+            (
+                self.RADIO_LLM_GROQ_ENABLED,
+                self.RADIO_LLM_GROQ_API_KEY,
+                "RADIO_LLM_GROQ_ENABLED requires RADIO_LLM_GROQ_API_KEY "
+                "(or GROQ_API_KEY) to be set",
+            ),
+            (
+                self.RADIO_LLM_MISTRAL_ENABLED,
+                self.RADIO_LLM_MISTRAL_API_KEY,
+                "RADIO_LLM_MISTRAL_ENABLED requires RADIO_LLM_MISTRAL_API_KEY "
+                "(or MISTRAL_API_KEY) to be set",
+            ),
+            (
+                self.RADIO_LLM_GEMINI_ENABLED,
+                self.RADIO_LLM_GEMINI_API_KEY,
+                "RADIO_LLM_GEMINI_ENABLED requires RADIO_LLM_GEMINI_API_KEY "
+                "(or GEMINI_API_KEY / GOOGLE_API_KEY) to be set",
+            ),
+        ]
+        for enabled, key, message in required:
+            if enabled and (key is None or not key.get_secret_value().strip()):
+                raise ValueError(message)
+        return self
 
     @field_validator("RADIO_LLM_TIMEOUT_SECONDS")
     @classmethod
