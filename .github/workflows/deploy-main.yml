@@ -127,11 +127,12 @@ jobs:
         run: |
           set -euo pipefail
 
-          # CI succeeding is NOT the same as every protected check succeeding.
+          # CI succeeding is NOT the same as every required check succeeding.
           # CodeQL runs as a separate workflow, so a workflow_run trigger from CI
           # fires while "Analyze Python" may still be queued -- or already
-          # failed. Deploying then would ship a commit that the branch
-          # protection would have refused to merge.
+          # failed. Commits reach main by direct push, so this step is the ONLY
+          # gate between a bad commit and production: a commit whose checks
+          # fail can sit on main, but it can never deploy.
           required=(
             "Lint (ruff)"
             "Tests (Python 3.11)"
