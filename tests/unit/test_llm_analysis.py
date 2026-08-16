@@ -92,6 +92,29 @@ def test_key_points_emitted_as_objects_keep_only_the_sentence(
     ]
 
 
+def test_percentage_confidence_is_read_as_a_fraction(
+    settings: Settings, request_: AnalysisRequest
+) -> None:
+    """The grammar cannot bound numbers and the local model answers 70 for
+    0.70; production rejected the whole analysis over it, twice per mention."""
+    result = analyzer(settings, good_response(confidence=70)).analyze(request_)
+    assert result.status == "ready"
+    assert result.confidence == 0.70
+
+    result = analyzer(settings, good_response(confidence=0.91)).analyze(request_)
+    assert result.confidence == 0.91
+
+    result = analyzer(settings, good_response(confidence=300)).analyze(request_)
+    assert result.confidence == 1.0
+
+    result = analyzer(settings, good_response(confidence=-3)).analyze(request_)
+    assert result.confidence == 0.0
+
+    result = analyzer(settings, good_response(confidence="not a number")).analyze(request_)
+    assert result.status == "ready"
+    assert result.confidence == 0.0
+
+
 def test_a_valid_response_is_accepted(settings: Settings, request_: AnalysisRequest) -> None:
     result = analyzer(settings, good_response()).analyze(request_)
     assert result.status == "ready"
@@ -440,14 +463,19 @@ def test_the_fallback_entities_survive_the_blank_filter(
 def test_a_validation_rejection_names_the_field(
     settings: Settings, request_: AnalysisRequest, caplog
 ) -> None:
-    """"1 error(s)" with no location cost a production diagnosis cycle."""
+    """"1 error(s)" with no location cost a production diagnosis cycle.
+
+    Out-of-range confidence no longer rejects (it is coerced, see
+    coerce_confidence), so the invalid example is an unknown field, which the
+    contract rejects outright by design.
+    """
     import logging as logging_module
 
-    client = FakeLlmClient(responses=[good_response(confidence=7.5)])
+    client = FakeLlmClient(responses=[good_response(invented_field="surprise")])
     with caplog.at_level(logging_module.INFO, logger="app.services.llm_analysis"):
         ConversationAnalyzer(settings, client=client).analyze(request_)
     reasons = [
         record.__dict__.get("reason", "") for record in caplog.records
         if "rejected by validation" in record.getMessage()
     ]
-    assert reasons and "confidence" in reasons[0], reasons
+    assert reasons and "invented_field" in reasons[0], reasons
