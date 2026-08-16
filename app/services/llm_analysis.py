@@ -188,7 +188,31 @@ class AnalysisResult(BaseModel):
     def clean_key_points(cls, value: Any) -> list[str]:
         if not isinstance(value, list):
             return []
-        return [str(item).strip()[:500] for item in value if str(item).strip()][:MAX_KEY_POINTS]
+        cleaned: list[str] = []
+        for item in value:
+            if isinstance(item, dict):
+                # Hosted models sometimes emit key points as objects, e.g.
+                # {"point": "...", "source": "..."}. Stringifying the dict put
+                # its raw repr on the dashboard; keep the human sentence.
+                text = (
+                    item.get("point")
+                    or item.get("text")
+                    or item.get("summary")
+                    or next(
+                        (
+                            candidate
+                            for candidate in item.values()
+                            if isinstance(candidate, str) and candidate.strip()
+                        ),
+                        "",
+                    )
+                )
+            else:
+                text = item
+            text = str(text).strip()
+            if text:
+                cleaned.append(text[:500])
+        return cleaned[:MAX_KEY_POINTS]
 
     # The grammar guarantees an entity has a "name" key and an evidence item a
     # "text" key -- but not that either is non-blank, and min_length=1 would
@@ -435,6 +459,9 @@ class RemoteTier:
     model: str
     api_key: str
     timeout_seconds: int
+    #: Raw JSON object (as text) merged into the request body; the operator's
+    #: escape hatch for provider-specific knobs like reasoning toggles.
+    extra_body: str = ""
 
 
 class RemoteApiClient:
@@ -494,6 +521,9 @@ class RemoteApiClient:
             # silent 200 full of reasoning text.
             "response_format": {"type": "json_object"},
         }
+        if self._tier.extra_body:
+            # Operator-supplied provider knobs win over the defaults above.
+            payload.update(json.loads(self._tier.extra_body))
         request = urllib.request.Request(
             f"{self._base_url}/chat/completions",
             data=json.dumps(payload, ensure_ascii=False).encode("utf-8"),
@@ -628,6 +658,7 @@ def _remote_tiers(settings: Settings) -> list[RemoteTier]:
                 model=settings.RADIO_LLM_REMOTE_MODEL,
                 api_key=secret(settings.RADIO_LLM_REMOTE_API_KEY),
                 timeout_seconds=settings.RADIO_LLM_REMOTE_TIMEOUT_SECONDS,
+                extra_body=settings.RADIO_LLM_REMOTE_EXTRA_BODY,
             )
         )
     if settings.RADIO_LLM_GROQ_ENABLED:
@@ -638,6 +669,7 @@ def _remote_tiers(settings: Settings) -> list[RemoteTier]:
                 model=settings.RADIO_LLM_GROQ_MODEL,
                 api_key=secret(settings.RADIO_LLM_GROQ_API_KEY),
                 timeout_seconds=settings.RADIO_LLM_GROQ_TIMEOUT_SECONDS,
+                extra_body=settings.RADIO_LLM_GROQ_EXTRA_BODY,
             )
         )
     if settings.RADIO_LLM_MISTRAL_ENABLED:
@@ -648,6 +680,7 @@ def _remote_tiers(settings: Settings) -> list[RemoteTier]:
                 model=settings.RADIO_LLM_MISTRAL_MODEL,
                 api_key=secret(settings.RADIO_LLM_MISTRAL_API_KEY),
                 timeout_seconds=settings.RADIO_LLM_MISTRAL_TIMEOUT_SECONDS,
+                extra_body=settings.RADIO_LLM_MISTRAL_EXTRA_BODY,
             )
         )
     if settings.RADIO_LLM_GEMINI_ENABLED:
@@ -658,6 +691,7 @@ def _remote_tiers(settings: Settings) -> list[RemoteTier]:
                 model=settings.RADIO_LLM_GEMINI_MODEL,
                 api_key=secret(settings.RADIO_LLM_GEMINI_API_KEY),
                 timeout_seconds=settings.RADIO_LLM_GEMINI_TIMEOUT_SECONDS,
+                extra_body=settings.RADIO_LLM_GEMINI_EXTRA_BODY,
             )
         )
     return tiers

@@ -201,6 +201,26 @@ def test_remote_requests_ask_for_json_and_use_the_remote_budget(
     assert captured["body"]["response_format"] == {"type": "json_object"}
     assert captured["body"]["max_tokens"] == settings.RADIO_LLM_REMOTE_MAX_OUTPUT_TOKENS
 
+    # Operator extra-body knobs merge in and win over the defaults.
+    knobbed = RemoteTier(
+        name="NVIDIA",
+        base_url="https://example.invalid/v1",
+        model="test-model",
+        api_key="key",
+        timeout_seconds=5,
+        extra_body='{"reasoning_effort": "low", "max_tokens": 4096}',
+    )
+    RemoteApiClient(settings, knobbed).complete([{"role": "user", "content": "x"}])
+    assert captured["body"]["reasoning_effort"] == "low"
+    assert captured["body"]["max_tokens"] == 4096
+
+
+def test_a_malformed_extra_body_is_refused_at_startup(tmp_path) -> None:
+    with pytest.raises(ValueError):
+        settings_with(tmp_path, RADIO_LLM_REMOTE_EXTRA_BODY="not json")
+    with pytest.raises(ValueError, match="JSON object"):
+        settings_with(tmp_path, RADIO_LLM_REMOTE_EXTRA_BODY='["a", "list"]')
+
 
 def test_builder_returns_local_only_when_nothing_is_enabled(settings) -> None:
     assert isinstance(build_llm_client(settings), LlamaServerClient)

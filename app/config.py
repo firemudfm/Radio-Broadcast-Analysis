@@ -128,6 +128,14 @@ class Settings(BaseSettings):
     #: cap, tier 1 in production burned its entire budget thinking and was cut
     #: off before the first JSON brace, so every response failed parsing.
     RADIO_LLM_REMOTE_MAX_OUTPUT_TOKENS: int = 2048
+    #: Per-tier JSON objects merged into the request body, for provider
+    #: specific knobs (reasoning toggles above all). A provider that rejects a
+    #: field answers with a named HTTP error and the chain cascades, so
+    #: experimenting here is safe. Empty string sends nothing extra.
+    RADIO_LLM_REMOTE_EXTRA_BODY: str = ""
+    RADIO_LLM_GROQ_EXTRA_BODY: str = ""
+    RADIO_LLM_MISTRAL_EXTRA_BODY: str = ""
+    RADIO_LLM_GEMINI_EXTRA_BODY: str = ""
 
     # Second hosted tier: Groq. Same failover contract, next in priority.
     RADIO_LLM_GROQ_ENABLED: bool = False
@@ -304,6 +312,22 @@ class Settings(BaseSettings):
         if not 5 <= value <= 300:
             raise ValueError("Remote LLM timeouts must be between 5 and 300 seconds")
         return value
+
+    @field_validator(
+        "RADIO_LLM_REMOTE_EXTRA_BODY",
+        "RADIO_LLM_GROQ_EXTRA_BODY",
+        "RADIO_LLM_MISTRAL_EXTRA_BODY",
+        "RADIO_LLM_GEMINI_EXTRA_BODY",
+    )
+    @classmethod
+    def validate_remote_llm_extra_body(cls, value: str) -> str:
+        text = value.strip()
+        if not text:
+            return ""
+        loaded = json.loads(text)
+        if not isinstance(loaded, dict):
+            raise ValueError("Remote LLM extra-body values must be JSON objects")
+        return text
 
     @field_validator("RADIO_LLM_REMOTE_MAX_OUTPUT_TOKENS")
     @classmethod
