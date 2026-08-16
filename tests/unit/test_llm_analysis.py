@@ -68,6 +68,30 @@ def analyzer(settings: Settings, *responses: str, **kwargs) -> ConversationAnaly
 # --- happy path ---------------------------------------------------------------
 
 
+def test_key_points_emitted_as_objects_keep_only_the_sentence(
+    settings: Settings, request_: AnalysisRequest
+) -> None:
+    """Hosted models emit key points as {"point": ..., "source": ...} objects;
+    stringifying the dict put its raw repr on the dashboard."""
+    response = good_response(
+        key_points=[
+            {"point": "Evacuations possible in NRW.", "source": "quoted sentence"},
+            {"text": "A second point in a different shape."},
+            "A plain string point survives unchanged.",
+            {"irrelevant": 42, "note": "fallback takes the first string value"},
+            {"empty": ""},
+        ]
+    )
+    result = analyzer(settings, response).analyze(request_)
+    assert result.status == "ready"
+    assert result.key_points == [
+        "Evacuations possible in NRW.",
+        "A second point in a different shape.",
+        "A plain string point survives unchanged.",
+        "fallback takes the first string value",
+    ]
+
+
 def test_a_valid_response_is_accepted(settings: Settings, request_: AnalysisRequest) -> None:
     result = analyzer(settings, good_response()).analyze(request_)
     assert result.status == "ready"
