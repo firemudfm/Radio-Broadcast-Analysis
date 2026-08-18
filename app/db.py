@@ -740,6 +740,8 @@ class Database:
         campaign_id: str | None = None,
         station_id: str | None = None,
         sentiment: str | None = None,
+        keywords: list[str] | None = None,
+        since_utc: str | None = None,
         limit: int = 50,
         offset: int = 0,
     ) -> tuple[list[dict[str, Any]], int]:
@@ -754,6 +756,16 @@ class Database:
         if sentiment:
             where.append("m.sentiment_label=?")
             values.append(sentiment)
+        if keywords:
+            # Filtering has to happen in SQL: a client filtering its current
+            # page would silently miss matches on every other page.
+            placeholders = ",".join("?" for _ in keywords)
+            where.append(f"m.keyword_value IN ({placeholders})")  # nosec B608 (placeholders only)
+            values.extend(keywords)
+        if since_utc:
+            # Lets the feed count the same window as the dashboard headline.
+            where.append("m.broadcast_start_utc >= ?")
+            values.append(since_utc)
         where_sql = " AND ".join(where)
         with self._lock:
             total = int(

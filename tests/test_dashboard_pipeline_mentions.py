@@ -196,6 +196,43 @@ def test_mixed_sentiment_is_bucketed_as_neutral_in_the_feed(database) -> None:
     assert mentions[0]["sentiment"]["label"] == "neutral"
 
 
+def test_keyword_filter_narrows_the_feed_in_sql(database) -> None:
+    """The modal filters by keyword across ALL pages, so it must be a SQL
+    predicate: filtering the current page client-side would miss matches."""
+    seed_pipeline_mention(database)
+    _, matching = database.list_mentions(keywords=["night"])
+    assert matching == 1
+    _, other = database.list_mentions(keywords=["sale"])
+    assert other == 0
+    # Multi-select is an IN list, so any selected keyword keeps the row.
+    _, either = database.list_mentions(keywords=["sale", "night"])
+    assert either == 1
+
+
+def test_no_keyword_filter_leaves_the_feed_untouched(database) -> None:
+    seed_pipeline_mention(database)
+    _, empty_list = database.list_mentions(keywords=[])
+    _, no_filter = database.list_mentions()
+    assert empty_list == no_filter == 1
+
+
+def test_window_filter_matches_the_dashboard_headline_count(database) -> None:
+    """The feed total and the campaign's windowed count disagreed (574 vs 446)
+    because the feed counted all time. A since_utc bound makes them agree."""
+    seed_pipeline_mention(database)
+    seed_pipeline_mention(
+        database,
+        mention_id="11111111-2222-4333-8444-555555555555",
+        broadcast_at=NOW - timedelta(days=30),
+    )
+    _, all_time = database.list_mentions(campaign_id="c1")
+    assert all_time == 2
+
+    since = (NOW - timedelta(days=7)).isoformat().replace("+00:00", "Z")
+    _, windowed = database.list_mentions(campaign_id="c1", since_utc=since)
+    assert windowed == 1
+
+
 def test_sentiment_summary_counts_pipeline_mentions(database) -> None:
     seed_pipeline_mention(database)
     summary = database.sentiment_summary()

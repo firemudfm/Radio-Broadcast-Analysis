@@ -1,7 +1,8 @@
 from __future__ import annotations
 
 import asyncio
-from datetime import UTC, datetime
+from datetime import UTC, datetime, timedelta
+from typing import Annotated
 
 from fastapi import APIRouter, Header, HTTPException, Query, Request, Response, status
 
@@ -290,14 +291,25 @@ async def list_mentions(
     campaign_id: str | None = None,
     station_id: str | None = None,
     sentiment: str | None = Query(default=None, pattern="^(positive|neutral|negative)$"),
+    keyword_list: Annotated[str | None, Query(max_length=400)] = None,
+    window_days: int | None = Query(default=None, ge=1, le=365),
     limit: int = Query(default=50, ge=1, le=200),
     offset: int = Query(default=0, ge=0),
 ) -> MentionListResponse:
+    since_utc = None
+    if window_days is not None:
+        since_utc = (
+            (datetime.now(UTC) - timedelta(days=window_days))
+            .isoformat()
+            .replace("+00:00", "Z")
+        )
     mentions, total = await asyncio.to_thread(
         request.app.state.database.list_mentions,
         campaign_id=campaign_id,
         station_id=station_id,
         sentiment=sentiment,
+        keywords=[k.strip() for k in (keyword_list or "").split(",") if k.strip()] or None,
+        since_utc=since_utc,
         limit=limit,
         offset=offset,
     )
