@@ -63,6 +63,9 @@ READ_CHUNK_SECONDS = 0.5
 #: the classifier needing a full window before it can call something speech.
 #: Without it the first word of every conversation is clipped.
 SPEECH_LEAD_SECONDS = 1.0
+#: Sorts before any real timestamp, so a never-served station is first in
+#: line for a listening turn.
+_EPOCH = datetime.min.replace(tzinfo=UTC)
 
 #: Grace period between SIGTERM and SIGKILL for a decoder subprocess.
 TERMINATE_GRACE_SECONDS = 5.0
@@ -119,6 +122,9 @@ class SessionStatus:
     bytes_decoded: int = 0
     reconnects: int = 0
     started_at_utc: datetime = field(default_factory=lambda: datetime.now(UTC))
+    #: When speech was last heard. Drives rotation dwell: a station that is
+    #: still talking keeps its slot instead of being cut mid-sentence.
+    last_speech_at_utc: datetime | None = None
 
     def as_dict(self) -> dict[str, Any]:
         return {
@@ -131,6 +137,9 @@ class SessionStatus:
             "codec": self.codec,
             "sample_rate": self.sample_rate,
             "bitrate_kbps": self.bitrate_kbps,
+            "last_speech_at_utc": (
+                self.last_speech_at_utc.isoformat() if self.last_speech_at_utc else None
+            ),
             "segments_emitted": self.segments_emitted,
             "bytes_decoded": self.bytes_decoded,
             "reconnects": self.reconnects,
@@ -195,6 +204,9 @@ class StationSession:
             station_session_id=self._session_id,
             generation=self._buffer.generation,
             sample_rate=settings.RADIO_SAMPLE_RATE,
+            # From the injected clock, not wall time: rotation measures a turn
+            # against this, so both must come from the same source of time.
+            started_at_utc=self._clock(),
         )
 
         # Segment accumulation state.
@@ -237,6 +249,24 @@ class StationSession:
                 ),
             )
             self._keyword_index_version = version
+
+    @property
+    def started_at(self) -> datetime:
+        return self._status.started_at_utc
+
+    def is_holding(self, now: datetime, grace_seconds: float) -> bool:
+        """True while this station is mid-conversation.
+
+        A segment still open means someone is talking right now. The grace
+        window keeps the slot through the natural pauses between sentences, so
+        a turn ends at a real break in speech rather than in the middle of one.
+        """
+        if self._segment_open:
+            return True
+        last_speech = self._status.last_speech_at_utc
+        if last_speech is None:
+            return False
+        return (now - last_speech).total_seconds() < grace_seconds
 
     def request_stop(self) -> None:
         self._stop.set()
@@ -485,6 +515,7 @@ class StationSession:
             self._segment_confidence = min(self._segment_confidence, decision.confidence)
 
         self._segment_end_ms = end_ms
+        self._status.last_speech_at_utc = self._clock()
         if self._segment_end_ms - self._segment_start_ms >= chunk_ms:
             await self._flush_segment(reason="chunk_full")
             # Overlap so a keyword straddling a chunk boundary is still fully
@@ -580,6 +611,9 @@ class StreamSupervisor:
         self._sessions: dict[str, StationSession] = {}
         self._tasks: dict[str, asyncio.Task] = {}
         self._stopping = False
+        #: station_id -> when it last started a turn. Absent means never served,
+        #: which sorts first so a new station is not stuck behind the incumbents.
+        self._last_served: dict[str, datetime] = {}
 
     @property
     def active_station_ids(self) -> tuple[str, ...]:
@@ -611,26 +645,50 @@ class StreamSupervisor:
                 stopped += 1
 
         limit = self._settings.RADIO_LISTENER_MAX_SESSIONS
-        started = 0
-        rejected = 0
-        for station_id, plan in sorted(wanted.items()):
+        now = self._clock()
+
+        # Keep the fairness ledger to the stations we still care about, so it
+        # cannot grow without bound as campaigns come and go.
+        self._last_served = {
+            station_id: served
+            for station_id, served in self._last_served.items()
+            if station_id in wanted
+        }
+
+        for station_id, plan in wanted.items():
             existing = self._sessions.get(station_id)
             if existing is not None:
                 existing.update_keyword_index_version(plan.keyword_index_version)
-                continue
-            if len(self._sessions) >= limit:
-                rejected += 1
-                continue
-            self._start_session(plan)
+
+        waiting = [station_id for station_id in wanted if station_id not in self._sessions]
+
+        # Rotation: a slot is a turn, not a permanent home. Only evict when
+        # somebody is actually waiting -- with spare capacity every station
+        # simply keeps listening.
+        rotated = 0
+        if waiting:
+            rotated = await self._rotate_expired_turns(now, len(waiting))
+
+        # Fairest first: longest since its last turn, never-served before all.
+        started = 0
+        free = max(limit - len(self._sessions), 0)
+        order = sorted(waiting, key=lambda sid: (self._last_served.get(sid, _EPOCH), sid))
+        for station_id in order[:free]:
+            self._start_session(wanted[station_id])
+            self._last_served[station_id] = now
             started += 1
 
+        rejected = max(len(waiting) - started, 0)
         if rejected:
-            logger.warning(
-                "Listener is at capacity; stations are waiting for a slot",
+            # Expected while rotating; the queue drains a turn at a time.
+            logger.info(
+                "Stations are queued for a listening turn",
                 extra=log_fields(
-                    rejected=rejected,
+                    queued=rejected,
                     listener_max_sessions=limit,
                     running=len(self._sessions),
+                    rotated_out=rotated,
+                    slice_seconds=self._settings.RADIO_LISTENER_SLICE_SECONDS,
                 ),
             )
         self._reap_finished()
@@ -639,7 +697,47 @@ class StreamSupervisor:
             "stopped": stopped,
             "running": len(self._sessions),
             "rejected": rejected,
+            "rotated": rotated,
         }
+
+    async def _rotate_expired_turns(self, now: datetime, waiting_count: int) -> int:
+        """Free up to ``waiting_count`` slots from sessions whose turn is over.
+
+        A turn ends once it has run for the slice AND the station is not
+        mid-conversation. The max-slice ceiling overrides the dwell so a
+        permanently talking station can never hold a slot forever.
+        """
+        slice_seconds = self._settings.RADIO_LISTENER_SLICE_SECONDS
+        max_slice = self._settings.RADIO_LISTENER_MAX_SLICE_SECONDS
+        grace = self._settings.RADIO_LISTENER_DWELL_GRACE_SECONDS
+
+        # Oldest turn first, so the station that has held a slot longest goes.
+        candidates = sorted(
+            self._sessions.items(), key=lambda item: item[1].started_at
+        )
+        rotated = 0
+        for station_id, session in candidates:
+            if rotated >= waiting_count:
+                break
+            elapsed = (now - session.started_at).total_seconds()
+            if elapsed < slice_seconds:
+                continue
+            if elapsed < max_slice and session.is_holding(now, grace):
+                # Still talking: finishing the sentence is worth more than
+                # switching exactly on the slice boundary.
+                continue
+            await self._stop_session(station_id)
+            self._last_served[station_id] = now
+            rotated += 1
+            logger.info(
+                "Listening turn handed over",
+                extra=log_fields(
+                    station_id=station_id,
+                    held_seconds=round(elapsed, 1),
+                    slice_seconds=slice_seconds,
+                ),
+            )
+        return rotated
 
     def _start_session(self, plan: StationPlan) -> None:
         session = StationSession(

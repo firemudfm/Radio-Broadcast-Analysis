@@ -6,7 +6,7 @@ keeps its current dependency set.
 from __future__ import annotations
 
 import asyncio
-from datetime import UTC, datetime
+from datetime import UTC, datetime, timedelta
 
 import pytest
 
@@ -293,6 +293,153 @@ def test_supervisor_enforces_the_session_cap(settings: Settings) -> None:
     result = asyncio.run(scenario())
     assert result["running"] == 2
     assert result["rejected"] == 3, "overflow must be visible, never silently dropped"
+
+
+# =============================================================================
+# Fair rotation
+#
+# Production ran RADIO_LISTENER_MAX_SESSIONS=1 with five wanted stations and
+# logged "Listener is at capacity ... rejected: 4, running: 1" every five
+# seconds for hours: admission was sorted by station id, so the same station
+# held the only slot forever and the other four were never listened to at all.
+# A slot has to be a turn.
+# =============================================================================
+
+
+def build_rotating_supervisor(settings: Settings, now_box: list[datetime]):
+    events: list[SegmentEvent] = []
+
+    async def emit(event: SegmentEvent) -> None:
+        events.append(event)
+
+    return StreamSupervisor(
+        settings,
+        classifier_factory=VadEnergyClassifier,
+        emit=emit,
+        clock=lambda: now_box[0],
+    )
+
+
+def rotation_settings(settings: Settings, **overrides) -> Settings:
+    base = {
+        "RADIO_LISTENER_MAX_SESSIONS": 1,
+        "RADIO_MAX_ACTIVE_UNIQUE_STATIONS": 8,
+        "RADIO_LISTENER_SLICE_SECONDS": 120,
+        "RADIO_LISTENER_DWELL_GRACE_SECONDS": 30,
+        "RADIO_LISTENER_MAX_SLICE_SECONDS": 480,
+    }
+    base.update(overrides)
+    return settings.model_copy(update=base)
+
+
+def three_plans() -> list[StationPlan]:
+    return [
+        StationPlan(station_id=f"rb-{index}", stream_url=f"https://example.com/{index}")
+        for index in range(3)
+    ]
+
+
+def test_every_station_eventually_gets_a_turn(settings: Settings) -> None:
+    """The starvation bug: with one slot, all three stations must be heard."""
+    now_box = [NOW]
+    supervisor = build_rotating_supervisor(rotation_settings(settings), now_box)
+    plans = three_plans()
+
+    async def scenario() -> list[str]:
+        served: list[str] = []
+        for _ in range(3):
+            await supervisor.reconcile(plans)
+            served.extend(supervisor.active_station_ids)
+            # The turn elapses before the next planner tick.
+            now_box[0] = now_box[0] + timedelta(seconds=121)
+        await supervisor.shutdown()
+        return served
+
+    served = asyncio.run(scenario())
+    assert len(set(served)) == 3, f"every station must get a turn, saw {served}"
+
+
+def test_a_turn_is_kept_while_capacity_is_spare(settings: Settings) -> None:
+    """Rotation is for contention only; with room for everyone nobody moves."""
+    now_box = [NOW]
+    supervisor = build_rotating_supervisor(
+        rotation_settings(settings, RADIO_LISTENER_MAX_SESSIONS=8), now_box
+    )
+    plans = three_plans()
+
+    async def scenario() -> dict:
+        await supervisor.reconcile(plans)
+        now_box[0] = now_box[0] + timedelta(seconds=600)
+        result = await supervisor.reconcile(plans)
+        await supervisor.shutdown()
+        return result
+
+    result = asyncio.run(scenario())
+    assert result["rotated"] == 0, "no one is waiting, so no turn should end"
+    assert result["running"] == 3
+
+
+def test_a_talking_station_is_not_cut_mid_sentence(settings: Settings) -> None:
+    """Handing the slot over mid-speech loses the mention we are listening for."""
+    now_box = [NOW]
+    supervisor = build_rotating_supervisor(rotation_settings(settings), now_box)
+    plans = three_plans()
+
+    async def scenario() -> dict:
+        await supervisor.reconcile(plans)
+        holder = supervisor.active_station_ids[0]
+        now_box[0] = now_box[0] + timedelta(seconds=200)  # past the slice
+        # Still talking right now.
+        supervisor._sessions[holder]._status.last_speech_at_utc = now_box[0]
+        result = await supervisor.reconcile(plans)
+        await supervisor.shutdown()
+        return result
+
+    result = asyncio.run(scenario())
+    assert result["rotated"] == 0, "speech in progress must hold the slot"
+
+
+def test_the_max_slice_ceiling_beats_a_station_that_never_stops_talking(
+    settings: Settings,
+) -> None:
+    """Otherwise one talk station holds the only slot forever."""
+    now_box = [NOW]
+    supervisor = build_rotating_supervisor(rotation_settings(settings), now_box)
+    plans = three_plans()
+
+    async def scenario() -> dict:
+        await supervisor.reconcile(plans)
+        holder = supervisor.active_station_ids[0]
+        now_box[0] = now_box[0] + timedelta(seconds=500)  # past RADIO_LISTENER_MAX_SLICE
+        supervisor._sessions[holder]._status.last_speech_at_utc = now_box[0]
+        result = await supervisor.reconcile(plans)
+        await supervisor.shutdown()
+        return result
+
+    result = asyncio.run(scenario())
+    assert result["rotated"] == 1, "the ceiling must override the dwell"
+
+
+def test_the_longest_waiting_station_goes_next(settings: Settings) -> None:
+    """Fairness: turns go to whoever has waited longest, not lowest station id."""
+    now_box = [NOW]
+    supervisor = build_rotating_supervisor(rotation_settings(settings), now_box)
+    plans = three_plans()
+
+    async def scenario() -> list[str]:
+        order: list[str] = []
+        for _ in range(4):
+            await supervisor.reconcile(plans)
+            order.append(supervisor.active_station_ids[0])
+            now_box[0] = now_box[0] + timedelta(seconds=121)
+        await supervisor.shutdown()
+        return order
+
+    order = asyncio.run(scenario())
+    # Four turns over three stations: the first station comes back only after
+    # the other two have each had one.
+    assert order[3] == order[0], f"expected a full cycle before repeating, got {order}"
+    assert len(set(order[:3])) == 3, f"first three turns must be distinct, got {order}"
 
 
 def test_supervisor_stops_stations_that_leave_the_plan(settings: Settings) -> None:

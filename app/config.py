@@ -588,6 +588,18 @@ class Settings(BaseSettings):
     # is unmeasured. Declared here so the name is a real setting rather than a
     # string the environment file carries and everything else silently ignores.
     RADIO_ALLOW_UNBENCHMARKED_CAPACITY: bool = False
+    # Fair rotation. With more wanted stations than listener slots, a slot is
+    # a turn, not a permanent home: without this the same station held the only
+    # slot forever and every other station starved (observed in production as a
+    # repeating "Listener is at capacity" warning with rejected=4, running=1).
+    #
+    # A turn lasts SLICE seconds. A station still mid-speech when its turn ends
+    # keeps the slot until the talking stops (plus DWELL_GRACE), because cutting
+    # a sentence in half loses the very mention we are listening for. MAX_SLICE
+    # is the hard ceiling so one talk station can never hold a slot forever.
+    RADIO_LISTENER_SLICE_SECONDS: int = 120
+    RADIO_LISTENER_DWELL_GRACE_SECONDS: int = 30
+    RADIO_LISTENER_MAX_SLICE_SECONDS: int = 480
     RADIO_LISTENER_SHARD_COUNT: int = 1
     RADIO_LISTENER_SHARD_INDEX: int = 0
     RADIO_STATION_WINDDOWN_GRACE_SECONDS: int = 300
@@ -728,6 +740,22 @@ class Settings(BaseSettings):
             raise ValueError(
                 "RADIO_MAX_REQUESTED_UNIQUE_STATIONS must be between 1 and 10000"
             )
+        return value
+
+    @field_validator("RADIO_LISTENER_SLICE_SECONDS", "RADIO_LISTENER_MAX_SLICE_SECONDS")
+    @classmethod
+    def validate_listener_slice(cls, value: int) -> int:
+        if not 15 <= value <= 3600:
+            raise ValueError(
+                "listener slice seconds must be between 15 and 3600"
+            )
+        return value
+
+    @field_validator("RADIO_LISTENER_DWELL_GRACE_SECONDS")
+    @classmethod
+    def validate_listener_dwell_grace(cls, value: int) -> int:
+        if not 0 <= value <= 300:
+            raise ValueError("RADIO_LISTENER_DWELL_GRACE_SECONDS must be between 0 and 300")
         return value
 
     @field_validator("RADIO_MAX_ACTIVE_UNIQUE_STATIONS", "RADIO_LISTENER_MAX_SESSIONS")
@@ -1071,6 +1099,11 @@ class Settings(BaseSettings):
             raise ValueError(
                 "RADIO_SQS_VISIBILITY_HEARTBEAT_SECONDS must be shorter than "
                 "RADIO_SQS_VISIBILITY_SECONDS or visibility will expire before it is extended"
+            )
+        if self.RADIO_LISTENER_MAX_SLICE_SECONDS < self.RADIO_LISTENER_SLICE_SECONDS:
+            raise ValueError(
+                "RADIO_LISTENER_MAX_SLICE_SECONDS cannot be below "
+                "RADIO_LISTENER_SLICE_SECONDS: the ceiling must allow a full turn"
             )
         if self.RADIO_LISTENER_MAX_SESSIONS > self.RADIO_MAX_ACTIVE_UNIQUE_STATIONS:
             raise ValueError(
