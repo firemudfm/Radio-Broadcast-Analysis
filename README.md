@@ -575,6 +575,16 @@ justify a number.
 
 ---
 
+### Tuning listening throughput
+
+`RADIO_LISTENER_MAX_SESSIONS` is the one dial for mention volume: it sets how
+many stations stream in parallel, while the turn rotation shares those slots
+across every station in the pool. Each session costs roughly one vCPU end to
+end (decode, classify, transcribe, analyze), so a 4 vCPU host runs 2
+comfortably. Change it in the host's persistent env file and redeploy:
+containers only read env at creation, so a plain restart is not enough.
+Confirm with `listener_sessions` on `GET /api/v1/monitoring/pipeline`.
+
 ## 10. HTTP API
 
 `GET /docs` serves Swagger UI. The pilot host is intentionally unauthenticated
