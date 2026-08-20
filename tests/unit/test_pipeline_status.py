@@ -147,9 +147,11 @@ def test_the_counters_have_distinct_meanings(
     capacity = service.capacity()
     assert capacity["campaign_station_reference_count"] == 6, "3 campaigns x 2 stations"
     assert capacity["unique_requested_station_count"] == 2, "distinct stations only"
-    assert capacity["unique_active_station_count"] == 2
+    # Nothing streams until the listener grants a turn; the planner only
+    # builds the rotation pool.
+    assert capacity["unique_active_station_count"] == 0
     assert capacity["reused_station_stream_count"] == 2, "both are shared"
-    assert capacity["pending_capacity_station_count"] == 0
+    assert capacity["pending_capacity_station_count"] == 2
     assert capacity["active_unique_station_limit"] == settings.RADIO_MAX_ACTIVE_UNIQUE_STATIONS
     # The capacity limit is expressed in stations, never campaigns or keywords.
     assert capacity["unique_active_station_count"] < capacity["campaign_station_reference_count"]
@@ -178,8 +180,10 @@ def test_overflow_is_reported_as_pending_capacity(
 
     capacity = PipelineStatusService(capped, database, clock=lambda: NOW).capacity()
     assert capacity["unique_requested_station_count"] == 5
-    assert capacity["unique_active_station_count"] == 2
-    assert capacity["pending_capacity_station_count"] == 3
+    # All five wait in the rotation pool until the listener grants turns;
+    # pending means "waiting for a turn", never "parked forever".
+    assert capacity["unique_active_station_count"] == 0
+    assert capacity["pending_capacity_station_count"] == 5
 
 
 def test_worker_count_ignores_stale_and_stopped_workers(

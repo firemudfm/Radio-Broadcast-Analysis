@@ -23,7 +23,7 @@ import asyncio
 import contextlib
 import logging
 import sqlite3
-from datetime import UTC, datetime
+from datetime import UTC, datetime, timedelta
 
 from ..observability import log_fields, trace_context
 from ..pipeline import outbox
@@ -115,7 +115,9 @@ class ListenerWorker(BaseWorker):
     async def _reconcile(self) -> None:
         self._pressure = self._spool_pressure()
         plans = [] if self._pressure == "emergency" else self._assigned_plans()
-        result = await self.supervisor.reconcile(plans)
+        keyword_hits = await asyncio.to_thread(self._recent_keyword_hits)
+        result = await self.supervisor.reconcile(plans, keyword_hits=keyword_hits)
+        await asyncio.to_thread(self._sync_waiting_states, plans)
         self.beat(
             status="degraded" if self._pressure in {"pause", "emergency"} else "ok",
             detail={
@@ -165,6 +167,60 @@ class ListenerWorker(BaseWorker):
                 )
             )
         return plans
+
+    def _recent_keyword_hits(self) -> dict[str, datetime]:
+        """Latest confirmed keyword hit per station, for rotation dwell.
+
+        Written by the result writer in another container; the shared SQLite
+        file is the only channel between them. A short lookback keeps the scan
+        tiny -- anything older than the dwell window cannot extend a turn.
+        """
+        lookback = (
+            self.settings.RADIO_LISTENER_KEYWORD_DWELL_SECONDS
+            + self.settings.RADIO_LISTENER_MAX_SLICE_SECONDS
+        )
+        since = _iso(datetime.now(UTC) - timedelta(seconds=lookback))
+        try:
+            rows = self.database.read_all(
+                "SELECT station_id, MAX(created_at_utc) AS hit_at FROM mention_events"
+                " WHERE created_at_utc >= ? GROUP BY station_id",
+                (since,),
+            )
+        except sqlite3.Error:
+            logger.exception("Could not read recent keyword hits; rotating without dwell")
+            return {}
+        hits: dict[str, datetime] = {}
+        for row in rows:
+            raw = str(row["hit_at"] or "").replace("Z", "+00:00")
+            try:
+                hits[str(row["station_id"])] = datetime.fromisoformat(raw)
+            except ValueError:
+                continue
+        return hits
+
+    def _sync_waiting_states(self, plans: list[StationPlan]) -> None:
+        """Stations assigned but not currently streaming are waiting for a turn.
+
+        Without this, a station kept its 'active' label after its turn ended
+        and the dashboard showed more running stations than sessions exist.
+        """
+        running = set(self.supervisor.active_station_ids)
+        waiting = [plan.station_id for plan in plans if plan.station_id not in running]
+        if not waiting:
+            return
+        stamp = _iso(datetime.now(UTC))
+
+        def write(connection: sqlite3.Connection) -> None:
+            for station_id in waiting:
+                connection.execute(
+                    "UPDATE station_subscriptions SET state='pending_capacity',"
+                    " state_reason='Waiting for a listening turn', updated_at_utc=?"
+                    " WHERE station_id=? AND state IN ('starting','active')",
+                    (stamp, station_id),
+                )
+
+        with contextlib.suppress(Exception):
+            self.database.write(write)
 
     # -- segment handling ------------------------------------------------------
 
@@ -370,7 +426,7 @@ class ListenerWorker(BaseWorker):
                 connection.execute(
                     "UPDATE station_subscriptions SET state='active',"
                     " state_reason=NULL, updated_at_utc=?"
-                    " WHERE station_id=? AND state IN ('starting','degraded')",
+                    " WHERE station_id=? AND state IN ('starting','degraded','pending_capacity')",
                     (_iso(datetime.now(UTC)), status.station_id),
                 )
             elif mapped in {"reconnecting", "failed"}:

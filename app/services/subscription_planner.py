@@ -187,7 +187,7 @@ class SubscriptionPlanner:
         reused = sum(1 for count in reference_counts.values() if count > 1)
         winding_down, stopped = self._wind_down_unreferenced(set(desired), existing, now)
         published = self._publish_indexes(desired, now)
-        admitted, pending = self._admit_capacity(now)
+        admitted, pending = self._normalize_rotation_pool(now)
 
         result = PlanResult(
             unique_requested=len(desired),
@@ -508,53 +508,32 @@ class SubscriptionPlanner:
 
         self._database.write(write)
 
-    def _admit_capacity(self, now: datetime) -> tuple[int, int]:
-        """Admit up to the capacity limit; park the rest in pending_capacity.
+    def _normalize_rotation_pool(self, now: datetime) -> tuple[int, int]:
+        """Every referenced station joins the rotation pool; none is dropped.
 
-        Overflow is a first-class visible state, never a silent drop.
+        This used to admit ``candidates[:free]`` once and never look again: a
+        station that missed the first admission was parked in pending_capacity
+        forever, so a newly created campaign could run for days with zero
+        mentions. The listener is the only scheduler now -- it grants each pool
+        member a listening turn (bounded by RADIO_LISTENER_MAX_SESSIONS), and a
+        parked station means "waiting for its turn", not "never".
         """
         stamp = _iso(now)
-        limit = self._settings.RADIO_MAX_ACTIVE_UNIQUE_STATIONS
-        rows = self._database.read_all(
-            "SELECT station_id, state, reference_count FROM station_subscriptions"
-            " WHERE state NOT IN ('stopped') ORDER BY station_id"
+        self._database.write(
+            lambda connection: connection.execute(
+                "UPDATE station_subscriptions SET state='pending_capacity',"
+                " state_reason='Waiting for a listening turn', updated_at_utc=?"
+                " WHERE state='desired'",
+                (stamp,),
+            )
         )
-        already_active = [
-            str(row["station_id"])
-            for row in rows
-            if str(row["state"]) in ACTIVE_SUBSCRIPTION_STATES
-        ]
-        candidates = [
-            str(row["station_id"])
-            for row in rows
-            if str(row["state"]) in {"desired", "pending_capacity"}
-            and int(row["reference_count"]) > 0
-        ]
-        free = max(0, limit - len(already_active))
-        admitted = candidates[:free]
-        deferred = candidates[free:]
-
-        for station_id in admitted:
-            self._database.write(
-                lambda connection, sid=station_id: connection.execute(
-                    "UPDATE station_subscriptions SET state='starting', state_reason=NULL,"
-                    " updated_at_utc=? WHERE station_id=?",
-                    (stamp, sid),
-                )
-            )
-        for station_id in deferred:
-            self._database.write(
-                lambda connection, sid=station_id: connection.execute(
-                    "UPDATE station_subscriptions SET state='pending_capacity',"
-                    " state_reason=?, updated_at_utc=? WHERE station_id=?",
-                    (
-                        f"Active unique-station limit reached ({limit}); waiting for a slot",
-                        stamp,
-                        sid,
-                    ),
-                )
-            )
-        return len(already_active) + len(admitted), len(deferred)
+        rows = self._database.read_all(
+            "SELECT state, count(*) AS n FROM station_subscriptions GROUP BY state"
+        )
+        by_state = {str(row["state"]): int(row["n"]) for row in rows}
+        active = sum(by_state.get(state, 0) for state in ACTIVE_SUBSCRIPTION_STATES)
+        waiting = by_state.get("pending_capacity", 0)
+        return active, waiting
 
     # -- reads for listeners and the API ---------------------------------------
 
@@ -563,9 +542,12 @@ class SubscriptionPlanner:
         index = (
             self._settings.RADIO_LISTENER_SHARD_INDEX if shard_index is None else shard_index
         )
+        # The whole rotation pool, including stations waiting for a turn: the
+        # listener decides who streams right now, so it must see everyone.
         rows = self._database.read_all(
             "SELECT * FROM station_subscriptions WHERE shard_index=? AND state IN"
-            " ('starting','active','degraded') ORDER BY station_id",
+            " ('starting','active','degraded','pending_capacity','desired')"
+            " ORDER BY station_id",
             (index,),
         )
         return [dict(row) for row in rows]

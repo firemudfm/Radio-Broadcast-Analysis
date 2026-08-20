@@ -600,6 +600,10 @@ class Settings(BaseSettings):
     RADIO_LISTENER_SLICE_SECONDS: int = 120
     RADIO_LISTENER_DWELL_GRACE_SECONDS: int = 30
     RADIO_LISTENER_MAX_SLICE_SECONDS: int = 480
+    # A confirmed keyword hit during the current turn extends it: the station
+    # is saying the thing we are listening for, so it keeps the slot for this
+    # long after the hit (still capped by MAX_SLICE).
+    RADIO_LISTENER_KEYWORD_DWELL_SECONDS: int = 240
     RADIO_LISTENER_SHARD_COUNT: int = 1
     RADIO_LISTENER_SHARD_INDEX: int = 0
     RADIO_STATION_WINDDOWN_GRACE_SECONDS: int = 300
@@ -756,6 +760,13 @@ class Settings(BaseSettings):
     def validate_listener_dwell_grace(cls, value: int) -> int:
         if not 0 <= value <= 300:
             raise ValueError("RADIO_LISTENER_DWELL_GRACE_SECONDS must be between 0 and 300")
+        return value
+
+    @field_validator("RADIO_LISTENER_KEYWORD_DWELL_SECONDS")
+    @classmethod
+    def validate_listener_keyword_dwell(cls, value: int) -> int:
+        if not 0 <= value <= 3600:
+            raise ValueError("RADIO_LISTENER_KEYWORD_DWELL_SECONDS must be between 0 and 3600")
         return value
 
     @field_validator("RADIO_MAX_ACTIVE_UNIQUE_STATIONS", "RADIO_LISTENER_MAX_SESSIONS")

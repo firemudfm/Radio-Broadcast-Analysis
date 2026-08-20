@@ -420,6 +420,110 @@ def test_the_max_slice_ceiling_beats_a_station_that_never_stops_talking(
     assert result["rotated"] == 1, "the ceiling must override the dwell"
 
 
+def test_music_with_vocals_does_not_hold_a_turn(settings: Settings) -> None:
+    """Production: stations emit near-continuous speech_over_music, which
+    pinned every turn at the MAX_SLICE ceiling (held_seconds: 480.1 in the
+    field) and made the 2-minute slice meaningless. Only talk without music
+    holds a turn."""
+    now_box = [NOW]
+    supervisor = build_rotating_supervisor(rotation_settings(settings), now_box)
+    plans = three_plans()
+
+    async def scenario() -> dict:
+        await supervisor.reconcile(plans)
+        holder = supervisor.active_station_ids[0]
+        now_box[0] = now_box[0] + timedelta(seconds=130)
+        session = supervisor._sessions[holder]
+        # An open speech_over_music segment: vocals, not conversation.
+        session._segment_open = True
+        session._segment_class = "speech_over_music"
+        result = await supervisor.reconcile(plans)
+        await supervisor.shutdown()
+        return result
+
+    result = asyncio.run(scenario())
+    assert result["rotated"] == 1, "speech_over_music must not pin the slot"
+
+
+def test_open_pure_speech_still_holds_the_turn(settings: Settings) -> None:
+    now_box = [NOW]
+    supervisor = build_rotating_supervisor(rotation_settings(settings), now_box)
+    plans = three_plans()
+
+    async def scenario() -> dict:
+        await supervisor.reconcile(plans)
+        holder = supervisor.active_station_ids[0]
+        now_box[0] = now_box[0] + timedelta(seconds=130)
+        session = supervisor._sessions[holder]
+        session._segment_open = True
+        session._segment_class = "speech"
+        result = await supervisor.reconcile(plans)
+        await supervisor.shutdown()
+        return result
+
+    result = asyncio.run(scenario())
+    assert result["rotated"] == 0, "a conversation in progress keeps the slot"
+
+
+def test_a_keyword_hit_during_the_turn_extends_it(settings: Settings) -> None:
+    """The product rule: a hit means THIS station is saying the thing we
+    monitor, so it listens on for the keyword dwell window."""
+    now_box = [NOW]
+    supervisor = build_rotating_supervisor(rotation_settings(settings), now_box)
+    plans = three_plans()
+
+    async def scenario() -> dict:
+        await supervisor.reconcile(plans)
+        holder = supervisor.active_station_ids[0]
+        # Slice expires, but a keyword hit landed one minute ago.
+        now_box[0] = now_box[0] + timedelta(seconds=130)
+        hits = {holder: now_box[0] - timedelta(seconds=60)}
+        result = await supervisor.reconcile(plans, keyword_hits=hits)
+        await supervisor.shutdown()
+        return result
+
+    result = asyncio.run(scenario())
+    assert result["rotated"] == 0, "a fresh keyword hit must extend the turn"
+
+
+def test_a_keyword_hit_from_a_previous_turn_does_not_hold(settings: Settings) -> None:
+    """Only a hit from THIS turn extends it; yesterday's hit is not a reason
+    to hog the slot today."""
+    now_box = [NOW]
+    supervisor = build_rotating_supervisor(rotation_settings(settings), now_box)
+    plans = three_plans()
+
+    async def scenario() -> dict:
+        await supervisor.reconcile(plans)
+        holder = supervisor.active_station_ids[0]
+        now_box[0] = now_box[0] + timedelta(seconds=130)
+        hits = {holder: NOW - timedelta(seconds=300)}  # before the session began
+        result = await supervisor.reconcile(plans, keyword_hits=hits)
+        await supervisor.shutdown()
+        return result
+
+    result = asyncio.run(scenario())
+    assert result["rotated"] == 1
+
+
+def test_the_ceiling_beats_even_a_keyword_dwell(settings: Settings) -> None:
+    now_box = [NOW]
+    supervisor = build_rotating_supervisor(rotation_settings(settings), now_box)
+    plans = three_plans()
+
+    async def scenario() -> dict:
+        await supervisor.reconcile(plans)
+        holder = supervisor.active_station_ids[0]
+        now_box[0] = now_box[0] + timedelta(seconds=500)  # past MAX_SLICE
+        hits = {holder: now_box[0] - timedelta(seconds=10)}
+        result = await supervisor.reconcile(plans, keyword_hits=hits)
+        await supervisor.shutdown()
+        return result
+
+    result = asyncio.run(scenario())
+    assert result["rotated"] == 1, "MAX_SLICE is a hard ceiling"
+
+
 def test_the_longest_waiting_station_goes_next(settings: Settings) -> None:
     """Fairness: turns go to whoever has waited longest, not lowest station id."""
     now_box = [NOW]

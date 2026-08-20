@@ -245,17 +245,23 @@ def test_a_stopped_station_revives_when_its_campaign_resumes(
         lambda connection: connection.execute("UPDATE campaigns SET status='active'")
     )
     _planner(pipeline_settings, pipeline_database, now=NOW + timedelta(seconds=500)).plan_once()
+    # Revived stations rejoin the rotation pool; the listener grants the
+    # actual turn, so any pool state (including waiting) proves the revival.
     assert str(
         pipeline_database.read_one("SELECT state FROM station_subscriptions")["state"]
-    ) in {"starting", "active"}
+    ) in {"starting", "active", "pending_capacity"}
 
 
 # --- capacity -----------------------------------------------------------------
 
 
-def test_stations_beyond_capacity_are_parked_never_dropped(
+def test_every_requested_station_joins_the_rotation_pool(
     tmp_path, pipeline_database: Database
 ) -> None:
+    """The production bug: candidates[:free] admitted once and never again,
+    so a new campaign's stations sat in pending_capacity for days with zero
+    mentions. Every referenced station is now assigned to the listener, which
+    grants turns; parked means waiting for a turn, never waiting forever."""
     settings = Settings(
         RADIO_S3_BUCKET="b",
         RADIO_AUDIO_TOKEN_SECRET="x" * 40,
@@ -270,16 +276,19 @@ def test_stations_beyond_capacity_are_parked_never_dropped(
             stations=[f"rb-station{index}"],
             keywords=[(f"kw-{index}", "NVIDIA", [])],
         )
-    result = _planner(settings, pipeline_database).plan_once()
+    planner = _planner(settings, pipeline_database)
+    result = planner.plan_once()
 
     assert result.unique_requested == 10
-    assert result.unique_active == 3
-    assert result.pending_capacity == 7
+    assert result.pending_capacity == 10, "nothing streams until the listener grants a turn"
     parked = pipeline_database.read_all(
         "SELECT station_id, state_reason FROM station_subscriptions WHERE state='pending_capacity'"
     )
-    assert len(parked) == 7
-    assert "limit reached" in str(parked[0]["state_reason"])
+    assert len(parked) == 10
+    assert "listening turn" in str(parked[0]["state_reason"])
+    # THE point: all ten reach the listener; none is invisible to rotation.
+    assigned = planner.assigned_stations(shard_index=0)
+    assert len(assigned) == 10
 
 
 def test_freed_slots_are_promoted(tmp_path, pipeline_database: Database) -> None:
@@ -299,14 +308,14 @@ def test_freed_slots_are_promoted(tmp_path, pipeline_database: Database) -> None
         )
     _planner(settings, pipeline_database).plan_once()
 
-    # A campaign goes away; its station winds down and frees a slot.
+    # A campaign goes away; its station winds down and leaves the pool.
     pipeline_database.write(
         lambda connection: connection.execute("DELETE FROM campaigns WHERE id='camp-0'")
     )
     _planner(settings, pipeline_database).plan_once()
     result = _planner(settings, pipeline_database, now=NOW + timedelta(seconds=400)).plan_once()
-    assert result.unique_active == 2
-    assert result.pending_capacity == 1
+    assert result.unique_requested == 3
+    assert result.pending_capacity == 3, "the remaining stations wait for listening turns"
 
 
 def test_capacity_counters_are_distinct(
@@ -326,9 +335,10 @@ def test_capacity_counters_are_distinct(
 
     assert snapshot["campaign_station_reference_count"] == 12  # 6 campaigns x 2 stations
     assert snapshot["unique_requested_station_count"] == 2
-    assert snapshot["unique_active_station_count"] == 2
+    # Nothing streams until the listener grants turns; both wait in the pool.
+    assert snapshot["unique_active_station_count"] == 0
     assert snapshot["reused_station_stream_count"] == 2
-    assert snapshot["pending_capacity_station_count"] == 0
+    assert snapshot["pending_capacity_station_count"] == 2
     assert snapshot["active_unique_station_limit"] == 8
 
 

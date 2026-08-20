@@ -255,13 +255,15 @@ class StationSession:
         return self._status.started_at_utc
 
     def is_holding(self, now: datetime, grace_seconds: float) -> bool:
-        """True while this station is mid-conversation.
+        """True while this station is mid-conversation (talk without music).
 
-        A segment still open means someone is talking right now. The grace
-        window keeps the slot through the natural pauses between sentences, so
-        a turn ends at a real break in speech rather than in the middle of one.
+        An open pure-speech segment means someone is talking right now. The
+        grace window keeps the slot through the natural pauses between
+        sentences, so a turn ends at a real break in speech rather than in the
+        middle of one. speech_over_music does NOT hold: on music stations it is
+        nearly continuous, which would pin every turn at the ceiling.
         """
-        if self._segment_open:
+        if self._segment_open and self._segment_class == "speech":
             return True
         last_speech = self._status.last_speech_at_utc
         if last_speech is None:
@@ -515,7 +517,11 @@ class StationSession:
             self._segment_confidence = min(self._segment_confidence, decision.confidence)
 
         self._segment_end_ms = end_ms
-        self._status.last_speech_at_utc = self._clock()
+        # Only talk without music holds a rotation turn. Music stations emit
+        # near-continuous speech_over_music (vocals count), which pinned every
+        # turn at the MAX_SLICE ceiling and made the 2-minute slice meaningless.
+        if decision.content_class == "speech":
+            self._status.last_speech_at_utc = self._clock()
         if self._segment_end_ms - self._segment_start_ms >= chunk_ms:
             await self._flush_segment(reason="chunk_full")
             # Overlap so a keyword straddling a chunk boundary is still fully
@@ -614,6 +620,12 @@ class StreamSupervisor:
         #: station_id -> when it last started a turn. Absent means never served,
         #: which sorts first so a new station is not stuck behind the incumbents.
         self._last_served: dict[str, datetime] = {}
+        #: station_id -> most recent confirmed keyword hit, supplied per
+        #: reconcile by the listener from the shared database.
+        self._keyword_hits: dict[str, datetime] = {}
+        # Rate limiting for the queue log: (signature, last logged at).
+        self._queue_log_signature: tuple[int, int] | None = None
+        self._queue_log_at: datetime | None = None
 
     @property
     def active_station_ids(self) -> tuple[str, ...]:
@@ -626,7 +638,11 @@ class StreamSupervisor:
     def status_snapshot(self) -> list[dict[str, Any]]:
         return [session.status.as_dict() for session in self._sessions.values()]
 
-    async def reconcile(self, plans: list[StationPlan]) -> dict[str, int]:
+    async def reconcile(
+        self,
+        plans: list[StationPlan],
+        keyword_hits: dict[str, datetime] | None = None,
+    ) -> dict[str, int]:
         """Converge running sessions on ``plans``.
 
         Admission is bounded by ``RADIO_LISTENER_MAX_SESSIONS``. Overflow is
@@ -637,6 +653,8 @@ class StreamSupervisor:
         if self._stopping:
             return {"started": 0, "stopped": 0, "running": len(self._sessions), "rejected": 0}
 
+        if keyword_hits is not None:
+            self._keyword_hits = dict(keyword_hits)
         wanted = {plan.station_id: plan for plan in plans}
         stopped = 0
         for station_id in list(self._sessions):
@@ -680,17 +698,26 @@ class StreamSupervisor:
 
         rejected = max(len(waiting) - started, 0)
         if rejected:
-            # Expected while rotating; the queue drains a turn at a time.
-            logger.info(
-                "Stations are queued for a listening turn",
-                extra=log_fields(
-                    queued=rejected,
-                    listener_max_sessions=limit,
-                    running=len(self._sessions),
-                    rotated_out=rotated,
-                    slice_seconds=self._settings.RADIO_LISTENER_SLICE_SECONDS,
-                ),
+            # Expected while rotating; the queue drains a turn at a time. Log
+            # on change or once a minute -- every 5s tick buried the journal.
+            signature = (rejected, len(self._sessions))
+            stale = (
+                self._queue_log_at is None
+                or (now - self._queue_log_at).total_seconds() >= 60
             )
+            if signature != self._queue_log_signature or stale or rotated:
+                self._queue_log_signature = signature
+                self._queue_log_at = now
+                logger.info(
+                    "Stations are queued for a listening turn",
+                    extra=log_fields(
+                        queued=rejected,
+                        listener_max_sessions=limit,
+                        running=len(self._sessions),
+                        rotated_out=rotated,
+                        slice_seconds=self._settings.RADIO_LISTENER_SLICE_SECONDS,
+                    ),
+                )
         self._reap_finished()
         return {
             "started": started,
@@ -722,6 +749,11 @@ class StreamSupervisor:
             elapsed = (now - session.started_at).total_seconds()
             if elapsed < slice_seconds:
                 continue
+            if elapsed < max_slice and self._keyword_dwell_holds(station_id, session, now):
+                # A keyword was just spoken here: this is the one station we
+                # know is talking about the thing we monitor, so it keeps the
+                # slot for the keyword dwell window.
+                continue
             if elapsed < max_slice and session.is_holding(now, grace):
                 # Still talking: finishing the sentence is worth more than
                 # switching exactly on the slice boundary.
@@ -738,6 +770,18 @@ class StreamSupervisor:
                 ),
             )
         return rotated
+
+    def _keyword_dwell_holds(
+        self, station_id: str, session: StationSession, now: datetime
+    ) -> bool:
+        """True while a keyword hit from THIS turn is inside its dwell window."""
+        dwell = self._settings.RADIO_LISTENER_KEYWORD_DWELL_SECONDS
+        if dwell <= 0:
+            return False
+        hit = self._keyword_hits.get(station_id)
+        if hit is None or hit < session.started_at:
+            return False
+        return (now - hit).total_seconds() < dwell
 
     def _start_session(self, plan: StationPlan) -> None:
         session = StationSession(

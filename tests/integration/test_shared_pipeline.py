@@ -498,17 +498,21 @@ def test_stations_beyond_capacity_are_parked_not_dropped(settings, database, spo
             station_ids=[f"rb-station-{index}"],
             keywords=[("NVIDIA", "brand")],
         )
-    plan = Pipeline(tuned, database, spool, queues).plan()
+    pipeline = Pipeline(tuned, database, spool, queues)
+    plan = pipeline.plan()
 
     assert plan.unique_requested == 5
-    assert plan.unique_active == 2
-    assert plan.pending_capacity == 3
+    # The rotation pool takes everyone; the listener grants the actual turns.
+    assert plan.pending_capacity == 5
 
     parked = database.read_all(
         "SELECT state_reason FROM station_subscriptions WHERE state='pending_capacity'"
     )
-    assert len(parked) == 3
-    assert all("limit reached" in str(row["state_reason"]) for row in parked)
+    assert len(parked) == 5
+    assert all("listening turn" in str(row["state_reason"]) for row in parked)
+    # THE point of the pool: every station is assigned to the listener.
+    assigned = pipeline.planner_worker.planner.assigned_stations(shard_index=0)
+    assert len(assigned) == 5
 
 
 def test_capacity_counters_distinguish_their_meanings(settings, database, spool, queues):
@@ -532,9 +536,10 @@ def test_capacity_counters_distinguish_their_meanings(settings, database, spool,
 
     assert snapshot["campaign_station_reference_count"] == 6, "3 campaigns x 2 stations"
     assert snapshot["unique_requested_station_count"] == 2, "only two distinct stations"
-    assert snapshot["unique_active_station_count"] == 2
+    # The planner no longer marks stations active; only a streaming session does.
+    assert snapshot["unique_active_station_count"] == 0
     assert snapshot["reused_station_stream_count"] == 2
-    assert snapshot["pending_capacity_station_count"] == 0
+    assert snapshot["pending_capacity_station_count"] == 2
 
 
 def test_removing_a_campaign_keeps_a_station_others_still_reference(
