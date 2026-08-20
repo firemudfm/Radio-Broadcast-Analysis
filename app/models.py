@@ -345,6 +345,8 @@ class PipelineStatusView(ApiModel):
     spool_usage_percent: float = 0.0
     spool_pressure: str = "ok"
     listener_heartbeat: dict[str, Any] | None = None
+    #: Live listening turns: the observable proof that rotation is working.
+    listener_sessions: list[dict[str, Any]] = Field(default_factory=list)
     transcription_worker_heartbeat: dict[str, Any] | None = None
     analysis_worker_heartbeat: dict[str, Any] | None = None
     planner_heartbeat: dict[str, Any] | None = None

@@ -159,6 +159,26 @@ class HeartbeatReader:
                 bucket["live"] += 1
         return {"roles": roles, "workers": workers}
 
+    def latest_detail(self, role: str) -> dict[str, Any] | None:
+        """The freshest worker's detail payload for one role.
+
+        Kept out of ``snapshot`` on purpose: detail can be large (the listener
+        reports its live sessions there) and most health callers only need the
+        slim summary.
+        """
+        row = self._database.read_one(
+            "SELECT detail_json FROM worker_heartbeats WHERE role=?"
+            " ORDER BY last_seen_utc DESC LIMIT 1",
+            (role,),
+        )
+        if row is None:
+            return None
+        try:
+            payload = json.loads(str(row["detail_json"]) or "{}")
+        except ValueError:
+            return None
+        return payload if isinstance(payload, dict) else None
+
     def role_status(self, role: str, *, now: datetime | None = None) -> str:
         """``ok`` when at least one live worker holds the role, else ``stale``/``absent``."""
         summary = self.snapshot(now=now)["roles"].get(role)

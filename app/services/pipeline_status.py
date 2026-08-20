@@ -90,6 +90,7 @@ class PipelineStatusService:
                 "spool": pressure,
             },
             "listener_heartbeat": self._role_detail("listener", heartbeats),
+            "listener_sessions": self._listener_sessions(),
             "transcription_worker_heartbeat": self._role_detail("transcription", heartbeats),
             "analysis_worker_heartbeat": self._role_detail("analysis", heartbeats),
             "planner_heartbeat": self._role_detail("planner", heartbeats),
@@ -142,6 +143,32 @@ class PipelineStatusService:
             settings.RADIO_TRANSCRIPTION_QUEUE_URL.strip()
             and settings.RADIO_ANALYSIS_QUEUE_URL.strip()
         )
+
+    def _listener_sessions(self) -> list[dict[str, Any]]:
+        """Who is being listened to right now, from the listener's heartbeat.
+
+        This is the observable proof of turn rotation: the station id and the
+        turn's start time change every slice. Without it, verifying rotation
+        needed a shell on the box.
+        """
+        payload = self._heartbeats.latest_detail("listener") or {}
+        sessions = payload.get("sessions")
+        if not isinstance(sessions, list):
+            return []
+        projected = []
+        for session in sessions:
+            if not isinstance(session, dict):
+                continue
+            projected.append(
+                {
+                    "station_id": session.get("station_id"),
+                    "status": session.get("status"),
+                    "started_at_utc": session.get("started_at_utc"),
+                    "last_speech_at_utc": session.get("last_speech_at_utc"),
+                    "segments_emitted": session.get("segments_emitted"),
+                }
+            )
+        return projected
 
     def _role_detail(self, role: str, heartbeats: dict[str, Any]) -> dict[str, Any] | None:
         """The most recently seen worker for a role, without leaking detail."""

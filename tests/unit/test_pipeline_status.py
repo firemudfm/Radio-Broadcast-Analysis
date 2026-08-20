@@ -186,6 +186,41 @@ def test_overflow_is_reported_as_pending_capacity(
     assert capacity["pending_capacity_station_count"] == 5
 
 
+def test_listener_sessions_are_visible_through_the_status(
+    service: PipelineStatusService, database: Database
+) -> None:
+    """Rotation must be verifiable from outside: which station holds a turn,
+    since when, and whether speech is holding it. Without this, proving the
+    scheduler works needed a shell on the production box."""
+    HeartbeatWriter(
+        database, worker_id="listener-0", role="listener", pipeline_mode="shared_sqs"
+    ).beat(
+        now=NOW,
+        detail={
+            "sessions": [
+                {
+                    "station_id": "rb-a",
+                    "status": "streaming",
+                    "started_at_utc": "2026-08-20T10:00:00+00:00",
+                    "last_speech_at_utc": None,
+                    "segments_emitted": 3,
+                    "bytes_decoded": 999,  # not part of the projection
+                }
+            ]
+        },
+    )
+    sessions = service.snapshot()["listener_sessions"]
+    assert sessions == [
+        {
+            "station_id": "rb-a",
+            "status": "streaming",
+            "started_at_utc": "2026-08-20T10:00:00+00:00",
+            "last_speech_at_utc": None,
+            "segments_emitted": 3,
+        }
+    ]
+
+
 def test_worker_count_ignores_stale_and_stopped_workers(
     service: PipelineStatusService, database: Database, settings: Settings
 ) -> None:
