@@ -239,10 +239,12 @@ def test_sentiment_summary_counts_pipeline_mentions(database) -> None:
     assert summary["positive"] == 1
 
 
-def test_an_old_mention_falls_out_of_the_window(database) -> None:
+def test_old_mentions_stay_counted_forever(database) -> None:
+    """The dashboard reports all time, by request: users read a shrinking
+    rolling window as their mentions being deleted."""
     seed_pipeline_mention(database, broadcast_at=NOW - timedelta(days=30))
     summary = database.sentiment_summary()
-    assert summary == {"positive": 0, "neutral": 0, "negative": 0, "needs_review": 0}
+    assert summary["positive"] == 1  # a month-old mention still counts
 
 
 def test_legacy_rows_and_pipeline_rows_share_the_feed(database) -> None:

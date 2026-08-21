@@ -792,7 +792,8 @@ class Database:
             return self._mention(row) if row else None
 
     def sentiment_summary(self) -> dict[str, int]:
-        cutoff = iso(utc_now() - timedelta(days=self._mention_window_days))
+        # All time, by request: the dashboard reports everything ever detected,
+        # not a rolling window that appears to "lose" mentions as days age out.
         summary = {"positive": 0, "neutral": 0, "negative": 0, "needs_review": 0}
         with self._lock:
             rows = self._conn().execute(
@@ -800,10 +801,8 @@ class Database:
                 SELECT sentiment_label, count(*) AS count,
                        sum(CASE WHEN needs_review=1 THEN 1 ELSE 0 END) AS review_count
                 FROM ({self._mention_union_sql})
-                WHERE broadcast_start_utc >= ?
                 GROUP BY sentiment_label
-                """,  # nosec B608 (static SQL, parameterized)
-                (cutoff,),
+                """,  # nosec B608 (static SQL, no caller input)
             ).fetchall()
         for row in rows:
             label = str(row["sentiment_label"])
@@ -1125,22 +1124,20 @@ class Database:
             "SELECT * FROM campaign_keywords WHERE campaign_id=? ORDER BY value",
             (campaign_id,),
         ).fetchall()
-        window_cutoff = iso(utc_now() - timedelta(days=self._mention_window_days))
-        # Both stores, like the feed: the card said "0 mentions / 7d" while the
-        # feed below it listed pipeline mentions, because only the legacy table
-        # was counted here.
+        # Both stores, like the feed; all time, by request. The field keeps its
+        # legacy name (mentions_7d) so existing clients parse it unchanged, but
+        # it now carries the campaign's full total.
         mentions_7d = int(
             self._conn().execute(
                 """
                 SELECT
-                  (SELECT count(*) FROM mentions
-                    WHERE campaign_id=? AND broadcast_start_utc >= ?)
+                  (SELECT count(*) FROM mentions WHERE campaign_id=?)
                 + (SELECT count(*) FROM mention_events e
                     JOIN mention_campaigns mc
                       ON mc.mention_id=e.mention_id AND mc.included=1
-                    WHERE mc.campaign_id=? AND e.broadcast_start_utc >= ?)
+                    WHERE mc.campaign_id=?)
                 """,
-                (campaign_id, window_cutoff, campaign_id, window_cutoff),
+                (campaign_id, campaign_id),
             ).fetchone()[0]
         )
         return {

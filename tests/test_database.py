@@ -31,16 +31,19 @@ def test_delete_campaign_cascades(database) -> None:
     assert database.delete_campaign(campaign_id) is True
     assert database.get_campaign(campaign_id) is None
 
-def test_mention_window_days_bounds_summary_and_campaign_counts(settings, database) -> None:
+def test_summary_and_campaign_counts_are_all_time(settings, database) -> None:
+    """The dashboard reports everything ever detected, by request. A rolling
+    window read as "mentions being deleted"; only the mentions-list endpoint
+    still filters by window when a caller asks for it."""
     from datetime import timedelta
 
-    from app.db import Database, iso, utc_now
+    from app.db import iso, utc_now
     from app.models import CampaignCreate
 
     payload = CampaignCreate.model_validate(
         {"name": "Window watch", "keywords": [{"value": "Brand"}], "station_ids": ["hertz879"]}
     )
-    campaign_id = database.create_campaign(payload, utc_now() - timedelta(days=10))
+    campaign_id = database.create_campaign(payload, utc_now() - timedelta(days=40))
     binding = database.active_bindings()[0]
 
     def record(source_id: str, start) -> dict:
@@ -74,20 +77,11 @@ def test_mention_window_days_bounds_summary_and_campaign_counts(settings, databa
         }
 
     database.upsert_mention(record("recent", utc_now() - timedelta(hours=2)))
-    database.upsert_mention(record("stale", utc_now() - timedelta(days=3)))
+    database.upsert_mention(record("ancient", utc_now() - timedelta(days=30)))
 
-    # Default 7-day window sees both mentions.
+    # Both mentions count, regardless of age.
     assert database.sentiment_summary()["positive"] == 2
     assert database.get_campaign(campaign_id)["mentions_7d"] == 2
-
-    # A 1-day window only counts the mention from the last 24 hours.
-    narrow = Database(settings.RADIO_DATABASE_PATH, mention_window_days=1)
-    narrow.connect()
-    try:
-        assert narrow.sentiment_summary()["positive"] == 1
-        assert narrow.get_campaign(campaign_id)["mentions_7d"] == 1
-    finally:
-        narrow.close()
 
 def test_mention_audio_pad_expands_playback_to_full_clip(settings, database) -> None:
     from datetime import timedelta
